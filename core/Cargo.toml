@@ -24,6 +24,8 @@ bitcoin   = { version = "=0.32.102", default-features = false }
 secp256k1 = { version = "=0.29.1", default-features = false, features = ["alloc", "lowmemory"] }
 sha2      = { version = "=0.10.9",  default-features = false, features = ["force-soft"] }
 p256      = { version = "=0.13.2",  default-features = false, features = ["ecdsa", "arithmetic"] }
+hmac      = { version = "=0.12.1",  default-features = false }
+pbkdf2    = { version = "=0.12.2",  default-features = false, features = ["hmac"] }
 
 [dev-dependencies]
 hex = "0.4"

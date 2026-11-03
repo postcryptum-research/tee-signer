@@ -1,0 +1,46 @@
+[package]
+name = "rcore"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+license = "Apache-2.0"
+description = "tee-signer enclave FFI crate: the only place with unsafe — SDK calls, sealing, randomness, BIP39, recovery blob, the ecall dispatcher"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[features]
+default = []
+# Host-side simulation of the SDK calls (no sealing, deterministic randomness). For tests of the
+# dispatcher logic on a machine without SGX. Never set for an enclave build; the Makefile refuses.
+nosgx = []
+# The vector replay entry point (TEST_INIT with a known seed). Never in a release enclave; the
+# release build refuses the feature and asserts the symbol is absent (C-R9 bar).
+test-init = []
+
+[dependencies]
+signer-core = { path = "../../core", default-features = false }
+bitcoin   = { version = "=0.32.102", default-features = false }
+secp256k1 = { version = "=0.29.1", default-features = false, features = ["alloc", "lowmemory"] }
+sha2      = { version = "=0.10.9",  default-features = false, features = ["force-soft"] }
+hkdf      = { version = "=0.12.4",  default-features = false }
+p256      = { version = "=0.13.2",  default-features = false, features = ["ecdsa", "arithmetic", "ecdh"] }
+aes-gcm   = { version = "=0.10.3",  default-features = false, features = ["aes", "alloc"] }
+zeroize   = { version = "1", default-features = false }
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+opt-level = 2
+
+[profile.dev]
+panic = "abort"
+
+[dev-dependencies]
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+signer-core = { path = "../../core", features = ["std"] }
+p256 = { version = "=0.13.2", features = ["ecdsa", "ecdh", "arithmetic", "std"] }

@@ -9,7 +9,7 @@ use bitcoin::{Amount, Network as BNet, OutPoint, Psbt, ScriptBuf, Sequence, Tran
 use p256::ecdsa::signature::hazmat::PrehashSigner;
 
 use signer_core::mandate::*;
-use signer_core::state::{ChainState, State};
+use signer_core::state::{ChainState, HeaderRec, State};
 use signer_core::update::Message;
 use signer_core::wallet::{Account, OwnPath};
 
@@ -24,9 +24,11 @@ pub struct Wallet {
     pub account: Account,
 }
 
+/// Entropy `[seed_byte; 32]` → BIP39 mnemonic → BIP32 seed → master (what the enclave does).
 pub fn wallet(seed_byte: u8) -> Wallet {
     let secp = secp();
-    let seed = [seed_byte; 32];
+    let entropy = [seed_byte; 32];
+    let seed = signer_core::bip39::seed(&signer_core::bip39::mnemonic(&entropy));
     let master = Xpriv::new_master(BNet::Signet, &seed).unwrap();
     let path = DerivationPath::from(vec![
         ChildNumber::from_hardened_idx(84).unwrap(),
@@ -143,7 +145,7 @@ pub fn base_mandate(w: &Wallet, cold: &Wallet) -> Mandate {
             max_reorg: 6,
         },
         rules: Rules { sighash: SighashRule::All, payjoin: PayjoinRule::None, op_return: OpReturnRule::None, rbf: true },
-        checkpoint: Checkpoint { hash: [0x11; 32], height: 250_000 },
+        checkpoint: Checkpoint { hash: header_hash(250_000), height: 250_000, time: 250_000 * 600, bits: 0x207f_ffff, period_start_time: 249_984 * 600, period_bits: 0x207f_ffff },
         freshness: Freshness { required: false, witness_pk: None, max_tip_lag: 6 },
         not_after_height: 300_000,
         timelock_blocks: 144,
@@ -184,10 +186,21 @@ pub fn header_hash(height: u32) -> [u8; 32] {
     h
 }
 
+/// A synthetic verified record (vectors do not go through the verifier; `tests/headers.rs` does).
+pub fn rec(height: u32) -> HeaderRec {
+    let mut work = [0u8; 32];
+    work[..4].copy_from_slice(&height.to_le_bytes());
+    HeaderRec { hash: header_hash(height), height, time: height.wrapping_mul(600), bits: 0x207f_ffff, work }
+}
+
 pub fn set_best(s: &mut State, height: u32) {
     s.chain = ChainState {
-        best: Some(Checkpoint { hash: header_hash(height), height }),
-        recent: (height.saturating_sub(10)..=height).map(|h| Checkpoint { hash: header_hash(h), height: h }).collect(),
+        best: Some(rec(height)),
+        recent: (height.saturating_sub(10)..=height).map(rec).collect(),
+        period_start_time: 0,
+        prev_period_start_time: 0,
+        period_bits: 0x207f_ffff,
+        frozen: false,
     };
 }
 

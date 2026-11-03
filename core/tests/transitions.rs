@@ -146,8 +146,8 @@ fn classifier_fails_toward_loosening() {
         ("payjoin opened", Box::new(|m| m.rules.payjoin = PayjoinRule::OutflowAllowed), Change::Loosening),
         ("rbf off", Box::new(|m| m.rules.rbf = false), Change::Tightening),
         ("opreturn allowed", Box::new(|m| m.rules.op_return = OpReturnRule::ZeroValue), Change::Loosening),
-        ("checkpoint forward", Box::new(|m| m.checkpoint.height = 250_050), Change::Tightening),
-        ("checkpoint backward", Box::new(|m| m.checkpoint.height = 249_999), Change::Loosening),
+        ("checkpoint forward", Box::new(|m| { m.checkpoint.height = 250_050; m.checkpoint.hash = header_hash(250_050) }), Change::Tightening),
+        ("checkpoint backward", Box::new(|m| { m.checkpoint.height = 249_999; m.checkpoint.hash = header_hash(249_999) }), Change::Loosening),
         ("freshness enabled (a precondition added)", Box::new(|m| { m.freshness.required = true; m.freshness.witness_pk = Some(p256_key(0xc3).pk) }), Change::Tightening),
         ("tip lag lowered", Box::new(|m| m.freshness.max_tip_lag = 1), Change::Tightening),
         ("validity shortened", Box::new(|m| m.not_after_height = 260_000), Change::Tightening),
@@ -220,11 +220,26 @@ fn update_refusals() {
     inv.timelock_blocks = 0;
     let e = s1.apply_message(&update(&k, &k.owner, &inv, 2)).unwrap_err();
     assert_eq!(first_reason(&e), "POLICY_INVALID");
-    // checkpoint ahead of the verified chain
+    // checkpoint ahead of the verified chain, or not a header this enclave verified
     let mut ahead = base.clone();
     ahead.checkpoint.height = H + 1;
+    ahead.checkpoint.hash = header_hash(H + 1);
     let e = s1.apply_message(&update(&k, &k.owner, &ahead, 2)).unwrap_err();
     assert_eq!(first_reason(&e), "POLICY_INVALID");
+    let mut unknown = base.clone();
+    unknown.checkpoint.height = H - 1;
+    unknown.checkpoint.hash = [0xcd; 32];
+    let e = s1.apply_message(&update(&k, &k.owner, &unknown, 2)).unwrap_err();
+    assert_eq!(first_reason(&e), "POLICY_INVALID");
+    // a verified recent header is accepted as the new checkpoint (and the chain view is kept)
+    let mut known = base.clone();
+    known.checkpoint.height = H - 3;
+    known.checkpoint.hash = header_hash(H - 3);
+    known.destinations.unlisted.max_per_tx = 400_000; // tightening; the checkpoint moves forward (250_000 → H-3)
+    let s_known = s1.apply_message(&update(&k, &k.owner, &known, 2)).unwrap();
+    assert!(s_known.pending.is_none(), "forward checkpoint to a verified header + tightening applies at once");
+    assert_eq!(s_known.mandate.checkpoint.height, H - 3);
+    assert_eq!(s_known.chain.best.unwrap().height, H, "the chain view is kept, not reset");
     // non-canonical bytes
     let mut bytes = t.encode();
     bytes.push(0);

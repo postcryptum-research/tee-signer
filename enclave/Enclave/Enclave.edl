@@ -1,0 +1,12 @@
+/* tee-signer enclave — one ecall. `op` selects the operation (signer_core::proto::op); `in` is
+ * the request's canonical bytes; `out` receives the canonical Response. Everything else is in
+ * Rust (rcore). No ocalls: the enclave asks the host for nothing — no file, no time, no network,
+ * no randomness (sgx_read_rand is RDRAND inside). */
+enclave {
+    trusted {
+        public int ecall_call(uint32_t op,
+                              [in, size=in_len] const uint8_t* in, size_t in_len,
+                              [out, size=out_cap] uint8_t* out, size_t out_cap,
+                              [out] size_t* out_len);
+    };
+};

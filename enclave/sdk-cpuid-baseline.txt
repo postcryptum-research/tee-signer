@@ -1,0 +1,8 @@
+cpGetCacheSize
+cpGetReg
+cpStartTsc
+cpStartTscp
+cpStopTsc
+cpStopTscp
+cp_is_avx512_extension
+cp_is_avx_extension
