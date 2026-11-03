@@ -227,9 +227,14 @@ impl Bitcoind {
     }
 }
 
-/// One feed round: headers from (enclave best − 10) + 1 to the node's tip, in batches. The
+/// One feed round: headers from the enclave's best + 1 to the node's tip, in batches; on a
+/// fork at the enclave's best, the sibling chain is probed from the shallowest fork point. The
 /// enclave decides; a feed that lies or lags can only stall it. Only the read-only RPC subset is
 /// used (`getblockchaininfo`, `getblockhash`, `getblockheader`) — owner decision D5.
+/// How far below the enclave's best the fork probe walks; the enclave keeps at most
+/// maxReorg + 12 recent headers, so deeper probes cannot attach anyway.
+const FORK_PROBE_DEPTH: u32 = 32;
+
 async fn feed_once(shared: &Shared) -> Result<u32> {
     let (best_height, best_hash, url, auth) = {
         let mut d = shared.lock().await;
@@ -246,13 +251,49 @@ async fn feed_once(shared: &Shared) -> Result<u32> {
     if tip <= best_height {
         return Ok(0);
     }
-    // extension when the node agrees with the enclave's best; otherwise offer the last ten
-    // headers again so the enclave can judge the fork (it keeps a longer recent window)
     let node_best = bd.rpc("getblockhash", serde_json::json!([best_height])).await?;
     let same = node_best.as_str().map(|h| h == display_hash(best_hash)).unwrap_or(false);
-    let start = if same { best_height.saturating_add(1) } else { best_height.saturating_sub(10).saturating_add(1).max(1) };
-    let mut from = start;
     let mut total = 0u32;
+    let mut from = if same {
+        best_height.saturating_add(1)
+    } else {
+        // The node disagrees at the enclave's best: a fork. The enclave knows only the headers
+        // from its checkpoint to its best, and the host does not know which; so probe from the
+        // shallowest fork point down — the node's headers [best−k ..= best+1] for k = 0, 1, … —
+        // until the enclave accepts. Each refused probe changes nothing; a fork deeper than the
+        // mandate's maxReorg makes the enclave freeze itself, which is kept, not retried.
+        let probe_top = best_height.saturating_add(1);
+        let mut resume = None;
+        for k in 0..=FORK_PROBE_DEPTH {
+            let start = best_height.saturating_sub(k).max(1);
+            let mut bytes = Vec::with_capacity(((probe_top - start + 1) * 80) as usize);
+            for h in start..=probe_top {
+                bytes.extend_from_slice(&hex::decode(bd.header_hex(h).await?)?);
+            }
+            let mut d = shared.lock().await;
+            let sealed = d.sealed()?;
+            let r = d.call(op::HEADERS, &proto::SealedWith { sealed, data: bytes, extra: None }.encode())?;
+            let hr = proto::HeadersResponse::decode(&r.payload).ok();
+            if let Some(hr) = &hr {
+                d.persist(hr.sealed.clone())?; // accepted fork, or a chain freeze: both are state
+            }
+            if r.ok {
+                let accepted = hr.map(|h| h.accepted).unwrap_or(0);
+                total += accepted;
+                warn!(fork_depth = k + 1, accepted, "header feed: the node forked from the enclave's best; fork accepted");
+                resume = Some(probe_top.saturating_add(1));
+                break;
+            }
+            if r.reasons.iter().any(|x| x == "HEADER_INVALID") && start > 1 {
+                continue; // the probe attached below what the enclave knows, or not at all: deeper
+            }
+            return Err(anyhow!("headers refused at fork probe depth {}: {:?}", k + 1, r.reasons));
+        }
+        match resume {
+            Some(f) => f,
+            None => return Err(anyhow!("fork below the enclave's known headers (checkpoint..best): the owner must re-pin the checkpoint")),
+        }
+    };
     while from <= tip {
         let to = (from + 1999).min(tip);
         let mut bytes = Vec::with_capacity(((to - from + 1) * 80) as usize);

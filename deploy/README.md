@@ -10,7 +10,7 @@ PostgreSQL 5432, nginx 80/443. **Survey 2026-11-03, read-only.** Nothing of thei
 |---|---|
 | CPU | Xeon E3-1275 v6; **SGX1 only, no FLC**, legacy `/dev/isgx` 2.11; EPC ≈ 94 MiB shared |
 | SDK / PSW | `/opt/intel/sgxsdk`, PSW 2.25 (`aesmd` active); gcc 11.4, no clang |
-| Launch | **debug only** (`SGX_MODE=HW SGX_DEBUG=1`); production launch impossible without Intel LE whitelist |
+| Launch | **debug only** on this box: a non-debug launch needs a launch token from Intel's Launch Enclave (non-FLC), issued only for Intel-whitelisted MRSIGNERs — measured: `RELEASE=1` enclave launches with neither debug=0 (0x4004) nor debug=1 (0x2004). Building `RELEASE=1` works (all gates pass). |
 | Attestation | **none** (EPID retired 2025-04; DCAP needs FLC) |
 | Gramine | 1.8 installed, **cannot run** (needs `/dev/sgx_enclave`) |
 | Rust | `~/.cargo` 1.92 stable (1.81/1.85/1.88 also); target x86_64-unknown-linux-gnu only |

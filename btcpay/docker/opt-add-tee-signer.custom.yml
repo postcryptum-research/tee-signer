@@ -1,0 +1,33 @@
+# btcpayserver-docker fragment: tee-signer sidecar + the plugin loaded from a bind mount (dev stack).
+# Enable with BTCPAYGEN_ADDITIONAL_FRAGMENTS=opt-add-tee-signer.custom (file copied into
+# docker-compose-generator/docker-fragments/). Nothing here publishes a port on the host.
+services:
+  tee-signer:
+    image: tee-signer/signerd:dev
+    restart: unless-stopped
+    expose:
+      - "7390"
+    # dev stack only: the owner tool reaches the sidecar through an SSH tunnel to the host's loopback
+    ports:
+      - "127.0.0.1:7390:7390"
+    devices:
+      - "/dev/isgx:/dev/isgx"
+    environment:
+      SIGNERD_BITCOIND_RPC: http://bitcoind:43782
+      SIGNERD_BITCOIND_COOKIE: /bitcoin/${NBITCOIN_NETWORK:-regtest}/.cookie
+      SIGNERD_HEADERS_INTERVAL: "20"
+      SIGNERD_ENCLAVE_DEBUG: "true"
+    volumes:
+      - "tee_signer_datadir:/var/lib/signerd"
+      - "bitcoin_datadir:/bitcoin:ro"
+      - "/var/run/aesmd:/var/run/aesmd"
+  btcpayserver:
+    # the built DLL is staged here; `stack.sh install-plugin` copies it into the plugins volume
+    # (release images of BTCPay ignore DEBUG_PLUGINS)
+    volumes:
+      - "${TEE_PLUGIN_DIR}:/tee-plugin:ro"
+volumes:
+  tee_signer_datadir:
+required:
+  - "bitcoin"
+  - "btcpayserver"

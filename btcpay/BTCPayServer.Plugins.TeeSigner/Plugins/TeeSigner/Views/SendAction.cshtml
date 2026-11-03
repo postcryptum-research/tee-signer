@@ -1,0 +1,4 @@
+@model BTCPayServer.Plugins.Wallets.Views.ViewModels.WalletSendModel
+<div class="alert alert-info mt-3">
+  This wallet can be spent through the <strong>TEE signer</strong>: <a asp-controller="UITeeSigner" asp-action="Send" asp-route-storeId="@ViewContext.RouteData.Values["walletId"]?.ToString()?.Split('-')[0]">send through the enclave</a> (policy-bound; the wallet stays cold here).
+</div>
