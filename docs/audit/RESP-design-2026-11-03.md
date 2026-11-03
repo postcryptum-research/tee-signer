@@ -55,3 +55,36 @@ Start the branch. I rule IMPL-PASS firsthand at the pinned ref/hashes per module
 outflow; classifier fails toward loosening) and `DESIGN.md §8` (objdump no-cpuid assert;
 reproducible build), and the owner's decisions D3/D5 are folded in the same commit. Impl starts on
 branch `r1-signer-core`.
+
+---
+
+# Supplement (auditor's text, verbatim) — D2–D5, 2026-11-03
+
+Supplement to RESP-design (D2–D5). Repo noted — github.com/77ph/BTCPayTEE @4fb7512d (pin 7fed964); I'll bind future IMPL rulings to commits, not hashes.
+
+**D2 → R1 stands, factual item now CLOSED (not open).** Owner declines the Intel-LE-key question as out-of-scope for a single-user SMB TEE — fine, and it changes nothing: R1 was already ruled on the basis that NO Intel-whitelisted key is assumed and T1 runs debug by hardware necessity. The T1 label (THREAT-MODEL §3/§5) stands as written. Reclassify the "open factual item" as "closed by owner, out of scope" — nothing to verify with sgx-dev.
+
+**D3 → R9/R14 re-ruled against the widened position: PASS (widened), with a refined line and an honest label.** Rule now so you can fold it in; edit DESIGN §7 + THREAT-MODEL §5 and re-pin those two — this verdict applies to that text; the rest of RESP-design stands unchanged (this is a supplement, not a re-open).
+
+Refined R9 line (replaces "software owner key refused outside a test build"):
+> A **plaintext** software owner key is refused outside a test-only build. An **encrypted off-box keyfile** meeting KEY_POLICY rule-5 — scrypt N ≥ 2^18 + AEAD at rest, decrypted ONLY off the box, and **never present on the BTCPay box** — is the permitted FLOOR. A hardware backend (YubiKey PIV / Linux-or-Windows TPM 2.0 / Secure Enclave / TROPIC01) is preferred.
+
+Why this is sound (the load-bearing argument, not a rubber-stamp): the owner key is **not a theft-capable key on its own** — a thief with it can only submit a *loosening* (timelocked + cancellable by the cold recovery key) or a *tightening* (DoS). So its compromise is bounded by the SAME timelock + recovery-key backstop as V5, whichever backend holds it. The enclave verifies P-256 regardless of backend and holds only the public key — design-soundness unchanged.
+
+The honest label D3 MUST carry (the marginal weakening vs hardware): a **file-based owner key is extractable on a compromised owner signing machine**, so a persistent compromise of that machine can forge FUTURE owner signatures silently; a hardware backend with touch requires per-use presence. This compounds with R14: with a file key, a compromise of the owner's machine breaks BOTH WYSIWYS AND key secrecy at once; a hardware+touch backend splits them (the key stays safe even if the display lies — though a lying display can still get a touch-approval for a bad mandate, so WYSIWYS still rests on that machine either way). Net: encrypted-off-box-keyfile = acceptable SMB floor, labeled weaker than hardware, backstopped by the cold recovery key + timelock. The plaintext/encrypted line is exactly the right cut — hold it.
+
+Condition unchanged and important: the recovery key stays SEPARATE and cold (rule-5), distinct from the owner key — it is the backstop that makes a file-based owner key tolerable. Do not let D3 blur owner-key and recovery-key custody onto the same medium/machine; if both the owner keyfile and the recovery keyfile sit on the same off-box machine, the timelock backstop collapses (one compromise gets both) — THREAT-MODEL §5 should state they must be separately held.
+
+**D4 → R11 stands** (plugin, no fork, as written; owner delegated to dev).
+
+**D5 → header feed = shared trust-bridge bitcoind -signet, read-only getblockheader, OK — because the enclave does not trust the feed.** The block clock verifies PoW itself from the pinned checkpoint (R3); a malicious or lagging feed is DoS-only (a fork with less work is rejected, withholding stalls windows). So sharing the bridge's bitcoind as a read-only header source is fine. ⚠️ Co-tenancy caveat (my SGX-umbrella isolation rule): keep it strictly read-only (getblockheader family only, as owner-approved), never touch the bridge's datadir/wallet/ports/state, and treat a feed outage as the signer's own DoS (don't let it couple the two projects). Put that read-only+no-shared-state note in deploy/README.md alongside the RPC endpoint. Signet's cheap PoW ⇒ the weak-clock label (R3 condition b) applies on this dev host — state it at /v1/status.
+
+Net: DESIGN-PASS CONDITIONAL stands; R9/R14 widened per D3 above; R1 factual item closed; R11 unchanged; D5 feed approved with the read-only/no-shared-state co-tenancy caveat. Fold D3 into §7/§5, re-pin those two files, and carry the refined R9 line + the file-key weakening label verbatim. Start the branch.
+
+---
+
+**Dev's disposition of the supplement (2026-11-03):** refined R9 line and the file-key label carried
+verbatim into `DESIGN.md §7`; separate custody of owner and recovery keys added to
+`THREAT-MODEL.md §5`; co-tenancy caveat in `deploy/README.md`; D2 reclassified closed in
+`DECISIONS.md`; C-D3b (separate custody) and C-D5b (feed outage = own DoS, no coupling) added to
+`CONDITIONS.md`. Re-pinned by the commit that carries this text.
