@@ -67,8 +67,17 @@ C-R1-2, C-R1-3, C-R2-1 (`CONDITIONS.md`).
   node over the read-only RPC subset; from the laptop through an SSH tunnel: `owner-cli init`
   (keys in the real enclave, card verified), `recovery-verify` offline, `policy-build` with the
   checkpoint from mempool.space at height 329261, `policy-sign` nonce 0 installed; the enclave's
-  chain view then followed the tip (329267) through the feed. ⏳ The first mandate-bound signature
-  of a real signet transaction waits on funds reaching the wallet's first address.
+  chain view then followed the tip (329267) through the feed.
+- **First mandate-bound signature of a real signet transaction (2026-11-03):** the owner funded
+  the wallet's first address (two faucet outputs, 11 000 sat). Through the tunnel,  (previous transaction from mempool.space, origin hints for the input and the change)
+  →  →  →  + persist +  in the enclave →  →
+  . First a refusal: fee 6 000 sat >  5 000 ⇒ , nothing charged.
+  Then the accepted one: 5 000 sat to an address the enclave had no hint for (counted as
+  **unlisted**), fee 1 000, change 4 000 to the hinted change key:
+  txid , accepted by
+  mempool.space; receipt seq 1 under session , signed by the identity key; status after:
+   (= 5 000 unlisted + 1 000 fee, the fee inside the net outflow as ruled),
+  , , 1.
 
 ## 5. Deviations and decisions to rule (supplement)
 
