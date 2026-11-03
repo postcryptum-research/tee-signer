@@ -1,0 +1,15 @@
+# Bounded container logs for every service of the dev stack (docker's json-file driver is
+# unbounded by default; a signet IBD alone writes tens of MB of UpdateTip lines). Applied by
+# stack.sh as a second compose file; 20 MB × 3 files per service.
+x-log: &log
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "3"
+services:
+  bitcoind: *log
+  nbxplorer: *log
+  postgres: *log
+  btcpayserver: *log
+  tee-signer: *log

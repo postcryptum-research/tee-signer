@@ -21,6 +21,9 @@ export BTCPAY_HOST=${BTCPAY_HOST:-127.0.0.1}
 export BTCPAY_PROTOCOL=http
 export TEE_PLUGIN_DIR=${TEE_PLUGIN_DIR:-$ROOT/plugin}
 COMPOSE="$ROOT/btcpayserver-docker/Generated/docker-compose.generated.yml"
+# bounded container logs for every service (see logging.override.yml)
+LOGOVR="$HERE/logging.override.yml"
+COMPOSE_FILES=(-f "$COMPOSE" -f "$LOGOVR")
 cmd=${1:-help}
 case "$cmd" in
   gen)
@@ -42,10 +45,10 @@ case "$cmd" in
     grep -q "127.0.0.1:${NOREVERSEPROXY_HTTP_PORT}:49392" Generated/docker-compose.generated.yml || { echo "FATAL: port binding not localhost"; exit 1; }
     grep -n "ports:" -A 2 Generated/docker-compose.generated.yml | head -20
     echo "generated: $COMPOSE";;
-  up)   cd "$ROOT/btcpayserver-docker" && docker compose -f "$COMPOSE" -p tee-btcpay up -d "${@:2}";;
-  down) cd "$ROOT/btcpayserver-docker" && docker compose -f "$COMPOSE" -p tee-btcpay down;;
-  ps)   docker compose -f "$COMPOSE" -p tee-btcpay ps;;
-  logs) shift; docker compose -f "$COMPOSE" -p tee-btcpay logs --tail=100 "$@";;
+  up)   cd "$ROOT/btcpayserver-docker" && docker compose "${COMPOSE_FILES[@]}" -p tee-btcpay up -d "${@:2}";;
+  down) cd "$ROOT/btcpayserver-docker" && docker compose "${COMPOSE_FILES[@]}" -p tee-btcpay down;;
+  ps)   docker compose "${COMPOSE_FILES[@]}" -p tee-btcpay ps;;
+  logs) shift; docker compose "${COMPOSE_FILES[@]}" -p tee-btcpay logs --tail=100 "$@";;
   install-plugin)
     docker exec generated_btcpayserver_1 sh -c "mkdir -p /root/.btcpayserver/Plugins/BTCPayServer.Plugins.TeeSigner"
     docker cp "$TEE_PLUGIN_DIR/BTCPayServer.Plugins.TeeSigner.dll" generated_btcpayserver_1:/root/.btcpayserver/Plugins/BTCPayServer.Plugins.TeeSigner/BTCPayServer.Plugins.TeeSigner.dll
