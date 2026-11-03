@@ -104,9 +104,121 @@ fn keygen(path: &Path, role: &str) -> Result<[u8; 65]> {
     Ok(out)
 }
 
+/// Where a P-256 owner/recovery/witness key lives. The enclave never learns which: the message
+/// digest and the 64-byte signature are the same either way (REQ-r6 §2).
+enum Signer {
+    /// Encrypted keyfile (scrypt + AES-256-GCM), decrypted into memory for one command.
+    File(p256::ecdsa::SigningKey),
+    /// TPM 2.0 persistent key: the scalar never exists outside the TPM; `sign_digest` runs inside it.
+    Tpm(hw_signer::tpm::TpmSigner),
+}
+
 struct OpenKey {
-    sk: p256::ecdsa::SigningKey,
+    signer: Signer,
     pk: [u8; 65],
+}
+
+impl OpenKey {
+    /// ECDSA over a 32-byte digest, low-s, `r ‖ s`.
+    fn sign_digest(&self, d: &[u8; 32]) -> Result<[u8; 64]> {
+        let mut out = [0u8; 64];
+        match &self.signer {
+            Signer::File(sk) => {
+                let sig: p256::ecdsa::Signature = sk.sign_prehash(d)?;
+                let sig = sig.normalize_s().unwrap_or(sig);
+                out.copy_from_slice(&sig.to_bytes());
+            }
+            Signer::Tpm(t) => {
+                use hw_signer::HardwareSigner;
+                let sig = hw_signer::normalize_low_s(t.sign_digest(d).map_err(|e| anyhow!("TPM sign: {e}"))?);
+                out[..32].copy_from_slice(&sig.r);
+                out[32..].copy_from_slice(&sig.s);
+            }
+        }
+        Ok(out)
+    }
+    /// The raw scalar — only a keyfile has one (the recovery key's ECDH); a hardware key refuses.
+    fn scalar(&self) -> Result<zeroize::Zeroizing<[u8; 32]>> {
+        match &self.signer {
+            Signer::File(sk) => {
+                let mut b = zeroize::Zeroizing::new([0u8; 32]);
+                b.copy_from_slice(&sk.to_bytes());
+                Ok(b)
+            }
+            Signer::Tpm(_) => bail!("this key lives in the TPM; the recovery key must be an (offline) keyfile because opening the recovery blob needs ECDH"),
+        }
+    }
+}
+
+/// `tpm:0x81000100` → the persistent handle; anything else is a keyfile path.
+fn tpm_handle(locator: &str) -> Option<Result<u32>> {
+    let h = locator.strip_prefix("tpm:")?;
+    Some(u32::from_str_radix(h.trim_start_matches("0x"), 16).map_err(|_| anyhow!("TPM handle: hex like 0x81000100")))
+}
+
+/// Open a key by locator: a keyfile path, or `tpm:<handle>` (the authValue is the passphrase
+/// typed at use, as with a keyfile; it is never stored).
+fn open_locator(locator: &str) -> Result<OpenKey> {
+    if let Some(h) = tpm_handle(locator) {
+        let handle = h?;
+        let pass = passphrase(&format!("authValue for the TPM key at {locator}"), false)?;
+        let t = hw_signer::tpm::TpmSigner::open_persistent_protected(handle, pass.as_bytes()).map_err(|e| anyhow!("TPM open {locator}: {e}"))?;
+        let pk = tpm_pk(&t)?;
+        return Ok(OpenKey { signer: Signer::Tpm(t), pk });
+    }
+    open_key(Path::new(locator))
+}
+
+fn tpm_pk(t: &hw_signer::tpm::TpmSigner) -> Result<[u8; 65]> {
+    use hw_signer::HardwareSigner;
+    let p = t.public_key().map_err(|e| anyhow!("TPM public key: {e}"))?;
+    let mut pk = [0u8; 65];
+    pk[0] = 4;
+    pk[1..33].copy_from_slice(&p.x);
+    pk[33..].copy_from_slice(&p.y);
+    Ok(pk)
+}
+
+/// Is `handle` already a persistent object in this TPM? (C-R6-2: `keygen` never evicts another
+/// project's key — the same co-tenancy rule as on the SGX nodes.)
+fn tpm_handle_in_use(handle: u32) -> Result<bool> {
+    use std::str::FromStr as _;
+    use tss_esapi::constants::CapabilityType;
+    use tss_esapi::structures::CapabilityData;
+    use tss_esapi::tcti_ldr::TctiNameConf;
+    let tcti = TctiNameConf::from_environment_variable()
+        .or_else(|_| TctiNameConf::from_str("device:/dev/tpmrm0"))
+        .map_err(|e| anyhow!("TPM TCTI: {e}"))?;
+    let mut ctx = tss_esapi::Context::new(tcti).map_err(|e| anyhow!("TPM context: {e}"))?;
+    let mut from = 0x8100_0000u32;
+    loop {
+        let (data, more) = ctx.get_capability(CapabilityType::Handles, from, 64).map_err(|e| anyhow!("TPM capability: {e}"))?;
+        let CapabilityData::Handles(list) = data else { return Ok(false) };
+        let handles: Vec<u32> = list.into_inner().into_iter().map(u32::from).collect();
+        if handles.contains(&handle) {
+            return Ok(true);
+        }
+        match (more, handles.last()) {
+            (true, Some(last)) if *last < 0x81FF_FFFF => from = last.saturating_add(1),
+            _ => return Ok(false),
+        }
+    }
+}
+
+/// Create a P-256 key inside the TPM under the SRK, protected by an authValue, and persist it.
+/// Refuses an occupied handle before anything is created (C-R6-2).
+fn keygen_tpm(handle: u32, role: &str) -> Result<[u8; 65]> {
+    if !(0x8100_0000..=0x81FF_FFFF).contains(&handle) {
+        bail!("TPM handle 0x{handle:08x} is not in the persistent range 0x81000000–0x81FFFFFF");
+    }
+    if tpm_handle_in_use(handle)? {
+        bail!("REFUSED: TPM persistent handle 0x{handle:08x} is already in use by another key; never evicted — pick a free one with --handle (tpm2_getcap handles-persistent)");
+    }
+    let pass = passphrase(&format!("authValue for the {role} key in the TPM (typed at every use, never stored)"), true)?;
+    let mut t = hw_signer::tpm::TpmSigner::create_protected_under(hw_signer::tpm::DEFAULT_PARENT, pass.as_bytes())
+        .map_err(|e| anyhow!("TPM create: {e}"))?;
+    t.persist(handle).map_err(|e| anyhow!("TPM persist at 0x{handle:08x}: {e} (handle in use? pick another with --handle)"))?;
+    tpm_pk(&t)
 }
 
 impl Drop for OpenKey {
@@ -136,7 +248,7 @@ fn open_key(path: &Path) -> Result<OpenKey> {
     if hex::encode(pk) != kf.pubkey_hex {
         bail!("keyfile public key does not match its secret");
     }
-    Ok(OpenKey { sk, pk })
+    Ok(OpenKey { signer: Signer::File(sk), pk })
 }
 
 fn pubkey_of(path: &Path) -> Result<[u8; 65]> {
@@ -147,9 +259,7 @@ fn pubkey_of(path: &Path) -> Result<[u8; 65]> {
 
 fn sign_message(key: &OpenKey, msg: &mut Message) -> Result<()> {
     let d = msg.digest();
-    let sig: p256::ecdsa::Signature = key.sk.sign_prehash(&d)?;
-    let mut s = [0u8; 64];
-    s.copy_from_slice(&sig.to_bytes());
+    let s = key.sign_digest(&d)?;
     match msg {
         Message::PolicyUpdate { sig, .. }
         | Message::Cancel { sig, .. }
@@ -608,15 +718,22 @@ struct Cli {
 enum Cmd {
     /// Generate an encrypted keyfile (owner, recovery or witness role).
     Keygen {
+        /// Keyfile path (`--backend file`); ignored for the TPM.
         #[arg(long)]
-        out: PathBuf,
+        out: Option<PathBuf>,
         #[arg(long, default_value = "owner")]
         role: String,
+        /// `file` (encrypted keyfile) or `tpm` (P-256 key created inside the TPM 2.0 and persisted; REQ-r6 §2).
+        #[arg(long, default_value = "file")]
+        backend: String,
+        /// TPM persistent handle for `--backend tpm` (0x81000100 is this project's; other handles belong to other keys).
+        #[arg(long, default_value = "0x81000100")]
+        handle: String,
     },
-    /// Print a keyfile's public key.
+    /// Print a key's public key (keyfile path or `tpm:<handle>`).
     Pubkey {
         #[arg(long)]
-        key: PathBuf,
+        key: String,
     },
     /// Initialise the enclave wallet: keys generated inside, owner and recovery bound; stores the identity card and the recovery blob.
     Init {
@@ -667,7 +784,7 @@ enum Cmd {
         #[arg(long)]
         json: PathBuf,
         #[arg(long)]
-        key: PathBuf,
+        key: String,
         /// override the nonce (default: installed + 1, or 0 when not installed)
         #[arg(long)]
         nonce: Option<u64>,
@@ -678,21 +795,21 @@ enum Cmd {
     /// Owner / recovery messages.
     Cancel {
         #[arg(long)]
-        key: PathBuf,
+        key: String,
     },
     Unfreeze {
         #[arg(long)]
-        key: PathBuf,
+        key: String,
     },
     Rearm {
         #[arg(long)]
-        key: PathBuf,
+        key: String,
         #[arg(long)]
         seq: u64,
     },
     RotateOwner {
         #[arg(long)]
-        key: PathBuf,
+        key: String,
         #[arg(long)]
         new_owner_pk: String,
     },
@@ -802,7 +919,7 @@ enum Cmd {
     /// Issue a freshness-witness token (the monitor's job; here for tests and manual operation).
     WitnessToken {
         #[arg(long)]
-        key: PathBuf,
+        key: String,
         #[arg(long)]
         tip_hash: String,
         #[arg(long)]
@@ -839,12 +956,28 @@ fn submit_message(sd: &Signerd, msg: &Message) -> Result<()> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match &cli.cmd {
-        Cmd::Keygen { out, role } => {
+        Cmd::Keygen { out, role, backend, handle } => {
+            if backend == "tpm" {
+                let h = tpm_handle(&format!("tpm:{handle}")).unwrap()?;
+                let pk = keygen_tpm(h, role)?;
+                println!("TPM key created and persisted at 0x{h:08x}; locator: tpm:0x{h:08x}");
+                println!("{}", hex::encode(pk));
+                return Ok(());
+            }
+            let out = out.clone().ok_or_else(|| anyhow!("--out is required for --backend file"))?;
+            let out = &out;
             let pk = keygen(out, role)?;
             println!("{} key written to {} (scrypt N=2^18 + AES-256-GCM; keep it OFF the BTCPay box)", role, out.display());
             println!("pubkey: {}", hex::encode(pk));
         }
-        Cmd::Pubkey { key } => println!("{}", hex::encode(pubkey_of(key)?)),
+        Cmd::Pubkey { key } => {
+            if let Some(h) = tpm_handle(key) {
+                let t = hw_signer::tpm::TpmSigner::open_persistent(h?).map_err(|e| anyhow!("TPM open: {e}"))?;
+                println!("{}", hex::encode(tpm_pk(&t)?));
+            } else {
+                println!("{}", hex::encode(pubkey_of(Path::new(key))?));
+            }
+        }
         Cmd::Init { network, owner_pk, recovery_pk, out, expect_mrenclave, signing_key_label, accept, pccs } => {
             let sd = client(&cli)?;
             if owner_pk == recovery_pk {
@@ -1008,7 +1141,7 @@ fn main() -> Result<()> {
                 println!("  {k:<28} {v}");
             }
             // WYSIWYS: what is hashed is exactly the canonical bytes shown above (hash line)
-            let okey = open_key(key)?;
+            let okey = open_locator(key)?;
             println!("signer (owner key): {}", hex::encode(okey.pk));
             let mut msg = Message::PolicyUpdate { enclave_id, nonce, mandate: m.encode(), sig: [0; 64] };
             sign_message(&okey, &mut msg)?;
@@ -1025,28 +1158,28 @@ fn main() -> Result<()> {
         }
         Cmd::Cancel { key } => {
             let sd = client(&cli)?;
-            let okey = open_key(key)?;
+            let okey = open_locator(key)?;
             let mut msg = Message::Cancel { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, sig: [0; 64] };
             sign_message(&okey, &mut msg)?;
             submit_message(&sd, &msg)?;
         }
         Cmd::Unfreeze { key } => {
             let sd = client(&cli)?;
-            let okey = open_key(key)?;
+            let okey = open_locator(key)?;
             let mut msg = Message::Unfreeze { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, sig: [0; 64] };
             sign_message(&okey, &mut msg)?;
             submit_message(&sd, &msg)?;
         }
         Cmd::Rearm { key, seq } => {
             let sd = client(&cli)?;
-            let okey = open_key(key)?;
+            let okey = open_locator(key)?;
             let mut msg = Message::Rearm { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, seq: *seq, sig: [0; 64] };
             sign_message(&okey, &mut msg)?;
             submit_message(&sd, &msg)?;
         }
         Cmd::RotateOwner { key, new_owner_pk } => {
             let sd = client(&cli)?;
-            let okey = open_key(key)?;
+            let okey = open_locator(key)?;
             let mut msg = Message::RotateOwner { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, new_owner_pk: pk65(new_owner_pk)?, sig: [0; 64] };
             sign_message(&okey, &mut msg)?;
             submit_message(&sd, &msg)?;
@@ -1075,10 +1208,9 @@ fn main() -> Result<()> {
             let rkey = open_key(recovery_key)?;
             let fp = <[u8; 4]>::try_from(hex::decode(&w.fingerprint)?.as_slice()).map_err(|_| anyhow!("fingerprint"))?;
             let xpub = Xpub::from_str(&w.xpub)?.encode();
-            let mut sk_bytes = [0u8; 32];
-            sk_bytes.copy_from_slice(&rkey.sk.to_bytes());
+            let sk_bytes = rkey.scalar()?;
             let entropy = recovery_decrypt(&sk_bytes, &fp, &xpub, &hex::decode(&w.recovery_blob_hex)?)?;
-            sk_bytes.zeroize();
+            drop(sk_bytes);
             let mnemonic = signer_core::bip39::mnemonic(&entropy);
             let seed = signer_core::bip39::seed(&mnemonic);
             let net = network_of(&w.network)?;
@@ -1116,7 +1248,7 @@ fn main() -> Result<()> {
         Cmd::Broadcast { esplora, tx_hex } => println!("{}", psbt::broadcast(esplora, tx_hex)?),
         Cmd::WitnessToken { key, tip_hash, tip_height, last_seen_seq, issued, submit } => {
             let sd = client(&cli)?;
-            let wkey = open_key(key)?;
+            let wkey = open_locator(key)?;
             let mut msg = Message::WitnessToken {
                 enclave_id: sd.enclave_id()?,
                 tip_hash: hash_of(tip_hash)?,
@@ -1172,6 +1304,10 @@ fn recovery_decrypt(recovery_sk: &[u8; 32], fingerprint: &[u8; 4], xpub: &[u8; 7
 /// agree, so the root is pinned twice and supplied by neither the host nor the network (C-R5-2).
 const INTEL_SGX_ROOT_CA_SHA256: &str = "44a0196b2b99f889b8e149e95b807a350e7424964399e885a7cbb8ccfab674d3";
 const INTEL_SGX_ROOT_CA_PEM: &str = include_str!("intel_sgx_root_ca.pem");
+/// The ceremony enclave-signing key's MRSIGNER, pinned in the repo (`enclave/ceremony/mrsigner.txt`,
+/// REQ-r6 §3) and compiled in: the default expectation at step 4 when neither the record nor the
+/// command line pins one, so a fused `init` refuses any other signer unless told so explicitly.
+const CEREMONY_MRSIGNER: &str = include_str!("../../../enclave/ceremony/mrsigner.txt");
 
 fn pem_der(pem: &str) -> Result<Vec<u8>> {
     use base64::Engine;
@@ -1293,11 +1429,18 @@ fn attest_record(
 
     // 4. MRSIGNER / ProdID / SVN
     let q_ms = hex::encode(body.mr_signer);
-    match expect_mrsigner.as_deref().or(w.mrsigner.as_deref()) {
-        Some(ms) if ms.to_lowercase() == q_ms => {}
-        Some(ms) => bail!("step 4 refused: MRSIGNER {q_ms}, expected {ms}"),
-        None if pin => println!("step 4: no MRSIGNER pinned yet; pinning {q_ms} ({})", signing_key_label.clone().unwrap_or_else(|| "UNLABELED".into())),
-        None => bail!("step 4 refused: no MRSIGNER pinned — pass --expect-mrsigner, or --pin on the first attest"),
+    let ceremony = CEREMONY_MRSIGNER.trim().to_lowercase();
+    let expected = expect_mrsigner.as_deref().map(|s| s.to_lowercase()).or_else(|| w.mrsigner.clone()).unwrap_or_else(|| ceremony.clone());
+    if expected != q_ms {
+        bail!(
+            "step 4 refused: MRSIGNER {q_ms}, expected {expected}{}",
+            if expected == ceremony { " (the pinned ceremony key; a dev-key enclave must be named explicitly with --expect-mrsigner and labeled)" } else { "" }
+        );
+    }
+    if q_ms == ceremony {
+        println!("step 4: MRSIGNER is the pinned ceremony key");
+    } else if w.mrsigner.is_none() {
+        println!("step 4: MRSIGNER {q_ms} named explicitly ({})", signing_key_label.clone().unwrap_or_else(|| "UNLABELED".into()));
     }
     if let Some(p) = w.isv_prod_id {
         if p != body.isv_prod_id { bail!("step 4 refused: ISV ProdID {} != pinned {p}", body.isv_prod_id) }
@@ -1305,7 +1448,7 @@ fn attest_record(
     if let Some(v) = w.isv_svn {
         if body.isv_svn < v { bail!("step 4 refused: ISV SVN {} below pinned {v}", body.isv_svn) }
     }
-    println!("step 4 ok: MRSIGNER {q_ms} ({}), ProdID {}, SVN {}", w.signing_key_label.clone().or(signing_key_label.clone()).unwrap_or_else(|| "label pending".into()), body.isv_prod_id, body.isv_svn);
+    println!("step 4 ok: MRSIGNER {q_ms} ({}), ProdID {}, SVN {}", signing_key_label.clone().or(w.signing_key_label.clone()).unwrap_or_else(|| "label pending".into()), body.isv_prod_id, body.isv_svn);
 
     // 5. the card is the one INIT signed, under the identity key, and says T2
     let rec_card = hex::decode(&w.card_hex)?;
