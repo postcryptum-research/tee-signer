@@ -1448,7 +1448,7 @@ fn attest_record(
     if let Some(v) = w.isv_svn {
         if body.isv_svn < v { bail!("step 4 refused: ISV SVN {} below pinned {v}", body.isv_svn) }
     }
-    println!("step 4 ok: MRSIGNER {q_ms} ({}), ProdID {}, SVN {}", w.signing_key_label.clone().or(signing_key_label.clone()).unwrap_or_else(|| "label pending".into()), body.isv_prod_id, body.isv_svn);
+    println!("step 4 ok: MRSIGNER {q_ms} ({}), ProdID {}, SVN {}", signing_key_label.clone().or(w.signing_key_label.clone()).unwrap_or_else(|| "label pending".into()), body.isv_prod_id, body.isv_svn);
 
     // 5. the card is the one INIT signed, under the identity key, and says T2
     let rec_card = hex::decode(&w.card_hex)?;
