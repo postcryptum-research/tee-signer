@@ -1304,6 +1304,10 @@ fn recovery_decrypt(recovery_sk: &[u8; 32], fingerprint: &[u8; 4], xpub: &[u8; 7
 /// agree, so the root is pinned twice and supplied by neither the host nor the network (C-R5-2).
 const INTEL_SGX_ROOT_CA_SHA256: &str = "44a0196b2b99f889b8e149e95b807a350e7424964399e885a7cbb8ccfab674d3";
 const INTEL_SGX_ROOT_CA_PEM: &str = include_str!("intel_sgx_root_ca.pem");
+/// The ceremony enclave-signing key's MRSIGNER, pinned in the repo (`enclave/ceremony/mrsigner.txt`,
+/// REQ-r6 §3) and compiled in: the default expectation at step 4 when neither the record nor the
+/// command line pins one, so a fused `init` refuses any other signer unless told so explicitly.
+const CEREMONY_MRSIGNER: &str = include_str!("../../../enclave/ceremony/mrsigner.txt");
 
 fn pem_der(pem: &str) -> Result<Vec<u8>> {
     use base64::Engine;
@@ -1425,11 +1429,18 @@ fn attest_record(
 
     // 4. MRSIGNER / ProdID / SVN
     let q_ms = hex::encode(body.mr_signer);
-    match expect_mrsigner.as_deref().or(w.mrsigner.as_deref()) {
-        Some(ms) if ms.to_lowercase() == q_ms => {}
-        Some(ms) => bail!("step 4 refused: MRSIGNER {q_ms}, expected {ms}"),
-        None if pin => println!("step 4: no MRSIGNER pinned yet; pinning {q_ms} ({})", signing_key_label.clone().unwrap_or_else(|| "UNLABELED".into())),
-        None => bail!("step 4 refused: no MRSIGNER pinned — pass --expect-mrsigner, or --pin on the first attest"),
+    let ceremony = CEREMONY_MRSIGNER.trim().to_lowercase();
+    let expected = expect_mrsigner.as_deref().map(|s| s.to_lowercase()).or_else(|| w.mrsigner.clone()).unwrap_or_else(|| ceremony.clone());
+    if expected != q_ms {
+        bail!(
+            "step 4 refused: MRSIGNER {q_ms}, expected {expected}{}",
+            if expected == ceremony { " (the pinned ceremony key; a dev-key enclave must be named explicitly with --expect-mrsigner and labeled)" } else { "" }
+        );
+    }
+    if q_ms == ceremony {
+        println!("step 4: MRSIGNER is the pinned ceremony key");
+    } else if w.mrsigner.is_none() {
+        println!("step 4: MRSIGNER {q_ms} named explicitly ({})", signing_key_label.clone().unwrap_or_else(|| "UNLABELED".into()));
     }
     if let Some(p) = w.isv_prod_id {
         if p != body.isv_prod_id { bail!("step 4 refused: ISV ProdID {} != pinned {p}", body.isv_prod_id) }

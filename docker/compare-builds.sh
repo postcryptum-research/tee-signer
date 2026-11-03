@@ -3,7 +3,7 @@
 # signing date and the signature material (docs/ENCLAVE.md §7, C-R1-3 / C-R2-3).
 set -euo pipefail
 A=$1; B=$2
-strip() { grep -vE 'header.date|modulus|signature|q1|q2|exponent' "$1/sigstruct.dump" | sed -E 's/^\s+//' ; }
+strip() { grep -vE 'header.date|modulus|signature|q1|q2|exponent|mrsigner' "$1/sigstruct.dump" | sed -E 's/^\s+//' ; }
 if diff <(strip "$A") <(strip "$B") >/dev/null; then
   echo "REPRODUCIBLE: SIGSTRUCT (minus date/signature) identical: MRENCLAVE $(grep -A2 'enclave_hash.m' "$A/sigstruct.dump" | tail -2 | tr -d ' \n' | sed 's/0x//g')"
 else

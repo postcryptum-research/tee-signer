@@ -196,7 +196,25 @@ gates: $(Enclave_Name)
 	@echo "GATE 6: LVI mitigation in the artifact (MITIGATION-CVE-2020-0551=$(MITIGATION-CVE-2020-0551))"
 	@n=$$(objdump -d $(Enclave_Name) | awk '$$NF=="lfence"' | wc -l); echo "  lfence instructions: $$n (minimum $(LFENCE_MIN))"; echo "$$n" > build/lfence-count.txt; \
 	if [ "$$n" -lt "$(LFENCE_MIN)" ]; then echo "FATAL: mitigation requested but the artifact carries only $$n lfence"; exit 1; fi
+	@if [ -f "$(Signed_Enclave_Name)" ] && [ "$(CEREMONY)" = "1" ]; then \
+	    echo "GATE 7: MRSIGNER of $(Signed_Enclave_Name) is the pinned ceremony key (ceremony/mrsigner.txt)"; \
+	    $(SGX_ENCLAVE_SIGNER) dump -enclave $(Signed_Enclave_Name) -dumpfile build/sigstruct.dump >/dev/null 2>&1; \
+	    got=$$(grep -A2 'mrsigner->value' build/sigstruct.dump | tail -2 | tr -d ' \n' | sed 's/0x//g'); want=$$(tr -d ' \n' < ceremony/mrsigner.txt); \
+	    echo "  MRSIGNER $$got"; if [ "$$got" != "$$want" ]; then echo "FATAL: MRSIGNER $$got != pinned $$want"; exit 1; fi; \
+	fi
 	@echo "GATES: all passed"
 
 clean:
 	@rm -f .config_* $(Enclave_Name) $(Signed_Enclave_Name) $(Enclave_C_Objects) Enclave/Enclave_t.* App/Enclave_u.* $(Bridge_Lib) $(Enclave_Config_Gen)
+
+######## Two-step (ceremony) signing — REQ-r6 §3 ########
+# gendata on the build host, the operator signs offline, catsig here. The private key never
+# touches this machine; the public key is pinned in ceremony/ceremony_pub.pem.
+gendata: $(Enclave_Name) $(Enclave_Config_Gen)
+	@$(SGX_ENCLAVE_SIGNER) gendata -enclave $(Enclave_Name) -config $(Enclave_Config_Gen) -out build/enclave_hash.hex
+	@echo "GENDATA => build/enclave_hash.hex ($$(stat -c %s build/enclave_hash.hex) bytes): sign it on the operator machine"
+catsig: $(Enclave_Name) $(Enclave_Config_Gen)
+	@test -s build/signature.hex || { echo "FATAL: build/signature.hex missing — run scripts/ceremony-sign.sh on the operator machine"; exit 1; }
+	@$(SGX_ENCLAVE_SIGNER) catsig -enclave $(Enclave_Name) -config $(Enclave_Config_Gen) -key ceremony/ceremony_pub.pem -sig build/signature.hex -unsigned build/enclave_hash.hex -out $(Signed_Enclave_Name)
+	@echo "CATSIG => $(Signed_Enclave_Name) (ceremony key)"
+.PHONY: gendata catsig
