@@ -49,6 +49,7 @@ public class GreenfieldTeeSignerController : ControllerBase
         public string? SignerdUrl { get; set; }
         public string? Token { get; set; }
         public int MinConfirmations { get; set; } = 1;
+        public int FallbackFeeRateSatVb { get; set; } = 10;
     }
 
     [HttpPut("{storeId}/settings")]
@@ -57,7 +58,7 @@ public class GreenfieldTeeSignerController : ControllerBase
     {
         if (await _stores.FindStore(storeId) is null) return NotFound();
         if (string.IsNullOrWhiteSpace(body.SignerdUrl)) return UnprocessableEntity(new { error = "signerdUrl required" });
-        await _settings.Set(storeId, new TeeSignerSettings { SignerdUrl = body.SignerdUrl.Trim(), Token = (body.Token ?? "").Trim(), MinConfirmations = Math.Max(0, body.MinConfirmations) });
+        await _settings.Set(storeId, new TeeSignerSettings { SignerdUrl = body.SignerdUrl.Trim(), Token = (body.Token ?? "").Trim(), MinConfirmations = Math.Max(0, body.MinConfirmations), FallbackFeeRateSatVb = Math.Max(1, body.FallbackFeeRateSatVb) });
         return Ok(new { saved = true });
     }
 

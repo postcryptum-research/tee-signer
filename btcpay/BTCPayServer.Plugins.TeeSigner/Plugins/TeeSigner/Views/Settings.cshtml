@@ -14,6 +14,7 @@
   <div class="form-group"><label asp-for="SignerdUrl" class="form-label">signerd URL</label><input asp-for="SignerdUrl" class="form-control" /></div>
   <div class="form-group"><label asp-for="Token" class="form-label">Bearer token (rate-limit credential, not an authorisation)</label><input asp-for="Token" class="form-control" type="password" /></div>
   <div class="form-group"><label asp-for="MinConfirmations" class="form-label">Minimum confirmations for coins to spend</label><input asp-for="MinConfirmations" class="form-control" type="number" min="0" /></div>
+  <div class="form-group"><label asp-for="FallbackFeeRateSatVb" class="form-label">Fallback fee rate (sat/vB) when the node has no fee estimate</label><input asp-for="FallbackFeeRateSatVb" class="form-control" type="number" min="1" /><div class="form-text">Plumbing only: the enclave's mandate caps the fee that is actually signed.</div></div>
   <button type="submit" name="command" value="save" class="btn btn-primary">Save</button>
 </form>
 

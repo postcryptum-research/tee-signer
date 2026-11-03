@@ -57,6 +57,7 @@ public class UITeeSignerController : Controller
         public string SignerdUrl { get; set; } = "";
         public string Token { get; set; } = "";
         public int MinConfirmations { get; set; } = 1;
+        public int FallbackFeeRateSatVb { get; set; } = 10;
         public bool Configured { get; set; }
         public string? Error { get; set; }
         public TeeSignerClient.StatusJson? Status { get; set; }
@@ -78,6 +79,7 @@ public class UITeeSignerController : Controller
             vm.SignerdUrl = s.SignerdUrl;
             vm.Token = s.Token;
             vm.MinConfirmations = s.MinConfirmations;
+            vm.FallbackFeeRateSatVb = s.FallbackFeeRateSatVb;
         }
         var scheme = store.GetDerivationSchemeSettings(_handlers, CryptoCode);
         if (scheme is not null)
@@ -134,7 +136,8 @@ public class UITeeSignerController : Controller
             {
                 SignerdUrl = (vm.SignerdUrl ?? "").Trim(),
                 Token = (vm.Token ?? "").Trim(),
-                MinConfirmations = Math.Max(0, vm.MinConfirmations)
+                MinConfirmations = Math.Max(0, vm.MinConfirmations),
+                FallbackFeeRateSatVb = Math.Max(1, vm.FallbackFeeRateSatVb)
             });
             TempData.SetStatusSuccess("tee-signer settings saved");
         }

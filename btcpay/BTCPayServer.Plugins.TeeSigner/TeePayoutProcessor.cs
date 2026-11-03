@@ -113,7 +113,7 @@ public class TeePayoutProcessor : BaseAutomatedPayoutProcessor<OnChainAutomatedP
         var request = new CreatePSBTRequest
         {
             Destinations = destinations.Select(d => d.dest).ToList(),
-            FeePreference = new FeePreference { BlockTarget = Math.Max(blob.FeeTargetBlock, 1) },
+            FeePreference = new FeePreference { BlockTarget = Math.Max(blob.FeeTargetBlock, 1), FallbackFeeRate = new FeeRate((decimal)Math.Max(1, settings.FallbackFeeRateSatVb)) },
             ReserveChangeAddress = true,
             RBF = true,
             MinConfirmations = settings.MinConfirmations,

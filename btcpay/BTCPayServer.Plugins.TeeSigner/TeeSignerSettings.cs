@@ -10,6 +10,10 @@ public class TeeSignerSettings
     public string Token { get; set; } = "";
     /// <summary>Minimum confirmations for coins the payout processor may spend (0 for tests).</summary>
     public int MinConfirmations { get; set; } = 1;
+    /// <summary>Fee rate (sat/vB) NBXplorer uses when the node has no fee estimate (fresh node, signet).
+    /// Keeps a payout under the mandate's fee caps instead of BTCPay's 100 sat/vB static fallback.
+    /// Plumbing only: the enclave's mandate is the fee ceiling that is enforced.</summary>
+    public int FallbackFeeRateSatVb { get; set; } = 10;
 }
 
 public class TeeSignerSettingsStore

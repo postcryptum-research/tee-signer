@@ -39,7 +39,7 @@ HOT=$(docker exec generated_postgres_1 psql -U postgres -d btcpayserversignet -t
 echo "$HOT" | grep -qi '"IsHotWallet": *true' && fail "wallet flagged hot" || pass "store wallet is cold ($(echo "$HOT" | grep -o '"IsHotWallet":[^,}]*' || echo 'IsHotWallet absent = false'))"
 
 echo "== 3. plugin: signer settings + processor"
-curl -s -w " [%{http_code}]" "${H[@]}" -X PUT "$BT/plugins/teesigner/api/$STORE/settings" -d "{\"signerdUrl\":\"http://tee-signer:7390\",\"token\":\"$SIGNER_TOKEN\",\"minConfirmations\":0}" | sed 's/^/  settings: /'; echo
+curl -s -w " [%{http_code}]" "${H[@]}" -X PUT "$BT/plugins/teesigner/api/$STORE/settings" -d "{\"signerdUrl\":\"http://tee-signer:7390\",\"token\":\"$SIGNER_TOKEN\",\"minConfirmations\":0,\"fallbackFeeRateSatVb\":5}" | sed 's/^/  settings: /'; echo
 curl -s "${H[@]}" "$BT/plugins/teesigner/api/$STORE/status" > "$S/status.json"; python3 - "$S/status.json" <<'PY'
 import json,sys;d=json.load(open(sys.argv[1]));e=d.get('enclave') or {}
 print("  enclave:", {k:e.get(k) for k in ['tier','installed','best_height','seq','xpub']}, "xpubMatches:", d.get('xpubMatches'), "walletIsHot:", d.get('walletIsHot'), "error:", d.get('error'))
@@ -68,6 +68,7 @@ echo "$PROCS" | grep -q TeeSignerPayoutProcessor || fail "TEE processor not conf
 pass "S1 (UI seed path) follows from (a): HotwalletSafe.TryUnlock returns null for IsHotWallet=false (study §2b)"
 
 echo "== gate (d.1): a payout through the enclave"
+SEQ0=$(curl -s -H "Authorization: Bearer $SIGNER_TOKEN" http://127.0.0.1:7390/v1/status | j "d['seq']"); echo "  enclave seq before: $SEQ0"
 PP=$(curl -s "${H[@]}" -X POST "$BT/api/v1/stores/$STORE/pull-payments" -d '{"name":"e2e","amount":"0.00002","currency":"BTC","payoutMethods":["BTC-CHAIN"],"autoApproveClaims":true}' | j "d['id']")
 PO=$(curl -s "${H[@]}" -X POST "$BT/api/v1/pull-payments/$PP/payouts" -d "{\"destination\":\"$PAYEE\",\"amount\":\"0.00002\",\"payoutMethodId\":\"BTC-CHAIN\"}" | j "d['id']")
 echo "  payout $PO created (2000 sat to $PAYEE)"
@@ -75,10 +76,14 @@ for i in $(seq 1 24); do
   ST=$(curl -s "${H[@]}" "$BT/api/v1/stores/$STORE/payouts/$PO")
   STATE=$(echo "$ST" | j "d['state']"); [ "$STATE" = "InProgress" ] || [ "$STATE" = "Completed" ] && break; sleep 5
 done
-echo "$ST" | python3 -c "import json,sys;d=json.load(sys.stdin);print('  payout state:',d['state'],'proof:',(d.get('paymentProof') or {}).get('transactionId') or (d.get('paymentProof') or {}).get('id'))"
+PROOF=$(echo "$ST" | python3 -c "import json,sys;d=json.load(sys.stdin);p=d.get('paymentProof') or {};print(p.get('transactionId') or p.get('id') or '')")
+echo "  payout state: $STATE proof txid: $PROOF"
 [ "$STATE" = "InProgress" ] || [ "$STATE" = "Completed" ] || fail "payout not paid: $STATE (signerd/btcpay logs)"
 SEQ=$(curl -s -H "Authorization: Bearer $SIGNER_TOKEN" http://127.0.0.1:7390/v1/status | j "d['seq']"); echo "  enclave seq now $SEQ"; echo "$SEQ" > "$S/seq-after-payout"
-pass "payout signed in the enclave and broadcast by BTCPay"
+[ "$SEQ" -gt "$SEQ0" ] || fail "receipt seq did not advance ($SEQ0 -> $SEQ)"
+RTX=$(curl -s -H "Authorization: Bearer $SIGNER_TOKEN" http://127.0.0.1:7390/v1/receipts | j "d[-1]['txid']")
+[ "$RTX" = "$PROOF" ] && pass "the tx BTCPay broadcast is the one the enclave signed (receipt seq $SEQ, txid $RTX)" || fail "receipt txid $RTX != payout proof $PROOF"
+docker exec btcpayserver_bitcoind bitcoin-cli -datadir=/data -signet getmempoolentry "$RTX" >/dev/null 2>&1 && pass "node holds $RTX in its mempool" || echo "  (tx not in the local mempool yet/already mined)"
 
 echo "== gate (d.2): a frozen signer refuses, charges nothing, the payout waits"
 curl -s -X POST -H "Authorization: Bearer $SIGNER_TOKEN" http://127.0.0.1:7390/v1/freeze >/dev/null
@@ -88,6 +93,7 @@ ST2=$(curl -s "${H[@]}" "$BT/api/v1/stores/$STORE/payouts/$PO2" | j "d['state']"
 SEQ2=$(curl -s -H "Authorization: Bearer $SIGNER_TOKEN" http://127.0.0.1:7390/v1/status | j "d['seq']")
 [ "$ST2" = "AwaitingPayment" ] && [ "$SEQ2" = "$SEQ" ] && pass "frozen: payout $PO2 stays AwaitingPayment, seq unchanged ($SEQ2)" || fail "frozen path: state $ST2 seq $SEQ2"
 docker logs --since 2m generated_btcpayserver_1 2>&1 | grep -i "tee-signer" | tail -3 | sed 's/^/  btcpay: /'
+docker logs --since 2m generated_btcpayserver_1 2>&1 | grep -q "refused the payout batch: FROZEN" && pass "BTCPay logged the refusal by name (FROZEN)" || fail "no FROZEN refusal in the BTCPay log"
 
 echo "== gate (a) again after a BTCPay restart"
 docker restart generated_btcpayserver_1 >/dev/null; sleep 25
