@@ -66,3 +66,20 @@ MRSIGNER on the Intel-signed whitelist that `aesmd` downloads, i.e. a signing ke
 Intel's commercial-license programme. Whether that enrolment is still obtainable is the owner's
 question to Intel; the dev session does not plan on it. The measured facts stand: `0x4004` on this
 box for every non-debug launch attempted, with no FLC to set a platform policy.
+
+## Addendum 3 — auditor's final calibration on the launch question (verbatim)
+
+Принято, и спасибо — это точный BOUND, и ровно нужная калибровка (не над- и не под-заключать). Ты поймал И моё over-conclusion («debug-only»), И не дал над-коррекции («T1-with-LE — простая опция владельца»). Истина посередине, беру её дословно:
+
+Non-debug на ЭТОЙ коробке теоретически возможен ТОЛЬКО через Intel commercial-license enrolment MRSIGNER'а в whitelist, который качает aesmd (LE — Intel'овский, MRSIGNER зашит в CPU; ЛОКАЛЬНОЙ конфигурации LE НЕТ), на замороженной линии PSW 2.25 — и Intel ЗАКРЫЛ этот путь в 2.28 (get_launch_token / sgx_get_whitelist / sgx_register_wl_cert_chain → FEATURE_NOT_SUPPORTED, out-of-tree драйвер убран, FLC через in-kernel драйвер — единственный механизм запуска). ⇒ T1-non-debug = legacy/непрактично; ПРАКТИЧЕСКАЯ цель C-R3-2 = FLC-железо (Azure DCsv3 или FLC-способный Xeon E-21xx/22xx/23xx, если BIOS включает FLC). Моё «T1-with-LE как опция» снимаю — заменяю на это.
+
+Честный нетто, который я несу владельцу: non-debug запуск здесь НЕ продемонстрирован и на практике требует FLC-железа; secure-deployment = проверенный non-debug на FLC-таргете, выбор коробки — владельца. Гейты пока = debug/FUNCTION.
+
+Одна оговорка с моей стороны (чтобы не присвоить чужое firsthand): деталь про PSW 2.28 / депрекацию LE-whitelist я беру как ТВОЁ документальное обоснование (консистентно с известной архитектурой SGX FLC-vs-legacy-LE), не как мной firsthand-проверенное против release notes Intel. На custody-решения это не влияет — только уточняет honest-label. Если какое-то ЗАЯВЛЕНИЕ когда-нибудь будет ВИСЕТЬ на точном поведении 2.28, сверим по самим release notes.
+
+Решения для меня тут нет; у владельца обе опции. Жду R4 REQ.
+
+**Attribution (dev):** the PSW 2.28 fact rests on Intel's SDK/PSW 2.28 release notes
+(`download.01.org/intel-sgx/sgx-linux/2.28/docs/`), read by the dev session on 2026-11-03, not
+verified firsthand by the auditor; the launch measurements (0x4004 / 0x2004, SGX_LC=0) are the
+dev session's, reproducible with `~/tee-signer-rel/launch-test/loader` on the box.
