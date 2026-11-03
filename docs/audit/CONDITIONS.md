@@ -66,3 +66,9 @@ this table is what each IMPL REQ must discharge. **Status:** OPEN · IN IMPL (br
 | C-R6-2 | RESP-r6 ⭐ | `keygen --backend tpm` refuses an occupied persistent handle; never evicts another key (co-tenancy on the TPM) | R6 owner-cli | DISCHARGED — `RESP-r6-owner-hw-key-impl-2026-11-03.md` (IMPL-PASS at `4eff209`): SRK, a foreign handle and our occupied handle refused; tss-esapi only lists handles |
 | C-R6-3 | RESP-r6 IMPL ⚠️ | `hw-signer`'s `yubikey_piv.rs` is reviewed by the auditor BEFORE scenario 2 enables the `yubikey-piv` feature; never shipped without that review | YubiKey scenario (when the owner plugs it in) | OPEN |
 | C-R6-4 | RESP-r6 IMPL | PCR sealing of the TPM owner key deferred; residual labeled: the key is usable in any boot state under its authValue (a keylogger on a compromised OS) | later hardening | LABELED |
+| C-R4-1 | RESP-r4 ⭐ | spend-scan completeness: the monitor's per-branch range ≥ the signer's reachable range — `(seq + 1) × (ownIndexGap + 1)` from the verified receipt HWM (classify bound + gap, bound advances only at JUDGE) | R4 monitor | IN IMPL (`r4-monitor`) |
+| C-R4-2 | RESP-r4 ⭐ | `receipt.seq` is the sealed persistent counter (state.seq), not the volatile session HWM — confirmed from `state.rs`/`judge.rs` and the R5/R6 session changes with seq continuity | R4 | DISCHARGED — `RESP-r4-monitor-design-2026-11-03.md` (dev's answer C2) |
+| C-R4-3 | RESP-r4 | for value: the owner's own node and ≥ 2 agreeing chain sources; a single public Esplora only on signet/dev | R4 monitor / deploy | IN IMPL (`r4-monitor`) |
+| C-R4-4 | RESP-r4 | witness cadence: the monitor interval ≤ the mandate's freshness window (`maxTipLag` in blocks) or freshness-required signing starves | R4 monitor | IN IMPL (`r4-monitor`) |
+| C-R4-5 | RESP-r4 | the monitor's own liveness is observable (heartbeat per pass in the journal); a dead monitor degrades to mandate-only, labeled | R4 monitor | IN IMPL (`r4-monitor`) |
+
