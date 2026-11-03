@@ -1,0 +1,9 @@
+[package]
+name = "seed-leak-vector"
+version = "0.1.0"
+edition = "2021"
+description = "R4 negative vector only: from a mnemonic the owner recovered offline, the BIP84 private descriptors for a throwaway node wallet — plays 'the seed leaked'. Never part of the product."
+
+[dependencies]
+bitcoin = { version = "0.32", features = ["std"] }
+signer-core = { path = "../../core", features = ["std"] }

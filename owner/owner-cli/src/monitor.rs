@@ -359,7 +359,7 @@ struct NodeCache {
 /// since the last pass (every spend of ours, and every new output), plus `gettxspendingprevout`
 /// for the mempool. The first pass walks the last `window` blocks so the cap accounting starts full.
 #[allow(clippy::too_many_arguments)]
-fn scan_node(node: &NodeRpc, w: &WalletRecord, gap: u32, hwm_seq: u64, max_addresses: u32, window: u32, cache: &mut NodeCache, utxo_scan: bool) -> Result<(Chain, (u32, String))> {
+fn scan_node(node: &NodeRpc, w: &WalletRecord, gap: u32, hwm_seq: u64, max_addresses: u32, window: u32, cache: &mut NodeCache, utxo_scan: bool, receipt_txids: &[String]) -> Result<(Chain, (u32, String))> {
     let net = crate::network_of(&w.network)?;
     let range = ((hwm_seq.saturating_add(1)).saturating_mul(u64::from(gap).saturating_add(1))).min(u64::from(max_addresses)) as u32;
     let mut ours: HashSet<String> = HashSet::new();
@@ -400,6 +400,18 @@ fn scan_node(node: &NodeRpc, w: &WalletRecord, gap: u32, hwm_seq: u64, max_addre
         }
     }
     cache.last_block = tip;
+    // 2b. outputs we created that are still unconfirmed (our own change in the mempool): the UTXO
+    //     set and the blocks do not know them yet, so a thief spending them would be invisible —
+    //     every receipted transaction not yet confirmed is read from the node and its outputs noted
+    for t in receipt_txids {
+        if cache.spends.get(t).map(|(c, ..)| *c).unwrap_or(false) {
+            continue;
+        }
+        if let Ok(tx) = node.rpc("getrawtransaction", serde_json::json!([t, true])) {
+            let confirmed = tx["confirmations"].as_u64().unwrap_or(0) > 0;
+            note_tx(&tx, &ours, cache, confirmed, None);
+        }
+    }
     // 3. the mempool: anything spending an output of ours right now
     let outpoints: Vec<serde_json::Value> = cache.outputs.keys().filter_map(|op| {
         let (t, v) = op.split_once(':')?;
@@ -510,7 +522,8 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
     let (chain, (tip_height, tip_hash)) = if let (Some(url), Some(cookie)) = (&cfg.node_rpc, &cfg.node_cookie) {
         let mut cache: NodeCache = std::fs::read_to_string(&cache_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         let utxo_scan = cache.last_block == 0 || cfg.full_every <= 1 || hwm.passes % cfg.full_every.max(1) == 1;
-        let r = NodeRpc::new(url, cookie).and_then(|node| scan_node(&node, &w, m.limits.own_index_gap, hwm.seq, cfg.max_addresses, m.limits.window.blocks, &mut cache, utxo_scan));
+        let receipt_txids: Vec<String> = receipts.iter().map(|r| r.txid.clone()).collect();
+        let r = NodeRpc::new(url, cookie).and_then(|node| scan_node(&node, &w, m.limits.own_index_gap, hwm.seq, cfg.max_addresses, m.limits.window.blocks, &mut cache, utxo_scan, &receipt_txids));
         match r {
             Ok((c, tip)) => {
                 std::fs::write(&cache_path, serde_json::to_string(&cache)?)?;
