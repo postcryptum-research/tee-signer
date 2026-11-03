@@ -37,6 +37,9 @@ pub struct Cfg {
     /// `esplora` is ignored.
     pub node_rpc: Option<String>,
     pub node_cookie: Option<PathBuf>,
+    /// Spends the owner has looked at and accepted as known losses/known events: they stop
+    /// re-alarming (persisted beside the journal). An acknowledgement is a human decision, logged.
+    pub acknowledge: Vec<String>,
 }
 
 /// The persisted high-water mark (C-R4-5 / D-R4-6): written before the verdict.
@@ -558,9 +561,22 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
         // no chain view this pass: nothing below can be judged
         warn = true;
     }
+    let mut ack_path = cfg.journal.clone();
+    ack_path.set_extension("ack.json");
+    let mut acked: Vec<String> = std::fs::read_to_string(&ack_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    for a in &cfg.acknowledge {
+        if !acked.contains(a) {
+            acked.push(a.clone());
+            notes.push(format!("owner acknowledged {a}: it will not re-alarm (recorded in {})", ack_path.display()));
+        }
+    }
+    std::fs::write(&ack_path, serde_json::to_string_pretty(&acked)?)?;
     let receipted: HashMap<&str, &Verified> = receipts.iter().map(|r| (r.txid.as_str(), r)).collect();
     for (txid, confirmed, height, net) in &chain.spends {
         match receipted.get(txid.as_str()) {
+            None if acked.contains(txid) => {
+                notes.push(format!("{txid}: spend without receipt, acknowledged by the owner ({net} sat)"));
+            }
             None => {
                 alarm = true;
                 codes.push("SPEND_WITHOUT_RECEIPT".into());

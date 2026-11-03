@@ -868,6 +868,9 @@ enum Cmd {
         node_rpc: Option<String>,
         #[arg(long)]
         node_cookie: Option<PathBuf>,
+        /// A spend without receipt the owner has reviewed and accepts (txid); persisted, stops re-alarming.
+        #[arg(long = "acknowledge")]
+        acknowledge: Vec<String>,
     },
     /// Status.
     Status,
@@ -1250,7 +1253,7 @@ fn main() -> Result<()> {
             let sd = client(&cli)?;
             attest(&sd, wallet, expect_mrenclave.clone(), expect_mrsigner.clone(), signing_key_label.clone(), accept, pccs, *pin, save.clone(), replay.clone())?;
         }
-        Cmd::Monitor { wallet, mandate, esplora, interval, esplora_delay_ms, full_every, journal, once, no_freeze, witness_key, stall_after, max_tip_lag, max_addresses, node_rpc, node_cookie } => {
+        Cmd::Monitor { wallet, mandate, esplora, interval, esplora_delay_ms, full_every, journal, once, no_freeze, witness_key, stall_after, max_tip_lag, max_addresses, node_rpc, node_cookie, acknowledge } => {
             let sd = client(&cli)?;
             let cfg = monitor::Cfg {
                 wallet: wallet.clone(),
@@ -1268,6 +1271,7 @@ fn main() -> Result<()> {
                 full_every: *full_every,
                 node_rpc: node_rpc.clone(),
                 node_cookie: node_cookie.clone(),
+                acknowledge: acknowledge.clone(),
             };
             let code = monitor::run(&sd, &cfg)?;
             std::process::exit(code);

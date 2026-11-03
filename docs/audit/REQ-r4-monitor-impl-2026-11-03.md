@@ -42,7 +42,8 @@ measured, not argued.
 | (b) receipt tampered on the host (one byte of a signature) | `RECEIPT_SIG` (line 1, claimed seq 2) + `SEQ_REGRESSION` (a previously verified txid gone) + `RECEIPT_GAP` + **`SPEND_WITHOUT_RECEIPT`** for the now-unreceipted on-chain spend `2c230c06…` ⇒ **ALARM, FREEZE sent, signer frozen**; owner restored the log and unfroze with the owner key ⇒ next pass `OK` |
 | (a) receipt withheld (the host dropped the last line; the spend `67d68ef1…` stays confirmed on-chain) | `SEQ_REGRESSION` (max seq 2 < HWM 3; the txid gone) + **`SPEND_WITHOUT_RECEIPT`** ⇒ ALARM, FREEZE; restored + unfrozen ⇒ `OK` |
 | (e) freshness, on a throwaway T2 wallet with `freshness.required=true`, a witness keyfile, funded from T2 under T2's mandate (txid `ad54a901…`, T2 seq 4), headers fed to the tip | **no token ⇒ `FRESHNESS_MISSING`**; the monitor issues a token from its own view (tip 329301, last_seen_seq 0) ⇒ **signature ACCEPTED** (seq 1, `52c35b58…`); a stale token (tip 12 blocks back) ⇒ `FRESHNESS_TIP`; a token with last_seen_seq 5 > the enclave's 1 ⇒ `FRESHNESS_SEQ_BEHIND` |
-| (d) feed stall | <<the node's bitcoind stopped at 19:53 UTC; the vector runs at the next signet block — filled in below>> |
+| (d) feed stall (the T2 node's `bitcoind` stopped 19:53 UTC; signet block 329302 arrived ~20:17) | `ALARM … FEED_STALL — enclave best 329301 is 1 blocks behind the chain tip 329302 (limit 0); 1 consecutive passes` ⇒ FREEZE (with `--stall-after 2`: WARN would precede; run with the limit at 0 to show the ALARM); second pass same; operator restarted the node, the feed caught up in one round (`headers fed n=1`, enclave best 329302), owner unfroze ⇒ `OK` |
+| (g) a standing alarm after review | the thief's spend stays in the mempool, so every pass re-alarms and re-freezes — correct, and unlivable without a human decision: **`--acknowledge <txid>`** (persisted beside the journal) records that the owner reviewed that spend; the next pass is `OK` with the note "spend without receipt, acknowledged by the owner" (D-R4-9) |
 | (f) restart keeps the HWM | passes 1 → 12 across separate invocations; the HWM file carries `(51cf9562…, 3)` and the verified txids; the shrunk-log vector is exactly the HWM doing its job |
 
 **The seed-leak vector, executed** (the owner printed the mnemonic themselves with
@@ -70,6 +71,14 @@ likewise unknown until mined; a thief spending it before confirmation would be s
 after the funding confirms (the block walk notes the output, the spend is then in the mempool or
 a later block). Closing it fully means scanning the mempool for outputs to our addresses every
 pass (`getrawmempool` + per-tx reads) — cheap on signet, a cost question on mainnet; labeled.
+
+**Two models, named apart (the owner's rule, 2026-11-03):** the **threat model** (compromise:
+adversary, detection, prevention — attack vectors) and the **continuity model** (accidents: lost
+enclave, disk, laptop, keys — recovery drills; `docs/CONTINUITY.md`, new on this branch). The
+monitor, the mandate and attestation belong to the first; the recovery blob, the recovery key and
+`--print-mnemonic` to the second. The seed-leak vector below sits in the first only as detector
+mechanics; the restore it incidentally performed is logged in the second as a drill done in the
+wrong frame (online laptop, words in a chat) — the proper D2 drill is still owed.
 
 **What the seed-leak vector is and is not (the owner's point, 2026-11-03):** a leaked seed is a
 total loss by definition — any HD wallet restores it and spends everything; no enclave, mandate,
@@ -103,3 +112,6 @@ design says ("session changed … with seq continuity (benign restart)"), not as
   monitor's disagree on what is "ours" — worth a human, not a freeze). Confirm.
 - **D-R4-8** `RECEIPT_GAP` is a WARN (a withheld receipt is caught by the chain check as
   `SPEND_WITHOUT_RECEIPT` the moment its spend appears). Confirm.
+- **D-R4-9** `--acknowledge <txid>`: a reviewed spend-without-receipt stops re-alarming; the
+  acknowledgement is persisted and journaled as the owner's decision. Without it the reflex would
+  re-freeze every pass after every unfreeze. Confirm the shape (per-txid, explicit, logged).
