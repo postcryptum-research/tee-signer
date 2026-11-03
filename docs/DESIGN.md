@@ -365,8 +365,8 @@ proposal to bring upstream once v1 runs, since the four sites are the entire sur
 | Round | Deliverable | Gate |
 |---|---|---|
 | R0 | this design + `POLICY.md` + `THREAT-MODEL.md`; lab result; seam study | DESIGN-PASS on `REQ-design` |
-| R1 | `signer-core`: PSBT parse, derivation, classification, policy engine, canonical encodings, receipts; host tests; refusal vectors from signet | IMPL-PASS |
-| R2 | `signer-enclave` + `signerd`: init, seal, sign, recovery blob; `owner-cli` with the `hw-signer` backends and the encrypted keyfile (D3). IMPL gates named now (C-R10e): sealing verified on load, commit-seal ordering under concurrent ecalls, context randomization, no-cpuid and no-software-key build asserts, reproducible build | IMPL-PASS on T1 hardware |
+| R1 | `signer-core`: PSBT parse, derivation, classification, policy engine, canonical encodings, receipts; host tests; refusal vectors from signet | **IMPL-PASS 2026-11-03** |
+| R2 | `signer-enclave` + `signerd`: init, seal, sign, recovery blob; `owner-cli` with the encrypted keyfile (D3; hardware backends follow); the header verifier (pulled from R4); build gates; first live signet signature | **IMPL-PASS 2026-11-03** (reproducible build → R5) |
 | R3 | BTCPay plugin + docker fragment; e2e on signet with a BTCPay instance, including the vector that asserts `IsHotWallet=false` end to end and zero key material in `nbxv1_metadata` (C-R11c) | IMPL-PASS |
 | R4 | block clock, timelocked updates, freeze/cancel, receipts + owner monitor + freshness witness | IMPL-PASS |
 | R5 | T2: DCAP-attested init and receipts on Azure DCsv3; `DisableDebug=1` build | IMPL-PASS |

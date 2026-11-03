@@ -1,9 +1,11 @@
 # tee-signer — a policy-enforcing TEE signer for BTCPay Server hot wallets
 
 **Working name.** Product name to be chosen by the owner.
-**Status: DESIGN-PASS (CONDITIONAL) on 2026-11-03** (`docs/audit/RESP-design-2026-11-03.md`);
-implementation of `signer-core` starts on a branch. No enclave code is merged. Nothing here is
-deployed, attested or audited at the implementation level. Testnet/signet only at every stage.
+**Status (2026-11-03):** DESIGN-PASS; R1 `signer-core` and R2 (enclave shell, header verifier,
+daemon, owner tool) both IMPL-PASS and merged (`docs/audit/`). The enclave runs on SGX1 hardware
+in **debug launch** (tier T1-debug) and has signed its first signet transaction under a mandate.
+Not yet: the owner's monitor (R4, the gate for any use on real value), reproducible builds and a
+release launch on FLC/DCAP hardware (R5), the BTCPay plugin (R3). Testnet/signet only.
 
 ## The problem
 
