@@ -192,16 +192,32 @@ fn now() -> u64 {
 struct Bitcoind {
     url: String,
     auth: String,
+    /// The cookie file, re-read every feed round: bitcoind rotates it at each restart (the T2
+    /// node's switch to pruning left the daemon with a stale cookie and a silently stalled feed).
+    cookie: Option<PathBuf>,
     http: reqwest::Client,
+}
+
+fn auth_from_cookie(cookie: &Path) -> Result<String> {
+    let c = std::fs::read_to_string(cookie).with_context(|| format!("reading cookie {}", cookie.display()))?;
+    let (user, pass) = c.trim().split_once(':').ok_or_else(|| anyhow!("cookie format"))?;
+    use base64::Engine;
+    Ok(base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}")))
 }
 
 impl Bitcoind {
     fn new(url: &str, cookie: &Path) -> Result<Self> {
-        let c = std::fs::read_to_string(cookie).with_context(|| format!("reading cookie {}", cookie.display()))?;
-        let (user, pass) = c.trim().split_once(':').ok_or_else(|| anyhow!("cookie format"))?;
-        use base64::Engine;
-        let auth = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"));
-        Ok(Bitcoind { url: url.to_string(), auth, http: reqwest::Client::new() })
+        let auth = auth_from_cookie(cookie)?;
+        Ok(Bitcoind { url: url.to_string(), auth, cookie: Some(cookie.to_path_buf()), http: reqwest::Client::new() })
+    }
+    /// Pick up a rotated cookie; a missing or malformed file keeps the last value (and the RPC
+    /// then fails loudly instead of the feed dying here).
+    fn refresh_auth(&mut self) {
+        if let Some(p) = &self.cookie {
+            if let Ok(a) = auth_from_cookie(p) {
+                self.auth = a;
+            }
+        }
     }
     async fn rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
         let body = serde_json::json!({"jsonrpc": "1.0", "id": "signerd", "method": method, "params": params});
@@ -242,7 +258,8 @@ const FORK_PROBE_DEPTH: u32 = 32;
 async fn feed_once(shared: &Shared) -> Result<u32> {
     let (best_height, best_hash, url, auth) = {
         let mut d = shared.lock().await;
-        let Some(b) = &d.bitcoind else { return Ok(0) };
+        let Some(b) = d.bitcoind.as_mut() else { return Ok(0) };
+        b.refresh_auth();
         let (url, auth) = (b.url.clone(), b.auth.clone());
         let st = d.status()?;
         if !st.installed {
@@ -250,7 +267,7 @@ async fn feed_once(shared: &Shared) -> Result<u32> {
         }
         (st.best_height, st.best_hash, url, auth)
     };
-    let bd = Bitcoind { url, auth, http: reqwest::Client::new() };
+    let bd = Bitcoind { url, auth, cookie: None, http: reqwest::Client::new() };
     let tip = bd.tip_height().await?;
     if tip <= best_height {
         return Ok(0);
