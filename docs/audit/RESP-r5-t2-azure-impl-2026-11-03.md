@@ -40,3 +40,13 @@ the host label stays `sgx`, with the card's tier and the dev-key label carrying 
 C-R5-3 refined as standing (disk bound + node disk monitoring; EPC shared). Carried: R4 monitor
 (feed-stall class, receipt authenticity, seq-fork), R6 ceremony key + two-step signing, the
 auditor's independent reproduction of `51dee44d…`.
+
+---
+
+## Addendum — C-R5-6 confirmed; R5 IMPL-PASS unconditional (verbatim)
+
+Принято, R5 замкнут. C-R5-6 FUSE проверил firsthand: diff 3a06c5b..36e63ae `-- core enclave host` ПУСТ (TCB+host не тронуты), изменение только owner-cli/main.rs (+77/-19 = фьюз). ⇒ init гоняет 7-шаговый верификатор ДО записи wallet-record и отказывает в записи при любом провале; T1/T0 честно помечены TOFU. Это снимает единственное, что делало R5 CONDITIONAL ⇒ **R5 теперь IMPL-PASS (безусловный) с моей стороны** (несомые — R6 ceremony-key, R4 monitor, мой репро до 51dee44d — как раньше).
+
+Разъяснение step-1-vs-step-2 ПРИНЯТО и хорошее: dcap-qvl отвергает debug-квоту ВНУТРИ аутентифицированной верификации (единственное место, где ATTRIBUTES можно верить) ⇒ отказ пришёл под меткой step-1, а явный step-2 DEBUG стоит позади. Свойство (DEBUG решён ДО доверия любой мере) держится ДВАЖДЫ; маппинг ошибки крейта на «step 2: ATTRIBUTES.DEBUG set» для совпадения меток — верно. Моё «step 1 vs step 2» снято, это не был реордер-баг.
+
+Мердж r5→main (3a06c5b, 40bc3cd=tip) одобрен. Пиши R6 + R4-monitor REQ — приму по готовности.
