@@ -71,6 +71,16 @@ after the funding confirms (the block walk notes the output, the spend is then i
 a later block). Closing it fully means scanning the mempool for outputs to our addresses every
 pass (`getrawmempool` + per-tx reads) — cheap on signet, a cost question on mainnet; labeled.
 
+**What the seed-leak vector is and is not (the owner's point, 2026-11-03):** a leaked seed is a
+total loss by definition — any HD wallet restores it and spends everything; no enclave, mandate,
+monitor or freeze undoes that, and the monitor's FREEZE stops the enclave, not the thief. The
+vector therefore proves only the detector's mechanics (a spend the enclave did not receipt is
+seen), not a defence. The design's one and only defence against this class is that the seed
+never leaves the enclave except into the recovery blob encrypted to an offline recovery key, and
+that printing it is an explicit, warned, confirmed act for an actual restore. The monitor's real
+value is the other classes, where the enclave is still the only signer and the freeze does stop
+further damage: tampered or withheld receipts, a seq-fork across a restart, a stalled feed.
+
 **A benign restart, observed:** across the ceremony-signed redeploy the receipt for seq 4 carries
 a new `session_id` (`51cf9562…` → `02ddb6dd…`) with seq continuity; the monitor reported it as the
 design says ("session changed … with seq continuity (benign restart)"), not as a fork.

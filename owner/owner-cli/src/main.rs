@@ -1300,6 +1300,12 @@ fn main() -> Result<()> {
             }
             println!("recovery blob OK: decrypts to a 24-word mnemonic whose m/84'/{}'/0' xpub and fingerprint match the wallet record", net.coin_type());
             if *print_mnemonic {
+                eprintln!("WARNING: these 24 words ARE the wallet. Whoever sees them takes everything; no enclave, mandate or monitor can undo that.");
+                eprintln!("         Print them only on an offline machine, only to restore the wallet elsewhere. Verifying the blob needs no printing.");
+                let ok = passphrase("type PRINT to continue", false)?;
+                if ok != "PRINT" {
+                    bail!("not printed");
+                }
                 println!("{mnemonic}");
             }
         }

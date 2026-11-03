@@ -564,7 +564,7 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
             None => {
                 alarm = true;
                 codes.push("SPEND_WITHOUT_RECEIPT".into());
-                notes.push(format!("{txid} spends {net} sat of the wallet ({}) and no verified receipt names it", if *confirmed { format!("confirmed at {}", height.unwrap_or(0)) } else { "in the mempool".into() }));
+                notes.push(format!("{txid} spends {net} sat of the wallet ({}) and no verified receipt names it — someone signed for this wallet outside the enclave: either the host replayed a forked blob (the freeze stops that) or the seed is out (then nothing stops it)", if *confirmed { format!("confirmed at {}", height.unwrap_or(0)) } else { "in the mempool".into() }));
             }
             Some(r) if r.net_outflow != *net => {
                 warn = true;
