@@ -45,6 +45,7 @@ pub fn build(
     fp: &str,
     net: Network,
     esplora: &str,
+    prev_tx_hex: Option<&str>,
     utxo: &str,
     branch: u32,
     index: u32,
@@ -57,10 +58,14 @@ pub fn build(
     let (txid_s, vout_s) = utxo.split_once(':').ok_or_else(|| anyhow!("--utxo txid:vout"))?;
     let txid = Txid::from_str(txid_s)?;
     let vout: u32 = vout_s.parse()?;
-    let hex_tx = reqwest::blocking::get(format!("{}/tx/{txid}/hex", esplora.trim_end_matches('/')))?.error_for_status()?.text()?;
+    // the previous transaction: given by the operator (from their own node), else from the Esplora
+    let hex_tx = match prev_tx_hex {
+        Some(h) => h.trim().to_string(),
+        None => reqwest::blocking::get(format!("{}/tx/{txid}/hex", esplora.trim_end_matches('/')))?.error_for_status()?.text()?,
+    };
     let prev: Transaction = deserialize(&hex::decode(hex_tx.trim())?)?;
     if prev.compute_txid() != txid {
-        bail!("esplora returned a different transaction");
+        bail!("the previous transaction given does not have the txid of --utxo");
     }
     let prevout = prev.output.get(vout as usize).ok_or_else(|| anyhow!("vout out of range"))?;
     let own_pk = child(&x, branch, index)?;

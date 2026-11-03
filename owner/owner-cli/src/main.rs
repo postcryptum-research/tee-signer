@@ -21,6 +21,7 @@ use signer_core::proto::IdentityCard;
 use signer_core::update::Message;
 use zeroize::Zeroize;
 
+mod monitor;
 mod psbt;
 
 // ---------------------------------------------------------------- keys
@@ -821,6 +822,56 @@ enum Cmd {
     },
     /// Freeze signing (no signature needed).
     Freeze,
+    /// The owner's monitor (REQ-r4): verifies receipts under the identity key, watches the chain
+    /// from an INDEPENDENT source for spends without a receipt, cross-checks the window cap, watches the
+    /// feed, issues witness tokens when the mandate requires freshness, and FREEZES (unsigned) on any ALARM.
+    Monitor {
+        #[arg(long)]
+        wallet: PathBuf,
+        /// The owner's copy of the installed mandate JSON (caps, ownIndexGap, freshness).
+        #[arg(long)]
+        mandate: PathBuf,
+        /// Independent chain source. Signet/dev: a public Esplora; for value: the owner's own node (C-R4-3).
+        #[arg(long, default_value = "https://mempool.space/signet/api")]
+        esplora: String,
+        #[arg(long, default_value_t = 300)]
+        interval: u64,
+        /// Pause between Esplora requests in ms (a public Esplora rate-limits; 0 for the owner's node).
+        #[arg(long, default_value_t = 300)]
+        esplora_delay_ms: u64,
+        /// Full scan of the whole reachable range every N passes; the others re-read addresses with history + the live window.
+        #[arg(long, default_value_t = 12)]
+        full_every: u64,
+        /// Append-only JSONL journal (one line per pass = the heartbeat); the HWM sits beside it.
+        #[arg(long, default_value = "monitor.jsonl")]
+        journal: PathBuf,
+        /// One pass, then exit 0 OK / 1 WARN / 2 ALARM.
+        #[arg(long)]
+        once: bool,
+        /// Do not send FREEZE on ALARM (tests only; the reflex is on by default).
+        #[arg(long)]
+        no_freeze: bool,
+        /// Witness key locator (keyfile or tpm:<handle>) when the mandate requires freshness.
+        #[arg(long)]
+        witness_key: Option<String>,
+        /// Consecutive stalled passes before FEED_STALL becomes an ALARM.
+        #[arg(long, default_value_t = 3)]
+        stall_after: u32,
+        /// Override the mandate's maxTipLag for the stall check (tests).
+        #[arg(long)]
+        max_tip_lag: Option<u32>,
+        /// Upper bound on addresses scanned per branch (the computed range is usually far smaller).
+        #[arg(long, default_value_t = 2000)]
+        max_addresses: u32,
+        /// The owner's own node as the chain source (C-R4-3): read-only RPC URL + cookie file; overrides --esplora.
+        #[arg(long)]
+        node_rpc: Option<String>,
+        #[arg(long)]
+        node_cookie: Option<PathBuf>,
+        /// A spend without receipt the owner has reviewed and accepts (txid); persisted, stops re-alarming.
+        #[arg(long = "acknowledge")]
+        acknowledge: Vec<String>,
+    },
     /// Status.
     Status,
     /// T2: fetch a DCAP quote for a fresh nonce from signerd and verify it HERE (REQ-r5 §4):
@@ -882,6 +933,9 @@ enum Cmd {
         wallet: PathBuf,
         #[arg(long, default_value = "https://mempool.space/signet/api")]
         esplora: String,
+        /// The previous transaction's raw hex (from the operator's own node), instead of fetching it from the Esplora.
+        #[arg(long)]
+        prev_tx_hex: Option<String>,
         /// txid:vout of the wallet's coin
         #[arg(long)]
         utxo: String,
@@ -1199,6 +1253,29 @@ fn main() -> Result<()> {
             let sd = client(&cli)?;
             attest(&sd, wallet, expect_mrenclave.clone(), expect_mrsigner.clone(), signing_key_label.clone(), accept, pccs, *pin, save.clone(), replay.clone())?;
         }
+        Cmd::Monitor { wallet, mandate, esplora, interval, esplora_delay_ms, full_every, journal, once, no_freeze, witness_key, stall_after, max_tip_lag, max_addresses, node_rpc, node_cookie, acknowledge } => {
+            let sd = client(&cli)?;
+            let cfg = monitor::Cfg {
+                wallet: wallet.clone(),
+                mandate: mandate.clone(),
+                esplora: esplora.clone(),
+                interval: *interval,
+                journal: journal.clone(),
+                once: *once,
+                freeze: !*no_freeze,
+                witness_key: witness_key.clone(),
+                stall_after: *stall_after,
+                max_tip_lag: *max_tip_lag,
+                max_addresses: *max_addresses,
+                esplora_delay_ms: *esplora_delay_ms,
+                full_every: *full_every,
+                node_rpc: node_rpc.clone(),
+                node_cookie: node_cookie.clone(),
+                acknowledge: acknowledge.clone(),
+            };
+            let code = monitor::run(&sd, &cfg)?;
+            std::process::exit(code);
+        }
         Cmd::Status => {
             let sd = client(&cli)?;
             println!("{}", serde_json::to_string_pretty(&sd.get("/v1/status")?)?);
@@ -1227,6 +1304,12 @@ fn main() -> Result<()> {
             }
             println!("recovery blob OK: decrypts to a 24-word mnemonic whose m/84'/{}'/0' xpub and fingerprint match the wallet record", net.coin_type());
             if *print_mnemonic {
+                eprintln!("WARNING: these 24 words ARE the wallet. Whoever sees them takes everything; no enclave, mandate or monitor can undo that.");
+                eprintln!("         Print them only on an offline machine, only to restore the wallet elsewhere. Verifying the blob needs no printing.");
+                let ok = passphrase("type PRINT to continue", false)?;
+                if ok != "PRINT" {
+                    bail!("not printed");
+                }
                 println!("{mnemonic}");
             }
         }
@@ -1234,9 +1317,9 @@ fn main() -> Result<()> {
             let w: WalletRecord = serde_json::from_str(&std::fs::read_to_string(wallet)?)?;
             println!("{}", psbt::address(&w.xpub, network_of(&w.network)?, *branch, *index)?);
         }
-        Cmd::PsbtBuild { wallet, esplora, utxo, branch, index, to, amount, fee, change_index } => {
+        Cmd::PsbtBuild { wallet, esplora, prev_tx_hex, utxo, branch, index, to, amount, fee, change_index } => {
             let w: WalletRecord = serde_json::from_str(&std::fs::read_to_string(wallet)?)?;
-            let b64 = psbt::build(&w.xpub, &w.fingerprint, network_of(&w.network)?, esplora, utxo, *branch, *index, to, *amount, *fee, *change_index)?;
+            let b64 = psbt::build(&w.xpub, &w.fingerprint, network_of(&w.network)?, esplora, prev_tx_hex.as_deref(), utxo, *branch, *index, to, *amount, *fee, *change_index)?;
             println!("{b64}");
         }
         Cmd::Sign { psbt } => {
