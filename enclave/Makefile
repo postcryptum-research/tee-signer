@@ -79,7 +79,7 @@ Enclave_Name := enclave.so
 Signed_Enclave_Name := enclave.signed.so
 Enclave_Config_File := Enclave/Enclave.config.xml
 Enclave_Config_Gen := build/Enclave.config.gen.xml
-Enclave_Test_Key := Enclave/Enclave_private_test.pem
+Enclave_Test_Key ?= Enclave/Enclave_private_test.pem
 
 ifeq ($(SGX_MODE), HW)
 ifeq ($(SGX_DEBUG), 1)
@@ -106,10 +106,10 @@ target: $(Signed_Enclave_Name) $(Bridge_Lib) gates
 rcore:
 	@if [ "$(RELEASE)" = "1" ]; then \
 	    echo "RUST (release, --locked, no test features)"; \
-	    cd $(RCORE_SRC) && $(CARGO) build --release --locked; \
+	    cd $(RCORE_SRC) && $(CARGO) build --release --locked $(CARGO_FLAGS); \
 	else \
 	    echo "RUST (dev, --locked, $(RCORE_FEATURES))"; \
-	    cd $(RCORE_SRC) && $(CARGO) build --release --locked $(RCORE_FEATURES); \
+	    cd $(RCORE_SRC) && $(CARGO) build --release --locked $(CARGO_FLAGS) $(RCORE_FEATURES); \
 	fi
 	@echo "RUST =>  $(RCORE_DIR)/librcore.a"
 $(RCORE_DIR)/librcore.a: rcore
@@ -162,8 +162,10 @@ endif
 # runtime, so the gate is: every function in the FINAL enclave that contains cpuid is in the
 # pinned SDK list (sdk-cpuid-baseline.txt) and the total equals the pinned count — nothing from
 # Rust or from our C. A change in either is a REQ (docs/ENCLAVE.md §7).
-SDK_CPUID_BASELINE ?= 8
-SDK_CPUID_LIST := sdk-cpuid-baseline.txt
+# The list is per SDK version (the dev host runs 2.25, the T2 image 2.28); the instruction count
+# is pinned beside it in <list>.count when it differs from the number of sites.
+SDK_CPUID_LIST ?= sdk-cpuid-baseline.txt
+SDK_CPUID_BASELINE ?= $(shell cat $(SDK_CPUID_LIST).count 2>/dev/null || LC_ALL=C sort -u $(SDK_CPUID_LIST) | grep -c .)
 gates: $(Enclave_Name)
 	@mkdir -p build
 	@echo "GATE 1: cpuid sites in $(Enclave_Name) are exactly the pinned SDK set"
