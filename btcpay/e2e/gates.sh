@@ -13,11 +13,42 @@ PHASE=${1:-all}
 BT=${BTCPAY_URL:-http://127.0.0.1:7392}
 SIGNER_TOKEN=$(cat "${SIGNER_TOKEN_FILE:-$HOME/tee-signer-state/token}")
 XPUB=${TEE_XPUB:?set TEE_XPUB}; FP=${TEE_FINGERPRINT:?set TEE_FINGERPRINT}
-PAYEE=${PAYEE:?set PAYEE (an address outside the wallet)}
+# Payees: BTCPay refuses a second payout to an address already used by another payout
+# ("duplicate-destination"), so every payout gets a fresh throwaway P2WPKH outside the wallet
+# (random 20-byte program, unspendable: signet coins, labeled as such). PAYEE overrides the first.
+throwaway_addr() { python3 - <<'PY'
+import os
+C="qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+def pm(v):
+    G=[0x3b6a57b2,0x26508e6d,0x1ea119fa,0x3d4233dd,0x2a1462b3]; c=1
+    for x in v:
+        b=c>>25; c=((c&0x1ffffff)<<5)^x
+        for i in range(5): c^=G[i] if (b>>i)&1 else 0
+    return c
+def cb(d,f,t):
+    a=0;b=0;r=[];m=(1<<t)-1
+    for x in d:
+        a=(a<<f)|x; b+=f
+        while b>=t: b-=t; r.append((a>>b)&m)
+    if b: r.append((a<<(t-b))&m)
+    return r
+h=[ord(c)>>5 for c in "tb"]+[0]+[ord(c)&31 for c in "tb"]
+d=[0]+cb(os.urandom(20),8,5); x=pm(h+d+[0]*6)^1
+print("tb1"+"".join(C[v] for v in d+[(x>>5*(5-i))&31 for i in range(6)]))
+PY
+}
+PAYEE=${PAYEE:-$(throwaway_addr)}
 EMAIL=admin@tee.local; PASS=${BTCPAY_PASS:-tee-signer-e2e-Passw0rd!}
 S=$HOME/tee-signer-btcpay/e2e; mkdir -p "$S"
 pass() { echo "  PASS $1"; }; fail() { echo "  FAIL $1"; exit 1; }
-j() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
+j() { python3 -c "
+import json,sys
+raw=sys.stdin.read()
+try:
+    d=json.loads(raw); print($1)
+except Exception as e:
+    print('  j(): cannot read the field from:', raw[:300], file=sys.stderr); sys.exit(1)
+"; }
 
 if [ "$PHASE" = "setup" ] || [ "$PHASE" = "all" ]; then
 if [ -f "$S/apikey" ] && [ -f "$S/store" ] && curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token $(cat "$S/apikey")" "$BT/api/v1/stores/$(cat "$S/store")" | grep -q 200; then
@@ -69,14 +100,14 @@ pass "S1 (UI seed path) follows from (a): HotwalletSafe.TryUnlock returns null f
 
 echo "== gate (d.1): a payout through the enclave"
 SEQ0=$(curl -s -H "Authorization: Bearer $SIGNER_TOKEN" http://127.0.0.1:7390/v1/status | j "d['seq']"); echo "  enclave seq before: $SEQ0"
-PP=$(curl -s "${H[@]}" -X POST "$BT/api/v1/stores/$STORE/pull-payments" -d '{"name":"e2e","amount":"0.00002","currency":"BTC","payoutMethods":["BTC-CHAIN"],"autoApproveClaims":true}' | j "d['id']")
+PP=$(curl -s "${H[@]}" -X POST "$BT/api/v1/stores/$STORE/pull-payments" -d '{"name":"e2e","amount":"0.0001","currency":"BTC","payoutMethods":["BTC-CHAIN"],"autoApproveClaims":true}' | j "d['id']")
 PO=$(curl -s "${H[@]}" -X POST "$BT/api/v1/pull-payments/$PP/payouts" -d "{\"destination\":\"$PAYEE\",\"amount\":\"0.00002\",\"payoutMethodId\":\"BTC-CHAIN\"}" | j "d['id']")
 echo "  payout $PO created (2000 sat to $PAYEE)"
 for i in $(seq 1 24); do
   ST=$(curl -s "${H[@]}" "$BT/api/v1/stores/$STORE/payouts/$PO")
   STATE=$(echo "$ST" | j "d['state']"); [ "$STATE" = "InProgress" ] || [ "$STATE" = "Completed" ] && break; sleep 5
 done
-PROOF=$(echo "$ST" | python3 -c "import json,sys;d=json.load(sys.stdin);p=d.get('paymentProof') or {};print(p.get('transactionId') or p.get('id') or '')")
+PROOF=$(echo "$ST" | python3 -c "import json,sys;d=json.load(sys.stdin);p=d.get('paymentProof') or {};print(p.get('TransactionId') or p.get('transactionId') or '')")
 echo "  payout state: $STATE proof txid: $PROOF"
 [ "$STATE" = "InProgress" ] || [ "$STATE" = "Completed" ] || fail "payout not paid: $STATE (signerd/btcpay logs)"
 SEQ=$(curl -s -H "Authorization: Bearer $SIGNER_TOKEN" http://127.0.0.1:7390/v1/status | j "d['seq']"); echo "  enclave seq now $SEQ"; echo "$SEQ" > "$S/seq-after-payout"
@@ -87,7 +118,9 @@ docker exec btcpayserver_bitcoind bitcoin-cli -datadir=/data -signet getmempoole
 
 echo "== gate (d.2): a frozen signer refuses, charges nothing, the payout waits"
 curl -s -X POST -H "Authorization: Bearer $SIGNER_TOKEN" http://127.0.0.1:7390/v1/freeze >/dev/null
-PO2=$(curl -s "${H[@]}" -X POST "$BT/api/v1/pull-payments/$PP/payouts" -d "{\"destination\":\"$PAYEE\",\"amount\":\"0.00001\",\"payoutMethodId\":\"BTC-CHAIN\"}" | j "d['id']")
+PAYEE2=$(throwaway_addr)
+PO2=$(curl -s "${H[@]}" -X POST "$BT/api/v1/pull-payments/$PP/payouts" -d "{\"destination\":\"$PAYEE2\",\"amount\":\"0.00001\",\"payoutMethodId\":\"BTC-CHAIN\"}" | j "d['id']")
+echo "  payout $PO2 created while frozen (1000 sat to $PAYEE2)"
 sleep 20
 ST2=$(curl -s "${H[@]}" "$BT/api/v1/stores/$STORE/payouts/$PO2" | j "d['state']")
 SEQ2=$(curl -s -H "Authorization: Bearer $SIGNER_TOKEN" http://127.0.0.1:7390/v1/status | j "d['seq']")

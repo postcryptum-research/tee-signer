@@ -7,8 +7,8 @@ is added in the next commit). **Requested verdict:** IMPL-PASS / CONDITIONAL / F
 (BTCPay integration, v1 = plugin, no fork), `docs/studies/BTCPAY-SIGNING-SEAMS-2026-11-03.md`.
 **Gates named for this round:** C-R11a, C-R11b, C-R11c (`CONDITIONS.md`), plus the four
 executable gates (a)–(d) you set in the R2 preview for this round. Nothing in this round touches
-the TCB: `core/`, `enclave/`, `host/signerd` are unchanged from `main` at `7811f9c` except as
-listed in §1 (none).
+the TCB: `core/` and `enclave/` are unchanged from `main` at `7811f9c`. One **host-side** fix
+in `host/signerd` (untrusted; §1a) came out of the e2e.
 
 ## 1. What is on the branch — all of it untrusted
 
@@ -21,7 +21,22 @@ listed in §1 (none).
 | Dev-stack driver (generator in docker, localhost-only) | `btcpay/docker/stack.sh` | 52 | dev |
 | The four gates, executable | `btcpay/e2e/gates.sh` | 105 | evidence |
 
-TCB diff against `main`: **none** (`git diff 7811f9c --stat -- core enclave host owner` is empty).
+TCB diff against `main`: **none** (`git diff 7811f9c --stat -- core enclave owner` is empty).
+
+### 1a. Host fix found by the e2e: the header feed after a fork at the enclave's best
+
+Signet forked at height 329268 while the enclave (fed by the trust-bridge node in R2) sat on the
+losing branch; the dev stack's node had the other. The R2 feed restarted at `best − 10` on a
+disagreement — but the enclave knows only `checkpoint..best` (R2 installed at 329261), so that
+batch could never attach (`HEADER_INVALID` every 20 s; the enclave stayed at 329268, which is the
+correct *enclave* behaviour: a batch that attaches nowhere is refused, nothing moves). The feed
+now probes the fork point from the shallowest depth: the node's headers `[best−k ..= best+1]` for
+`k = 0, 1, …` until the enclave accepts or freezes (`FORK_PROBE_DEPTH = 32`; the enclave keeps at
+most `maxReorg + 12` recent headers so deeper probes cannot attach). A refused probe changes
+nothing; a fork deeper than `maxReorg` makes the enclave freeze itself (`CHAIN_REORG`, sealed,
+kept — the feed does not retry past it). Measured on the box: `fork_depth=1 accepted=2`, then
+the ordinary extension to the tip. `core::headers` is untouched; this is the host learning to
+offer what the verifier can judge.
 
 ## 2. What the plugin does, and what it structurally cannot do
 
@@ -71,7 +86,69 @@ the host daemon is stopped): fingerprint `8c3ce9a6`, mandate `unlisted 100000/50
 
 ## 4. The four gates, executed (`btcpay/e2e/gates.sh`, run on the box against the live stack)
 
-<<RUN EVIDENCE PENDING — filled in after the signet sync completes>>
+Stack: BTCPay 2.4.7 + NBXplorer + bitcoind (signet, full IBD to 329277) + Postgres + the
+`tee-signer` sidecar (T1-debug, MRENCLAVE `d7c1afd0…bc0b`, session `b07572be…`), all on the SGX
+box, HTTP on `127.0.0.1:7392` only. Store wallet: `[8c3ce9a6/84'/1'/0']tpubDDHLUqe…HVrc` imported
+cold through Greenfield; coins indexed by NBXplorer's UTXO-set scan (86 923 sat over 10 UTXOs,
+the owner's faucet funding). `gates.sh setup` then `gates.sh run`, verbatim output (the run log is
+kept on the box as `~/tee-signer-btcpay/e2e/run-*.log`):
+
+```
+== gate (a): IsHotWallet=false in the store record
+  PASS store wallet is cold (IsHotWallet absent = false)
+== 3. plugin: signer settings + processor
+  settings: {"saved":true} [200]
+  enclave: {'tier': 'T1-debug', 'installed': True, 'seq': 1, 'xpub': 'tpubDDHLUqe…HVrc'} xpubMatches: True walletIsHot: False error: None
+  PASS enclave xpub matches the store wallet
+  processor: {"enabled":true} [200]
+== gate (b): no key material in nbxv1_metadata
+  PASS nbxv1_metadata key rows = 0
+== gate (c): the four in-process signing sites are inert
+  PASS S2 Greenfield signWithSeed → 503 ({"code":"not-available","message":"You cannot send from a cold wallet"})
+  PASS S4 payjoin not advertised in the invoice BIP21 (cold wallet)
+  PASS S3 stock hot-wallet processor absent; configured: TeeSignerPayoutProcessor
+  PASS S1 (UI seed path) follows from (a): HotwalletSafe.TryUnlock returns null for IsHotWallet=false (study §2b)
+== gate (d.1): a payout through the enclave
+  enclave seq before: 3
+  payout un5z2KtD48ykYN3DeqWU35xuVaT created (2000 sat to tb1q63m9p2628gs9ane23jf3kkpqncz9v5cudhm2ff)
+  payout state: InProgress proof txid: 1b481cdac590cbb1723ccf0699eb81bdbe084317499aad9c8de1f5a467e27481
+  enclave seq now 4
+  PASS the tx BTCPay broadcast is the one the enclave signed (receipt seq 4, txid 1b481cda…7481)
+  PASS node holds 1b481cda…7481 in its mempool
+== gate (d.2): a frozen signer refuses, charges nothing, the payout waits
+  payout sE7RHFciW3bmoTooKjf5QJtUy75 created while frozen (1000 sat to tb1qks42fdtdx8y6qj8mu382vktfj7lpd3d26pzwd6)
+  PASS frozen: payout sE7RHFciW3bmoTooKjf5QJtUy75 stays AwaitingPayment, seq unchanged (4)
+  btcpay: info: TeeSigner: tee-signer: payout batch signed in the enclave (seq 4, session b07572bea48308be3ee613a41b894938) and broadcast as 1b481cda…7481
+  btcpay: warn: TeeSigner: tee-signer: enclave refused the payout batch: FROZEN
+  PASS BTCPay logged the refusal by name (FROZEN)
+== gate (a) again after a BTCPay restart
+  PASS still cold after restart
+  PASS nbxv1_metadata key rows still 0
+R3 gates: ALL PASS (signer left FROZEN for the operator to unfreeze with the owner key)
+```
+
+Three signet transactions were signed by the enclave through the plugin during this round, each
+with a receipt whose txid equals what BTCPay broadcast (`signerd /v1/receipts`):
+
+| seq | txid | payee | enclave's classification | window after |
+|---|---|---|---|---|
+| 2 | `5a59d34671dc1d362d3fadeebb594f11eed7e7b5e3820dfa1d11bc0e6539946b` | `tb1qm0u7r…qflw` — turned out to be an address **of the wallet** (I had reused the R2 destination) | **own** via the verified origin hint; `window_unlisted` unchanged at 5000, fee 705 charged | outflow 6705 / unlisted 5000 / fees 1705 |
+| 3 | `74e3b89ab2cb3fd3d1974064b9723f16f91575bc45bcbc2ea3f08eda75f2854c` | throwaway P2WPKH, random program | unlisted 2000 + fee | unlisted 7000 |
+| 4 | `1b481cdac590cbb1723ccf0699eb81bdbe084317499aad9c8de1f5a467e27481` | throwaway P2WPKH, random program | unlisted 2000 + fee | unlisted 9000 |
+
+Seq 2 is worth a line: the plugin presented a payout to a wallet address with NBXplorer's own
+`bip32_derivation` hint; the enclave verified the hint and classified the output **own** (fee only
+charged to the window) — exactly R1's classifier at work in the live stack, not a plugin decision.
+The gates were then fixed to use a fresh throwaway address per payout (BTCPay also refuses a
+second payout to an address already used by another: `duplicate-destination`).
+
+Fee: the node had no estimate (`estimatesmartfee 2` → "Insufficient data"); NBXplorer used the
+store's `FallbackFeeRate` 5 sat/vB → 705 sat on 141 vB; under `maxFeeRate 50` / `maxFeeAbs 5000`.
+Without §2's setting BTCPay would have asked for 100 sat/vB and the enclave would have refused
+every payout with `FEE_RATE`.
+
+Also exercised, outside the gate script: the owner's `unfreeze` through the SSH tunnel after each
+frozen run (`{"applied":true}`); the signer is left unfrozen at the end of the round.
 
 ## 5. Decisions to rule
 

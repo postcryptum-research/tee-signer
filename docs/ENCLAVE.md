@@ -166,6 +166,11 @@ future-time rule (no clock). Signet's cheap PoW and regtest's absent PoW are lab
    (`readelf -d enclave.so | grep -c TEXTREL` == 0).
 4. `sgx_sign` with `DisableDebug=1` in the config for release; on T1 the launch is debug by
    hardware necessity and `status.tier = "T1-debug"`.
+   Measured 2026-11-03 on the T1 box: `make RELEASE=1` builds and passes every gate (`DisableDebug=1`,
+   no test symbols); launching that enclave fails with debug=0 (`sgx_create_enclave` 0x4004
+   `SGX_ERROR_SERVICE_INVALID_PRIVILEGE`: Intel's Launch Enclave issues no token for a non-whitelisted
+   MRSIGNER on non-FLC hardware) and with debug=1 (0x2004 `SGX_ERROR_INVALID_ATTRIBUTE`). The build
+   is the Makefile's choice; the launch mode is the platform's — FLC hardware lifts it (R5).
 5. Reproducibility (C-R1-3): two builds in the pinned container compare equal on MRENCLAVE and
    every SIGSTRUCT field except `header.date` and its signature (`sgx_sign dump`), never on the
    `.so` hash.
