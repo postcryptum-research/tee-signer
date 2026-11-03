@@ -76,6 +76,7 @@ enum Cmd {
     Smoke,
 }
 
+#[allow(clippy::needless_return, unreachable_code)]
 fn load_enclave(args: &Args) -> Result<Box<dyn Enclave>> {
     #[cfg(feature = "sgx")]
     {
@@ -294,6 +295,7 @@ fn authorized(headers: &HeaderMap, token: &str) -> bool {
 struct StatusJson {
     enclave: &'static str,
     initialised: bool,
+    installed: bool,
     tier: String,
     mrenclave: String,
     session_id: String,
@@ -335,6 +337,7 @@ async fn h_status(AxState(s): AxState<Shared>, headers: HeaderMap) -> axum::resp
         Ok(st) => Json(StatusJson {
             enclave: d.enclave.kind(),
             initialised: true,
+            installed: st.installed,
             tier: st.tier,
             mrenclave: hex::encode(st.mrenclave),
             session_id: hex::encode(st.session_id),

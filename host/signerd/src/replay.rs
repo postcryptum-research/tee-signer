@@ -224,7 +224,9 @@ pub fn smoke(e: &mut dyn Enclave) -> Result<()> {
     check(got == entropy, "recovery blob opens to the entropy")?;
     check(rcore_decrypt(&owner.raw_sk(), &ir.fingerprint, &ir.xpub, &ir.recovery_blob).is_err(), "recovery blob refuses the owner key")?;
     let r = e.call(op::STATUS, &ir.sealed)?;
-    check(!r.ok && r.reasons == vec!["STATE_UNSEALABLE"], "keys-only blob is not a state")?;
+    check(r.ok && !proto::StatusResponse::decode(&r.payload).map(|s| s.installed).unwrap_or(true), "keys-only blob reports installed=false")?;
+    let r = e.call(op::POLICY, &ir.sealed)?;
+    check(!r.ok && r.reasons == vec!["STATE_UNSEALABLE"], "keys-only blob has no policy")?;
 
     // INSTALL
     let genesis = Header {

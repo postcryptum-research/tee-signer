@@ -217,8 +217,11 @@ fn full_flow_init_install_headers_judge_sign_and_fork_refusal() {
     let got = rcore::recovery::decrypt(&recovery.raw_sk(), &ir.fingerprint, &ir.xpub, &ir.recovery_blob).unwrap();
     assert_eq!(got, entropy);
     assert!(rcore::recovery::decrypt(&owner.raw_sk(), &ir.fingerprint, &ir.xpub, &ir.recovery_blob).is_none());
-    // a keys-only blob cannot be used for anything but INSTALL
+    // a keys-only blob answers STATUS with installed=false and is refused by everything else
     let r = call(op::STATUS, &ir.sealed);
+    assert!(r.ok);
+    assert!(!proto::StatusResponse::decode(&r.payload).unwrap().installed);
+    let r = call(op::POLICY, &ir.sealed);
     assert!(!r.ok && r.reasons == vec!["STATE_UNSEALABLE"]);
 
     // --- INSTALL the owner-signed mandate (now that the fingerprint is known) ---

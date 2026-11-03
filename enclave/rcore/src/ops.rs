@@ -262,18 +262,48 @@ fn install(input: &[u8]) -> Response {
 }
 
 fn status(input: &[u8]) -> Response {
-    let (env, s) = match open_full(input) {
-        Ok(x) => x,
+    let env = match open(input) {
+        Ok(e) => e,
         Err(r) => return r,
     };
     let secp = secp();
     let Some(network) = network_from(env.network) else { return refuse(Reason::PolicyNetwork.into()) };
     let Some(keys) = derive_keys(&secp, network, &env.seed) else { return refuse_code("KEY_DERIVATION") };
     let Some(idpk) = identity_pk(&secp, &env.identity_sk) else { return refuse_code("KEY_DERIVATION") };
+    let Some(s) = env.state.clone() else {
+        // keys-only blob: identity and wallet facts, nothing else
+        let r = proto::StatusResponse {
+            installed: false,
+            tier: sgx::tier().to_string(),
+            mrenclave: sgx::mrenclave(),
+            session_id: session::id(),
+            network: env.network,
+            xpub: keys.xpub,
+            fingerprint: keys.fingerprint,
+            identity_pk: idpk,
+            nonce: 0,
+            seq: 0,
+            frozen: false,
+            armed: true,
+            chain_frozen: false,
+            best_height: 0,
+            best_hash: [0; 32],
+            window_start: 0,
+            window_outflow: 0,
+            window_unlisted: 0,
+            window_fees: 0,
+            mandate_hash: [0; 32],
+            pending: None,
+            pending_owner: None,
+            clock_label: clock_label(network).to_string(),
+        };
+        return Response::ok(r.encode());
+    };
     let mut st = s.clone();
     st.activate_pending();
     st.roll_window();
     let r = proto::StatusResponse {
+        installed: true,
         tier: sgx::tier().to_string(),
         mrenclave: sgx::mrenclave(),
         session_id: session::id(),

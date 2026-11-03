@@ -11,6 +11,8 @@ rpc-endpoints
 recovery-blob*
 owner-*.json
 !owner-*.example.json
+# local test wallets and keys (never committed)
+.local/
 # build output
 target/
 *.o

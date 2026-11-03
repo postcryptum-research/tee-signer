@@ -272,9 +272,12 @@ impl IdentityCard {
     }
 }
 
-/// `STATUS` response — every field public.
+/// `STATUS` response — every field public. Between `INIT` and `INSTALL` (`installed == false`)
+/// only the identity fields are meaningful; the rest are zero.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatusResponse {
+    /// A mandate is installed (the blob is a full one).
+    pub installed: bool,
     /// Tier label.
     pub tier: String,
     /// MRENCLAVE.
@@ -325,7 +328,8 @@ impl StatusResponse {
     /// Canonical bytes.
     pub fn encode(&self) -> Vec<u8> {
         let mut e = Enc::new();
-        e.str(&self.tier)
+        e.bool(self.installed)
+            .str(&self.tier)
             .fixed(&self.mrenclave)
             .fixed(&self.session_id)
             .u8(self.network)
@@ -357,6 +361,7 @@ impl StatusResponse {
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let r = StatusResponse {
+            installed: d.bool()?,
             tier: d.str(32)?,
             mrenclave: d.fixed()?,
             session_id: d.fixed()?,
