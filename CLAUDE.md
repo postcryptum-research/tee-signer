@@ -67,3 +67,13 @@ cd host  && cargo test
 cd owner && cargo test
 # enclave builds are SERVER-SIDE (SGX SDK + hardware): make SGX_MODE=HW SGX_DEBUG=1 on T1 hardware
 ```
+
+## Parking routine (owner's rule, 2026-11-03)
+
+At the end of every working session run `scripts/park.sh --remote`: it deletes this project's
+own debug build profiles on the laptop (release binaries and all state stay), reports the sizes
+that matter, and checks the shared machines read-only — no throwaway `tee-*-test` containers or
+state dirs left on the Azure node, no stray SSH forwards on the Hetzner box beyond the owner's
+access ports, disk usage on both. Shared scratch (`/tmp`, `/tmp/claude-1000`) is reported, never
+swept by the script. Anything the session created outside the project tree is removed by its
+enumerated path during the session, not left for the routine.
