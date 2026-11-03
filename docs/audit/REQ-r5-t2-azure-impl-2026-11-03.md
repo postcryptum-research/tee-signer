@@ -120,6 +120,19 @@ wallet record updated (pinned MRSIGNER, ProdID, SVN; attestation recorded)
   node, store wallet = the T2 xpub cold, `xpubMatches` true against the T2 enclave, zero key rows
   in `nbxv1_metadata`). `gates.sh run`: <<PENDING — the node's signet IBD/NBXplorer sync>>.
 
+### 5a. Two host-side findings from the T2 run (untrusted; fixed on the branch)
+
+- **Cookie rotation stalled the feed.** `bitcoind` regenerates its RPC cookie at every restart; the
+  daemon read it once at start, so after the node's pruning restart every feed round failed with
+  "error decoding response body" (a 401 body) while the enclave sat at its checkpoint. `signerd`
+  now re-reads the cookie every round (`Bitcoind::refresh_auth`). After the fix the T2 enclave went
+  checkpoint 329261 → tip in one round (`headers accepted=27`). The enclave was never wrong — it
+  simply did not move, which is the fail-closed shape — but a stalled feed is a liveness defect the
+  R4 monitor must also see (tip lag).
+- **Rebuild after a host-only change does not move the measurement:** `build-4` (daemon changed,
+  enclave sources untouched) compares REPRODUCIBLE against `build-3` — the measurement is the
+  enclave's alone, as the design claims.
+
 ## 6. Decisions to rule / things to know
 
 - **D-R5-7** The host label for a production launch is `enclave: "sgx"`; the trusted label is the
