@@ -1,0 +1,25 @@
+# secrets and state — never committed (CLAUDE.md hard rule 7)
+*.sealed
+*.seed
+*.mnemonic
+*.key
+*.pem
+*.auth
+.env
+.env.*
+rpc-endpoints
+recovery-blob*
+owner-*.json
+!owner-*.example.json
+# build output
+target/
+*.o
+*.a
+*.so
+*.signed.so
+build/
+# editor / os
+.vscode/
+.idea/
+*.swp
+.DS_Store

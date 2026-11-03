@@ -1,0 +1,176 @@
+# The mandate (policy) — field by field
+
+**Status:** draft v1 for the first audit round (2026-11-03). The JSON below is the owner-side
+representation; the enclave sees only the **canonical binary encoding** produced by `signer-core`
+(`Mandate::to_canonical`), and the owner signs that encoding. Unknown fields are an error on both
+sides (a misspelled cap must never become "unlimited"). Amounts are satoshis as unsigned integers;
+heights are block heights; there are no wall-clock fields.
+
+## 1. The one rule: the file is intent, the sealed state is law
+
+Editing a mandate file changes nothing. The enclave enforces only the mandate that was installed by
+an owner-signed `PolicyUpdate` with the next nonce (`DESIGN.md §6`). `owner-cli policy show`
+prints, field by field, the installed mandate next to a file, marking every `DIFF` — the same habit
+as TPM_sign's `permission show`.
+
+## 2. Example — a merchant with daily sweeps to cold storage and small customer payouts
+
+```json
+{
+  "version": 1,
+  "network": "signet",
+  "wallet": {
+    "fingerprint": "d34db33f",
+    "account": "84'/1'/0'",
+    "scriptTypes": ["p2wpkh"]
+  },
+  "destinations": {
+    "trusted": [
+      { "label": "cold", "descriptor": "wpkh([aabbccdd/84'/1'/0']tpub.../0/*)", "gap": 20,
+        "maxPerTx": 100000000, "maxPerWindow": 500000000 },
+      { "label": "exchange-deposit", "address": "tb1q...",
+        "maxPerTx": 20000000, "maxPerWindow": 50000000 }
+    ],
+    "unlisted": { "maxPerTx": 1000000, "maxPerWindow": 5000000 }
+  },
+  "limits": {
+    "maxPerTx": 100000000,
+    "window": { "blocks": 144, "maxOutflow": 500000000 },
+    "maxFeeAbs": 100000,
+    "maxFeeRate": 100,
+    "maxInputs": 64,
+    "maxOutputs": 32,
+    "ownIndexGap": 100,
+    "maxReorg": 6
+  },
+  "rules": {
+    "sighash": "ALL",
+    "payjoin": "inflow-only",
+    "opReturn": "none",
+    "rbf": true
+  },
+  "chain": { "checkpoint": { "hash": "0000...", "height": 250000 } },
+  "freshness": { "required": true, "witnessPubKey": "04...", "maxTipLag": 6 },
+  "validity": { "notAfterHeight": 300000 },
+  "timelockBlocks": 144
+}
+```
+
+## 3. Fields
+
+### Top level
+
+| Field | Required | Type | Meaning |
+|---|---|---|---|
+| `version` | yes | `1` | encoding version; anything else is refused |
+| `network` | yes | `mainnet` \| `testnet4` \| `signet` \| `regtest` | selects chain parameters and the address encoding; must equal the network sealed at init |
+| `wallet` | yes | object | the wallet this mandate governs; must equal the sealed wallet |
+| `destinations` | yes | object | destination classes and their caps |
+| `limits` | yes | object | transaction-wide bounds |
+| `rules` | yes | object | structural rules |
+| `chain` | yes | object | the header-chain checkpoint |
+| `freshness` | yes | object | the freshness-witness precondition (`DESIGN.md §3`) |
+| `validity` | yes | object | when the mandate stops working |
+| `timelockBlocks` | yes | u32 ≥ 1 | how long a loosening update waits before activation |
+
+### `wallet`
+
+| Field | Type | Meaning |
+|---|---|---|
+| `fingerprint` | 4 bytes hex | master fingerprint, as returned at init |
+| `account` | path | account derivation; v1 accepts `84'/coin'/n'` only |
+| `scriptTypes` | list | v1: `["p2wpkh"]`; `p2tr` is a later REQ. An input or own output of another type is refused |
+
+### `destinations`
+
+A **trusted** entry is matched by `address` (exact `scriptPubKey`) or by `descriptor` (v1: `wpkh(KEY/0/*)`
+and `wpkh(KEY/1/*)`, `tr(KEY/…)` later; `KEY` an xpub with origin). Descriptor matching derives
+indices `0..gap` from the descriptor's xpub in-enclave and compares scripts; `gap` ≤ 1000. Each
+trusted entry has its own `maxPerTx` and `maxPerWindow`. A `trusted` output counts toward the entry's
+caps **and** toward `limits.window.maxOutflow`.
+
+`unlisted` is every output that is neither own nor trusted. `maxPerTx` bounds the **sum** of unlisted
+outputs in one transaction; `maxPerWindow` their sum over the window. Set both to `0` to refuse
+unlisted destinations entirely (a sweep-only wallet).
+
+### `limits`
+
+| Field | Meaning |
+|---|---|
+| `maxPerTx` | upper bound on **net outflow** (Σ own inputs − Σ own outputs) of one transaction, any class |
+| `window.blocks` | window length; v1 fixes the semantic as *fixed windows starting at `window.start_height`*, rolled forward by whole windows when `best_height − start ≥ blocks` |
+| `window.maxOutflow` | upper bound on the sum of net outflows in a window |
+| `maxFeeAbs` | fee = Σ all inputs − Σ all outputs, absolute bound |
+| `maxFeeRate` | sat/vB against an **upper-bound** vsize estimate computed in-enclave from the input/output types (foreign inputs assumed at the largest standard size) |
+| `maxInputs`, `maxOutputs` | sizes the fixed enclave heap; refuse above |
+| `ownIndexGap` | an own output may use an index up to `own_index_bound + gap` on its branch; using it raises the bound |
+| `maxReorg` | a reorg deeper than this freezes the signer until the owner re-pins the checkpoint |
+
+### `rules`
+
+| Field | Values | Meaning |
+|---|---|---|
+| `sighash` | `ALL` | v1 accepts only `ALL`; a PSBT `sighash_type` of anything else, or absent-with-default on a non-ALL flag, is refused |
+| `payjoin` | `none` \| `inflow-only` \| `outflow-allowed` | `none`: any foreign input refuses. `inflow-only`: foreign inputs allowed only when net outflow ≤ 0 (the merchant receives; the usual payjoin receiver case). `outflow-allowed`: foreign inputs allowed and net outflow judged by the same caps as a normal spend |
+| `opReturn` | `none` \| `zero-value` | whether a zero-value `OP_RETURN` output is tolerated (it counts as unlisted with amount 0 and does not count toward caps) |
+| `rbf` | bool | whether `nSequence < 0xfffffffe` is accepted; a replacement is a new transaction and is charged again (conservative) |
+
+### `chain`
+
+`checkpoint.{hash, height}`: the header the enclave starts from. An update may only move the
+checkpoint **forward** to a header the enclave has already verified, or re-pin after a freeze.
+
+### `freshness`
+
+| Field | Meaning |
+|---|---|
+| `required` | `true`: every signature needs a witness token whose tip is within `maxTipLag` blocks of the enclave's best header and whose `last_seen_seq ≤` the enclave's sequence; a rolled-back enclave therefore pauses instead of overspending. `false`: no token needed; rollback is bounded and detected only (labeled) |
+| `witnessPubKey` | P-256 public key of the owner's monitor; must be present when `required` |
+| `maxTipLag` | how stale a token's tip may be, in blocks (1–144) |
+
+### `validity`
+
+`notAfterHeight`: after this height every signing request is refused until a new mandate is
+installed. Pick it like a certificate expiry (e.g. +1 year of blocks ≈ 52 560). There is no
+`notBefore`: an update activates by nonce and timelock.
+
+## 4. What is NOT in the mandate, deliberately
+
+- No wall-clock times. The enclave has none.
+- No "approved invoice" or "approved payout" lists from BTCPay. BTCPay is the compromised party in
+  the threat model; nothing it asserts can loosen a rule. Customer payouts are what the `unlisted`
+  caps are for.
+- No per-transaction owner approval. That would be a hardware wallet, and merchants already have
+  those; the point here is unattended signing inside a bound.
+
+## 5. Tightening vs loosening (what applies at once, what waits the timelock)
+
+An update is **tightening** iff every one of these holds; otherwise it is loosening and waits
+`timelockBlocks` of the *installed* mandate:
+
+| Field | tightening direction |
+|---|---|
+| `destinations.trusted` | entries removed, or an entry's `maxPerTx` / `maxPerWindow` / `gap` lowered; **no entry added or changed in address/descriptor** |
+| `destinations.unlisted.*` | lowered |
+| `limits.maxPerTx`, `window.maxOutflow`, `maxFeeAbs`, `maxFeeRate`, `maxInputs`, `maxOutputs`, `ownIndexGap`, `maxReorg` | lowered |
+| `limits.window.blocks` | raised (a longer window with the same budget is tighter) |
+| `rules.payjoin` | moved toward `none`; `rules.opReturn` toward `none`; `rules.rbf` to `false` |
+| `chain.checkpoint` | moved forward |
+| `freshness.required` | `false → true`; `freshness.maxTipLag` lowered; **`witnessPubKey` changed = loosening** (a new witness could hide a rollback) |
+| `validity.notAfterHeight` | lowered |
+| `timelockBlocks` | raised |
+| `network`, `wallet` | unchanged (a change is refused outright) |
+
+Nonce, owner rotation and recovery: `DESIGN.md §6–7`.
+
+## 6. Refusal reasons (machine-readable, stable identifiers)
+
+`PSBT_PARSE`, `UNKNOWN_FIELD`, `INPUT_NO_PREVTX`, `INPUT_PREVTX_MISMATCH`, `INPUT_NOT_OWN`,
+`INPUT_FOREIGN_FORBIDDEN`, `INPUT_SCRIPT_TYPE`, `OUTPUT_SCRIPT_TYPE`, `CHANGE_INDEX_BEYOND_GAP`,
+`SIGHASH`, `TX_VERSION`, `RBF_FORBIDDEN`, `OPRETURN_FORBIDDEN`, `CAP_TX`, `CAP_WINDOW`,
+`CAP_UNLISTED_TX`, `CAP_UNLISTED_WINDOW`, `CAP_TRUSTED_TX(label)`, `CAP_TRUSTED_WINDOW(label)`,
+`FEE_ABS`, `FEE_RATE`, `TOO_MANY_INPUTS`, `TOO_MANY_OUTPUTS`, `OVERFLOW`, `MANDATE_EXPIRED`,
+`FROZEN`, `CHAIN_STALE`, `CHAIN_REORG`, `FRESHNESS_MISSING`, `FRESHNESS_SIG`, `FRESHNESS_TIP`,
+`FRESHNESS_SEQ_BEHIND` (rollback suspected — needs owner re-arm), `POLICY_SIG`, `POLICY_NONCE`, `POLICY_NETWORK`,
+`POLICY_WALLET`, `POLICY_PENDING`, `STATE_UNSEALABLE`. Every one of them has at least one
+refusal vector in `vectors/`.
