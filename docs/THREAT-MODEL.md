@@ -130,5 +130,8 @@ the mandate. "`signerd` checked it" or "BTCPay only sends valid PSBTs" is never 
 | Freshness witness key compromised | all | the witness can only pause signing or hide a rollback; it cannot loosen the mandate or sign | labeled |
 | Recovery key + blob stolen together | all | = seed theft; custody guidance | labeled |
 | RBF counted twice toward the budget | all | conservative (over-counts); v2 may recognise replacements | labeled |
+| Fee burn and budget exhaustion by V1 | all | fee ∈ net outflow and every class counts toward `window.maxOutflow`, so the burn is bounded by the window budget (not by `maxFeeAbs`); `maxFeePerWindow` lowers it; exhaustion delays legitimate payouts to the next window (auditor R5) | labeled |
+| Rollback within `maxTipLag` of the witness | all | a token with the rolled-back sequence and a still-fresh tip passes once; `maxTipLag` is the exposure, shown per network at `GET /v1/status` (auditor R13) | labeled |
+| Owner key as an encrypted file (D3) | all | permitted only off the BTCPay box; the machine that decrypts it holds the key at that moment (TPM_sign `KEY_POLICY.md` rule 5); hardware recommended | labeled |
 | secp256k1 side channels | T2 | constant-time library; no claim beyond that | labeled |
 | Enclave bugs (parser, arithmetic) | all | pure-module tests + negative vectors + audit | the project's own job |

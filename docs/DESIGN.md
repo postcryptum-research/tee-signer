@@ -1,7 +1,7 @@
 # Design
 
-**Status:** draft for the first audit round (2026-11-03). Pre-questions Q1–Q3 ruled
-(`audit/RESP-prequestions-2026-11-03.md`); the runtime decision in §8 rests on the lab of the same day.
+**Status:** DESIGN-PASS (CONDITIONAL), `audit/RESP-design-2026-11-03.md`, 2026-11-03. Conditions
+are worked in `audit/CONDITIONS.md`; implementation proceeds on branches per round.
 
 ## 1. Components
 
@@ -51,8 +51,12 @@
    signed **identity card** `{MRENCLAVE, xpub, fingerprint, identity_pk, tier}` the owner stores
    (TOFU made checkable: a swapped enclave cannot unseal the seed, so the card stops matching), and
    the **recovery blob** (mnemonic encrypted to the recovery key: ephemeral P-256 ECDH + HKDF-SHA256 +
-   AES-256-GCM, AAD = fingerprint ‖ xpub). The recovery blob is produced **once**, at init; no later
-   ecall can produce it or anything derived from the seed except signatures and public keys.
+   AES-256-GCM, AAD = fingerprint ‖ xpub). The ephemeral scalar comes from in-enclave RDRAND and is
+   zeroized after the key agreement; the GCM nonce is a constant because the key is used exactly
+   once — a fresh ephemeral gives a fresh HKDF output, so nonce uniqueness is structural, not a
+   counter to get wrong (auditor R8). The recovery blob is produced **once**, at init; no later
+   ecall can produce it or anything derived from the seed except signatures and public keys, and a
+   vector proves it (C-R8c).
 2. **Owner verifies off-box.** `owner-cli` on the owner's machine checks that the blob decrypts to
    a mnemonic whose `m/84'/coin'/0'` xpub equals the one the enclave returned (the decryption runs
    on an offline machine, per TPM_sign `KEY_POLICY.md` rule 5), records the xpub and fingerprint,
@@ -69,7 +73,10 @@
 
 One blob, sealed with `sgx_seal_data` (MRENCLAVE policy on T1 — a different enclave cannot open it;
 on T2 MRSIGNER+ISVSVN policy with explicit upgrade rules is a later REQ), versioned, written by
-`signerd` to disk after every state change and read at load. Contents:
+`signerd` to disk after every state change and read at load. **At load the blob is untrusted host
+input**: the seal MAC is verified before a byte of it is used, a failed unseal refuses every
+operation, and a *valid but older* blob is exactly what the freshness witness exists to catch
+(auditor R7). Contents:
 
 ```
 SealedState v1 {
@@ -101,8 +108,10 @@ layers, both ruled acceptable (RESP-prequestions Q3):
   only if it holds a token whose tip is in its verified chain within `freshness.maxTipLag` blocks of
   its best header **and** whose `last_seen_seq ≤ own seq`. A rolled-back enclave remembers a lower
   `seq` than the witness has seen, so every fresh token fails the second check and the enclave
-  refuses until the owner re-arms it (an owner-signed `Rearm { seq }`). An old token replayed after
-  a rollback fails the first check once the chain has moved. The witness key can pause signing or
+  refuses until the owner re-arms it (an owner-signed `Rearm { enclave_id, nonce, seq }` — with the
+  owner nonce, so a captured Rearm cannot re-enable a later rollback; auditor R13). An old token
+  replayed after a rollback fails the first check once the chain has moved; **within `maxTipLag`
+  blocks of the rollback point it passes once** — `maxTipLag` is the residual, chosen small. The witness key can pause signing or
   hide a rollback; it can never loosen the mandate or sign — so a hosted "watchtower" can hold it.
 
 ## 4. Signing flow
@@ -174,7 +183,8 @@ secp256k1). Both are later rounds; v1 is P-256 through `hw-signer`.
 3. `signerd` submits; the enclave verifies: signature, `enclave_id` match, nonce, network match,
    checkpoint not older than the current one.
 4. **Tightening** (every field moves in the restrictive direction — defined field by field in
-   `POLICY.md §5`) applies at once. **Loosening** becomes `pending` with `activation_height =
+   `POLICY.md §5`; the classifier fails toward loosening on any field it cannot prove, auditor R6)
+   applies at once. **Loosening** becomes `pending` with `activation_height =
    best_height + timelock` (timelock from the *installed* mandate). While pending, the installed
    mandate stays in force; `GET /v1/policy` and every receipt carry the pending hash.
 5. **Cancel**: a signed `Cancel { enclave_id, nonce }` by the owner **or** the recovery key clears
@@ -190,11 +200,16 @@ the blob path).
 ## 7. Owner and recovery keys
 
 Both are P-256 so that TPM_sign's `hw-signer` backends apply unchanged: `yubikey-piv` (PIN + touch),
-`tpm`, `secure-enclave`, `windows-tpm`, `tropic01`, and `software` for tests only. Rules carried
-from TPM_sign `KEY_POLICY.md`: the owner key never lives on the merchant's BTCPay box; the recovery
-key is cold (encrypted keyfile on removable media, scrypt N ≥ 2^18 + AEAD, decrypted only off the
-box); the agent (here: the enclave) never opens the owner key — the enclave only holds the
-*public* keys.
+`tpm` (Linux TPM 2.0 — the owner's laptop qualifies), `secure-enclave`, `windows-tpm`, `tropic01`.
+**Owner decision D3:** any of these is acceptable for the owner key, and so is an **encrypted
+key file** as the floor — memory-hard KDF (scrypt N ≥ 2^18 or argon2id ≥ 256 MiB) + AEAD,
+passphrase typed at use, never stored — **provided it is never on the BTCPay box**. Hardware is
+the recommendation; the file is what a merchant without a device may use. A **plaintext**
+software key is refused for every state-changing command and the feature that allows it in tests
+is compile-gated and provably absent from release builds (auditor R9, C-R9). Rules carried from
+TPM_sign `KEY_POLICY.md`: the owner key never lives on the merchant's BTCPay box; the recovery
+key is cold (encrypted keyfile on removable media, decrypted only off the box); the agent (here:
+the enclave) never opens the owner key — the enclave only holds the *public* keys.
 
 Why the enclave verifies P-256 rather than secp256k1 for the owner: it is what every consumer
 secure element speaks (the TPM_sign pivot). The transaction key stays secp256k1 inside the
@@ -217,10 +232,13 @@ Crate closure inside the enclave (each a provenance line, each a REQ to change):
 `aes-gcm` + `hkdf` (recovery blob). Host-side `base64` is **not** in the enclave: the PSBT crosses
 the ecall as bytes; `signerd` decodes text forms.
 
-Build rules the lab paid for (all enforced by the Makefile, each with a check):
+Build rules the lab paid for (all enforced by the Makefile, each with a check; the auditor made
+1, 3, 4 and 9–11 **hard build gates**, C-R10a–d):
 1. **No runtime CPU detection inside the enclave.** `cpuid` is `#UD` in an enclave; `sha2`'s
    `cpufeatures` path crashed the first run (`0x1006`). Every hash/crypto crate is built with its
-   software path (`force-soft`) and the build asserts `objdump -d enclave.so | grep -c cpuid` is 0.
+   software path (`force-soft`) **and the build asserts `objdump -d enclave.so | grep -c cpuid`
+   is 0** — the assertion, not the feature flag, is the gate, because a transitive dependency can
+   reintroduce a runtime probe.
    (trust-bridge reached the same rule from the other side: its Teaclave patch 2 replaces
    `is_x86_feature_detected!` with a compile-time constant.)
 2. **`lto = true`, `codegen-units = 1`** in the release profile: removes the sysroot's
@@ -240,6 +258,17 @@ Build rules the lab paid for (all enforced by the Makefile, each with a check):
    `ENCLAVE_CRASHED`; the budget is never charged on that path (commit happens before signing, but
    a panic before commit leaves state untouched, and a panic after commit loses nothing but a
    signature).
+9. **Every enclave crate is exact-version pinned** (`=x.y.z`), `Cargo.lock` committed, builds
+   `--locked`, and `core/PROVENANCE.md` carries one line per crate: version, source, why it is in
+   the TCB. Changing the closure is a REQ.
+10. **Reproducible enclave build**: a pinned container image, pinned toolchain, `--locked`,
+    `SOURCE_DATE_EPOCH`, no path-dependent output; two independent builds must give the same
+    MRENCLAVE. Required for T2 (DCAP attests a MRENCLAVE the owner must tie to audited source),
+    recommended for T1 (lets a careful owner recompute the identity card's MRENCLAVE).
+11. **secp256k1 context randomization** wired to `sgx_read_rand` is a T2 gate (side-channel
+    blinding), scheduled in R2, not optional.
+12. **The test-only software owner key** is behind a cargo feature that the release build script
+    refuses, and the build asserts the symbol is absent from the release artifacts (C-R9).
 
 Why not Teaclave's `sgx_tstd` (trust-bridge's prover route): it exists for crates that need `std`
 (Orchard); nothing here does, and its sysroot adds 17 crates to the TCB that no cargo listing
@@ -314,8 +343,8 @@ proposal to bring upstream once v1 runs, since the four sites are the entire sur
 |---|---|---|
 | R0 | this design + `POLICY.md` + `THREAT-MODEL.md`; lab result; seam study | DESIGN-PASS on `REQ-design` |
 | R1 | `signer-core`: PSBT parse, derivation, classification, policy engine, canonical encodings, receipts; host tests; refusal vectors from signet | IMPL-PASS |
-| R2 | `signer-enclave` + `signerd`: init, seal, sign, recovery blob; `owner-cli` with `software` + `yubikey-piv` | IMPL-PASS on T1 hardware |
-| R3 | BTCPay plugin + docker fragment; e2e on signet with a BTCPay instance | IMPL-PASS |
+| R2 | `signer-enclave` + `signerd`: init, seal, sign, recovery blob; `owner-cli` with the `hw-signer` backends and the encrypted keyfile (D3). IMPL gates named now (C-R10e): sealing verified on load, commit-seal ordering under concurrent ecalls, context randomization, no-cpuid and no-software-key build asserts, reproducible build | IMPL-PASS on T1 hardware |
+| R3 | BTCPay plugin + docker fragment; e2e on signet with a BTCPay instance, including the vector that asserts `IsHotWallet=false` end to end and zero key material in `nbxv1_metadata` (C-R11c) | IMPL-PASS |
 | R4 | block clock, timelocked updates, freeze/cancel, receipts + owner monitor + freshness witness | IMPL-PASS |
 | R5 | T2: DCAP-attested init and receipts on Azure DCsv3; `DisableDebug=1` build | IMPL-PASS |
 | later | P2TR (`m/86'`), PSBTv2, RBF-aware accounting, phone owner app (TPM_sign mobile owner), hardware-wallet owner key with display, PayJoin via the upstream `IOnChainSigner` path | — |

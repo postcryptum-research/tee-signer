@@ -1,9 +1,9 @@
 # tee-signer — a policy-enforcing TEE signer for BTCPay Server hot wallets
 
 **Working name.** Product name to be chosen by the owner.
-**Status: design phase (2026-11-03).** No enclave code exists yet; the first
-audit round (`docs/audit/REQ-design-*.md`) is being prepared. Nothing here is
-deployed, attested or audited. Testnet/signet only at every stage.
+**Status: DESIGN-PASS (CONDITIONAL) on 2026-11-03** (`docs/audit/RESP-design-2026-11-03.md`);
+implementation of `signer-core` starts on a branch. No enclave code is merged. Nothing here is
+deployed, attested or audited at the implementation level. Testnet/signet only at every stage.
 
 ## The problem
 

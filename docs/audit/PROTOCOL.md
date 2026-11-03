@@ -25,9 +25,14 @@ Follows the **AUDIT-PROTOCOL v1.0** REQ/RESP cycle used by `77ph/SGX_project`,
   trusted layer, not the host (F4: here, the budget is charged inside the enclave before the
   signature exists).
 
+## The queue
+
+`CONDITIONS.md` is the worked table of every carried condition (round, status). A condition is
+discharged only by a RESP that names it.
+
 ## Rounds
 
 | REQ | Date | Status |
 |---|---|---|
 | pre-questions Q1–Q3 | 2026-11-03 | RULED → `RESP-prequestions-2026-11-03.md` (all tiers acceptable, labels exact; freshness witness recommended) |
-| `REQ-design-2026-11-03.md` | 2026-11-03 | SENT to the auditor 2026-11-03 (R1–R14; content pinned by SHA-256 in its §9) — awaiting RESP |
+| `REQ-design-2026-11-03.md` | 2026-11-03 | **DESIGN-PASS (CONDITIONAL)** → `RESP-design-2026-11-03.md`; conditions worked in `CONDITIONS.md` |

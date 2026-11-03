@@ -24,7 +24,7 @@ PostgreSQL 5432, nginx 80/443. **Survey 2026-11-03, read-only.** Nothing of thei
 | directories | `~/btcpay-tee-lab/` (feasibility lab), `~/tee-signer/` (repo), `~/tee-signer-state/` (sealed state, signet only) | lab in use |
 | ports | `127.0.0.1:7390` signerd API · `127.0.0.1:7391` signerd metrics · `7392-7399` reserved (BTCPay test stack, signet bitcoind if own) | reserved, unused |
 | systemd units | `tee-signer-*` | none yet |
-| chain daemons | own `bitcoind -signet` with own datadir `~/tee-signer-signet/` and ports from the reserved range **only if** trust-bridge's signet node (`~/trust-bridge/btc-signet`) cannot be shared read-only; never another project's wallet | undecided |
+| chain daemons | **none of our own (owner D5, 2026-11-03).** Headers come from the shared trust-bridge `bitcoind -signet`: RPC `127.0.0.1:10810`, cookie auth from its datadir `~/trust-bridge/btc-signet` (same unix user), **read-only RPC subset only**: `getblockchaininfo`, `getbestblockhash`, `getblockhash`, `getblockheader`. Never its wallet, never a write RPC, never its P2P. A BTCPay test stack (R3) brings its own `bitcoind` inside its compose project on the reserved ports | decided |
 
 Occupied ports on the host (2026-11-03 `ss -ltn`): 22, 80, 443, 1080-1082, 3001-3003, 3005,
 3011-3013, 3015, 4003, 5005-5006, 5015-5016, 5432, 6006-6007, 6016-6017, 7777, 8088, 9085-9089,

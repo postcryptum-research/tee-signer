@@ -93,6 +93,15 @@ caps **and** toward `limits.window.maxOutflow`.
 outputs in one transaction; `maxPerWindow` their sum over the window. Set both to `0` to refuse
 unlisted destinations entirely (a sweep-only wallet).
 
+**The fee is inside the net outflow (auditor R5, load-bearing).** Net outflow = Σ own inputs −
+Σ own outputs = Σ non-own outputs **+ fee**. Every class — trusted included — counts toward
+`limits.window.maxOutflow`. So the amount an attacker can burn in fees per window is bounded by
+`window.maxOutflow`, **not** by `maxFeeAbs` (which bounds one transaction only). Named residual,
+bounded and detectable, V1-level: an attacker may (i) burn up to about `window.maxOutflow` per
+window in fees while every payment lands in the merchant's own cold storage, and (ii) exhaust the
+window budget so legitimate payouts wait for the next window. The optional `limits.maxFeePerWindow`
+caps the fee burn below the outflow budget.
+
 ### `limits`
 
 | Field | Meaning |
@@ -100,7 +109,8 @@ unlisted destinations entirely (a sweep-only wallet).
 | `maxPerTx` | upper bound on **net outflow** (Σ own inputs − Σ own outputs) of one transaction, any class |
 | `window.blocks` | window length; v1 fixes the semantic as *fixed windows starting at `window.start_height`*, rolled forward by whole windows when `best_height − start ≥ blocks` |
 | `window.maxOutflow` | upper bound on the sum of net outflows in a window |
-| `maxFeeAbs` | fee = Σ all inputs − Σ all outputs, absolute bound |
+| `maxFeeAbs` | fee = Σ all inputs − Σ all outputs, absolute bound **per transaction** |
+| `maxFeePerWindow` | optional; sum of fees over the window. Absent = bounded only by `window.maxOutflow` (fee ∈ net outflow, see `destinations`) |
 | `maxFeeRate` | sat/vB against an **upper-bound** vsize estimate computed in-enclave from the input/output types (foreign inputs assumed at the largest standard size) |
 | `maxInputs`, `maxOutputs` | sizes the fixed enclave heap; refuse above |
 | `ownIndexGap` | an own output may use an index up to `own_index_bound + gap` on its branch; using it raises the bound |
@@ -112,7 +122,7 @@ unlisted destinations entirely (a sweep-only wallet).
 |---|---|---|
 | `sighash` | `ALL` | v1 accepts only `ALL`; a PSBT `sighash_type` of anything else, or absent-with-default on a non-ALL flag, is refused |
 | `payjoin` | `none` \| `inflow-only` \| `outflow-allowed` | `none`: any foreign input refuses. `inflow-only`: foreign inputs allowed only when net outflow ≤ 0 (the merchant receives; the usual payjoin receiver case). `outflow-allowed`: foreign inputs allowed and net outflow judged by the same caps as a normal spend |
-| `opReturn` | `none` \| `zero-value` | whether a zero-value `OP_RETURN` output is tolerated (it counts as unlisted with amount 0 and does not count toward caps) |
+| `opReturn` | `none` \| `zero-value` | whether a zero-value `OP_RETURN` output is tolerated (it counts as unlisted with amount 0 and does not count toward caps). Explicit rule (auditor R4c): an `OP_RETURN` with non-zero value, or any `OP_RETURN` under `none`, refuses |
 | `rbf` | bool | whether `nSequence < 0xfffffffe` is accepted; a replacement is a new transaction and is charged again (conservative) |
 
 ### `chain`
@@ -126,7 +136,7 @@ checkpoint **forward** to a header the enclave has already verified, or re-pin a
 |---|---|
 | `required` | `true`: every signature needs a witness token whose tip is within `maxTipLag` blocks of the enclave's best header and whose `last_seen_seq ≤` the enclave's sequence; a rolled-back enclave therefore pauses instead of overspending. `false`: no token needed; rollback is bounded and detected only (labeled) |
 | `witnessPubKey` | P-256 public key of the owner's monitor; must be present when `required` |
-| `maxTipLag` | how stale a token's tip may be, in blocks (1–144) |
+| `maxTipLag` | how stale a token's tip may be, in blocks (1–144). **This number is the rollback residual** (auditor R13): within `maxTipLag` blocks of the rolled-back point, a token with `last_seen_seq ≤` the rolled-back sequence and a tip still within the lag passes both checks once. Set it as small as the witness cadence allows; the exposure per network (mainnet ≈ 10 min/block; signet/testnet cheaper PoW, faster) is shown at `GET /v1/status` |
 
 ### `validity`
 
@@ -146,13 +156,20 @@ installed. Pick it like a certificate expiry (e.g. +1 year of blocks ≈ 52 560)
 ## 5. Tightening vs loosening (what applies at once, what waits the timelock)
 
 An update is **tightening** iff every one of these holds; otherwise it is loosening and waits
-`timelockBlocks` of the *installed* mandate:
+`timelockBlocks` of the *installed* mandate.
+
+**The classifier fails toward loosening (auditor R6, load-bearing).** It runs field by field on
+the **canonical decoded** mandate, never on JSON. A field that is unknown, absent on either side,
+of a different shape, or not *provably* tightening by the table below makes the **whole** update
+loosening. There is no default of "tightening"; the only way to apply at once is for every field
+to be provably in the restrictive direction.
 
 | Field | tightening direction |
 |---|---|
 | `destinations.trusted` | entries removed, or an entry's `maxPerTx` / `maxPerWindow` / `gap` lowered; **no entry added or changed in address/descriptor** |
 | `destinations.unlisted.*` | lowered |
 | `limits.maxPerTx`, `window.maxOutflow`, `maxFeeAbs`, `maxFeeRate`, `maxInputs`, `maxOutputs`, `ownIndexGap`, `maxReorg` | lowered |
+| `limits.maxFeePerWindow` | lowered, or absent → present |
 | `limits.window.blocks` | raised (a longer window with the same budget is tighter) |
 | `rules.payjoin` | moved toward `none`; `rules.opReturn` toward `none`; `rules.rbf` to `false` |
 | `chain.checkpoint` | moved forward |
