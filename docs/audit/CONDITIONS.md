@@ -26,9 +26,9 @@ this table is what each IMPL REQ must discharge. **Status:** OPEN · IN IMPL (br
 | C-R10c | R10 | secp256k1 context randomization wired to `sgx_read_rand` — a T2 gate, not optional | R2 | DISCHARGED — `RESP-r2-enclave-shell-2026-11-03.md` (IMPL-PASS at `fd64e1e`) |
 | C-R10d | R10 ⭐ | reproducible enclave build: required for T2, recommended for T1 | R2 build / R5 | OPEN |
 | C-R10e | R10 | sealing and concurrent-ecall atomicity (commit-seal ordering under concurrency) named as IMPL-PASS gates of R2 | R2 REQ | DISCHARGED — `RESP-r2-enclave-shell-2026-11-03.md` (IMPL-PASS at `fd64e1e`) |
-| C-R11a | R11 | seed generated in-enclave; xpub imported cold; never NBXplorer `GenerateWallet` | R3 (plugin + deploy) | OPEN |
-| C-R11b | R11 | cold from the start; the plugin refuses to operate a store whose wallet is `IsHotWallet=true` | R3 | OPEN |
-| C-R11c | R11 | e2e vector: `IsHotWallet=false` end to end and zero key material in `nbxv1_metadata` | R3 vectors | OPEN |
+| C-R11a | R11 | seed generated in-enclave; xpub imported cold; never NBXplorer `GenerateWallet` | R3 (plugin + deploy) | IN IMPL (`r3-btcpay-plugin`, `REQ-r3-btcpay-plugin-2026-11-03.md`) |
+| C-R11b | R11 | cold from the start; the plugin refuses to operate a store whose wallet is `IsHotWallet=true` | R3 | IN IMPL (`r3-btcpay-plugin`, `REQ-r3-btcpay-plugin-2026-11-03.md`) |
+| C-R11c | R11 | e2e vector: `IsHotWallet=false` end to end and zero key material in `nbxv1_metadata` | R3 vectors | IN IMPL (`r3-btcpay-plugin`, `REQ-r3-btcpay-plugin-2026-11-03.md`) |
 | C-R12a | R12 | positive/accept vectors: unlisted within cap accepts; sweep to trusted accepts; valid loosening activates after timelock; valid tightening applies at once | R1 vectors | DISCHARGED — `RESP-r1-signer-core-2026-11-03.md` (IMPL-PASS at `e4afa1d`) |
 | C-R12b | R12 | per-invariant mutation vectors: drop `non_witness_utxo` requirement ⇒ lying-`witness_utxo` fee vector passes (I2); host `bip32_derivation` as decision ⇒ change-to-foreign passes (I3); commit-after-sign ⇒ rollback double-spends (I5/I11) | R1/R2 vectors | DISCHARGED — `RESP-r1-signer-core-2026-11-03.md` (IMPL-PASS at `e4afa1d`) |
 | C-R12c | R12 | freshness `maxTipLag` boundary vector | R4 vectors | DISCHARGED — `RESP-r2-enclave-shell-2026-11-03.md` (IMPL-PASS at `fd64e1e`) |

@@ -42,7 +42,7 @@ echo "== 3. plugin: signer settings + processor"
 curl -s -w " [%{http_code}]" "${H[@]}" -X PUT "$BT/plugins/teesigner/api/$STORE/settings" -d "{\"signerdUrl\":\"http://tee-signer:7390\",\"token\":\"$SIGNER_TOKEN\",\"minConfirmations\":0,\"fallbackFeeRateSatVb\":5}" | sed 's/^/  settings: /'; echo
 curl -s "${H[@]}" "$BT/plugins/teesigner/api/$STORE/status" > "$S/status.json"; python3 - "$S/status.json" <<'PY'
 import json,sys;d=json.load(open(sys.argv[1]));e=d.get('enclave') or {}
-print("  enclave:", {k:e.get(k) for k in ['tier','installed','best_height','seq','xpub']}, "xpubMatches:", d.get('xpubMatches'), "walletIsHot:", d.get('walletIsHot'), "error:", d.get('error'))
+print("  enclave:", {k:e.get(k) for k in ['tier','installed','bestHeight','seq','xpub']}, "xpubMatches:", d.get('xpubMatches'), "walletIsHot:", d.get('walletIsHot'), "error:", d.get('error'))
 assert d.get('xpubMatches') is True, "xpub mismatch"
 assert d.get('walletIsHot') is False, "hot"
 PY
