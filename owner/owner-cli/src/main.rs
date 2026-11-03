@@ -930,6 +930,9 @@ enum Cmd {
         wallet: PathBuf,
         #[arg(long, default_value = "https://mempool.space/signet/api")]
         esplora: String,
+        /// The previous transaction's raw hex (from the operator's own node), instead of fetching it from the Esplora.
+        #[arg(long)]
+        prev_tx_hex: Option<String>,
         /// txid:vout of the wallet's coin
         #[arg(long)]
         utxo: String,
@@ -1304,9 +1307,9 @@ fn main() -> Result<()> {
             let w: WalletRecord = serde_json::from_str(&std::fs::read_to_string(wallet)?)?;
             println!("{}", psbt::address(&w.xpub, network_of(&w.network)?, *branch, *index)?);
         }
-        Cmd::PsbtBuild { wallet, esplora, utxo, branch, index, to, amount, fee, change_index } => {
+        Cmd::PsbtBuild { wallet, esplora, prev_tx_hex, utxo, branch, index, to, amount, fee, change_index } => {
             let w: WalletRecord = serde_json::from_str(&std::fs::read_to_string(wallet)?)?;
-            let b64 = psbt::build(&w.xpub, &w.fingerprint, network_of(&w.network)?, esplora, utxo, *branch, *index, to, *amount, *fee, *change_index)?;
+            let b64 = psbt::build(&w.xpub, &w.fingerprint, network_of(&w.network)?, esplora, prev_tx_hex.as_deref(), utxo, *branch, *index, to, *amount, *fee, *change_index)?;
             println!("{b64}");
         }
         Cmd::Sign { psbt } => {
