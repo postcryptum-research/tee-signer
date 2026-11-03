@@ -4,6 +4,9 @@
 # to $OUT. Run it twice and compare with docker/compare-builds.sh — that is gate 5 (reproducible).
 set -euo pipefail
 TAG=${TAG:-tee-signer-build:2.28}
+# RELEASE=0 builds the DEBUG variant (DisableDebug=0, test features) of the same sources — only to prove the
+# verifier refuses its quote (REQ-r5 §4 negative vector); never deployed.
+RELEASE=${RELEASE:-1}
 KEY=${ENCLAVE_KEY:-$HOME/tee-signer-keys/enclave-dev-2.28.pem}
 OUT=${OUT:-$HOME/tee-signer-out/$(date +%Y%m%d-%H%M%S)}
 cd "$(dirname "$0")/.."
@@ -14,7 +17,7 @@ if [ ! -f "$KEY" ]; then
 fi
 DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile.enclave-build -t "$TAG" . > "${OUT%/}.image.log" 2>&1 || { tail -40 "${OUT%/}.image.log"; exit 1; }
 mkdir -p "$OUT"
-C=$(docker create -v "$KEY":/keys/enclave.pem:ro "$TAG" bash -c 'source /opt/intel/sgxsdk/environment && make RELEASE=1 MITIGATION-CVE-2020-0551=LOAD Enclave_Test_Key=/keys/enclave.pem SDK_CPUID_LIST=sdk-cpuid-baseline-2.28.txt CARGO=/opt/cargo/bin/cargo CARGO_FLAGS=--offline enclave.signed.so gates; rc=$?; /opt/intel/sgxsdk/bin/x64/sgx_sign dump -enclave enclave.signed.so -dumpfile build/sigstruct.dump >/dev/null 2>&1; exit $rc')
+C=$(docker create -v "$KEY":/keys/enclave.pem:ro -e RELEASE="$RELEASE" "$TAG" bash -c 'source /opt/intel/sgxsdk/environment && [ "$RELEASE" = 1 ] || make clean >/dev/null 2>&1; make RELEASE=$RELEASE MITIGATION-CVE-2020-0551=LOAD Enclave_Test_Key=/keys/enclave.pem SDK_CPUID_LIST=sdk-cpuid-baseline-2.28.txt CARGO=/opt/cargo/bin/cargo CARGO_FLAGS=--offline enclave.signed.so gates; rc=$?; /opt/intel/sgxsdk/bin/x64/sgx_sign dump -enclave enclave.signed.so -dumpfile build/sigstruct.dump >/dev/null 2>&1; exit $rc')
 docker start -a "$C" > "$OUT/build.log" 2>&1 && echo "build+gates: OK" || echo "build+gates: FAILED (see $OUT/build.log)"
 for f in enclave/enclave.signed.so enclave/enclave.so enclave/build/cpuid-sites.txt enclave/build/lfence-count.txt enclave/build/sigstruct.dump enclave/App/libenclave_u.a host/signerd/target/release/signerd host/dcap-quote-helper MANIFEST; do
   docker cp "$C:/src/$f" "$OUT/" 2>/dev/null || echo "  missing: $f"
