@@ -576,6 +576,10 @@ struct WalletRecord {
     /// T2: the last successful attestation (what was checked, when, with which exceptions).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     attested: Option<AttestRecord>,
+    /// What this record rests on: "attested" (C-R5-6: `init` ran the verifier before writing it) or a
+    /// TOFU label naming why no attestation exists (T1/T0 hardware).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trust_label: Option<String>,
     mrenclave: String,
     tier: String,
     recovery_blob_hex: String,
@@ -624,6 +628,17 @@ enum Cmd {
         recovery_pk: String,
         #[arg(long)]
         out: PathBuf,
+        /// T2 (C-R5-6): `init` runs the DCAP verifier BEFORE writing the record and refuses to write it on any
+        /// failure. These are the `attest` inputs; on T1/T0 hardware no attestation exists and the record is
+        /// written labeled TOFU.
+        #[arg(long)]
+        expect_mrenclave: Option<String>,
+        #[arg(long)]
+        signing_key_label: Option<String>,
+        #[arg(long = "accept-advisory")]
+        accept: Vec<String>,
+        #[arg(long, default_value = "https://api.trustedservices.intel.com")]
+        pccs: String,
     },
     /// Fill a mandate JSON's chain.checkpoint from a node (read-only RPC) or an Esplora API, and print the canonical hex + hash.
     PolicyBuild {
@@ -830,7 +845,7 @@ fn main() -> Result<()> {
             println!("pubkey: {}", hex::encode(pk));
         }
         Cmd::Pubkey { key } => println!("{}", hex::encode(pubkey_of(key)?)),
-        Cmd::Init { network, owner_pk, recovery_pk, out } => {
+        Cmd::Init { network, owner_pk, recovery_pk, out, expect_mrenclave, signing_key_label, accept, pccs } => {
             let sd = client(&cli)?;
             if owner_pk == recovery_pk {
                 bail!("owner and recovery keys must differ (and live on different media and machines)");
@@ -849,7 +864,7 @@ fn main() -> Result<()> {
             if card.identity_pk != idpk || Xpub::decode(&card.xpub).map(|x| x.to_string()).unwrap_or_default() != r["xpub"].as_str().unwrap_or("") {
                 bail!("identity card does not name the returned wallet — do not fund this wallet");
             }
-            let rec = WalletRecord {
+            let mut rec = WalletRecord {
                 network: network.clone(),
                 xpub: r["xpub"].as_str().unwrap_or("").into(),
                 fingerprint: r["fingerprint"].as_str().unwrap_or("").into(),
@@ -859,6 +874,7 @@ fn main() -> Result<()> {
                 isv_prod_id: None,
                 isv_svn: None,
                 attested: None,
+                trust_label: None,
                 enclave_id: hex::encode(signer_core::sha256(&idpk)),
                 card_hex,
                 card_sig_hex: hex::encode(card_sig),
@@ -868,6 +884,19 @@ fn main() -> Result<()> {
                 owner_pk: owner_pk.clone(),
                 recovery_pk: recovery_pk.clone(),
             };
+            // C-R5-6: on T2 the verifier decides whether a record exists at all. The enclave has
+            // generated its keys either way; a failed attestation means: do not keep, do not fund —
+            // wipe the daemon's state and start over.
+            if rec.tier == "T2-release" {
+                println!("T2 card: running the verifier before writing the record (C-R5-6)");
+                if let Err(e) = attest_record(&sd, &mut rec, expect_mrenclave.clone(), None, signing_key_label.clone(), accept, pccs, true, None) {
+                    bail!("REFUSED: attestation failed — {e}\nThe wallet record is NOT written. The enclave holds a fresh, untrusted key set: wipe signerd's state dir and initialise again; do not fund.");
+                }
+                rec.trust_label = Some("attested".into());
+            } else {
+                rec.trust_label = Some(format!("TOFU: tier {} — no attestation exists on this hardware; the identity card is trusted on first use", rec.tier));
+                println!("WARNING: {} (not attested)", rec.trust_label.as_deref().unwrap_or(""));
+            }
             std::fs::write(out, serde_json::to_string_pretty(&rec)?)?;
             println!("wallet record written to {}", out.display());
             println!("tier:        {}", rec.tier);
@@ -1150,7 +1179,7 @@ fn pem_der(pem: &str) -> Result<Vec<u8>> {
     Ok(base64::engine::general_purpose::STANDARD.decode(body.trim())?)
 }
 
-/// REQ-r5 §4. Every step refuses by name; nothing is a warning.
+/// The `attest` command: load the record, verify, optionally pin and save.
 #[allow(clippy::too_many_arguments)]
 fn attest(
     sd: &Signerd,
@@ -1164,12 +1193,39 @@ fn attest(
     save: Option<PathBuf>,
     replay: Option<PathBuf>,
 ) -> Result<()> {
+    let mut w: WalletRecord = serde_json::from_str(&std::fs::read_to_string(wallet)?)?;
+    let (_rec, out) = attest_record(sd, &mut w, expect_mrenclave, expect_mrsigner, signing_key_label, accept, pccs, pin, replay)?;
+    if pin {
+        std::fs::write(wallet, serde_json::to_string_pretty(&w)?)?;
+        println!("wallet record updated (pinned MRSIGNER, ProdID, SVN; attestation recorded)");
+    }
+    if let Some(path) = save {
+        std::fs::write(&path, serde_json::to_string_pretty(&out)?)?;
+        println!("saved {}", path.display());
+    }
+    Ok(())
+}
+
+/// REQ-r5 §4 on an in-memory record (so `init` can refuse to write one — C-R5-6). Every step
+/// refuses by name; nothing is a warning. With `pin`, MRSIGNER/ProdID/SVN and the attestation are
+/// set on the record (the caller writes it).
+#[allow(clippy::too_many_arguments)]
+fn attest_record(
+    sd: &Signerd,
+    w: &mut WalletRecord,
+    expect_mrenclave: Option<String>,
+    expect_mrsigner: Option<String>,
+    signing_key_label: Option<String>,
+    accept: &[String],
+    pccs: &str,
+    pin: bool,
+    replay: Option<PathBuf>,
+) -> Result<(AttestRecord, serde_json::Value)> {
     use dcap_qvl::quote::Report;
     use dcap_qvl::verify::QuoteVerifier;
     use sha2::Digest;
     use signer_core::proto::quote;
 
-    let mut w: WalletRecord = serde_json::from_str(&std::fs::read_to_string(wallet)?)?;
     // the root of trust, pinned twice
     let root_der = pem_der(INTEL_SGX_ROOT_CA_PEM)?;
     let root_sha = hex::encode(sha2::Sha256::digest(&root_der));
@@ -1203,9 +1259,16 @@ fn attest(
         })
         .map_err(|e| anyhow!("step 1 refused: collateral from {pccs}: {e}"))?;
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
-    let vr = QuoteVerifier::new(root_der)
-        .verify(&quote_bytes, &collateral, now)
-        .map_err(|e| anyhow!("step 1 refused: quote chain/collateral: {e}"))?;
+    let vr = QuoteVerifier::new(root_der).verify(&quote_bytes, &collateral, now).map_err(|e| {
+        let m = e.to_string();
+        if m.contains("Debug mode") {
+            // the verifier crate refuses a debug quote inside its authenticated check — the only
+            // place ATTRIBUTES may be believed — so this is step 2, decided before any measurement
+            anyhow!("step 2 refused: ATTRIBUTES.DEBUG is set — a debug enclave (host-readable memory) can attest nothing ({m})")
+        } else {
+            anyhow!("step 1 refused: quote chain/collateral: {m}")
+        }
+    })?;
     // the verifier crate's own embedded root must agree with ours (two independent pins of one CA)
     QuoteVerifier::new_prod()
         .verify(&quote_bytes, &collateral, now)
@@ -1319,17 +1382,12 @@ fn attest(
         w.isv_prod_id = Some(body.isv_prod_id);
         w.isv_svn = Some(body.isv_svn);
         w.attested = Some(rec.clone());
-        std::fs::write(wallet, serde_json::to_string_pretty(&w)?)?;
-        println!("wallet record updated (pinned MRSIGNER, ProdID, SVN; attestation recorded)");
+        w.trust_label = Some("attested".into());
     }
-    if let Some(path) = save {
-        let out = serde_json::json!({
-            "nonce": hex::encode(nonce), "quote_hex": hex::encode(&quote_bytes), "card_hex": hex::encode(&card_bytes),
-            "mrenclave": q_mr, "mrsigner": q_ms, "isv_prod_id": body.isv_prod_id, "isv_svn": body.isv_svn,
-            "attributes_flags": format!("0x{attr_flags:x}"), "verification": rec,
-        });
-        std::fs::write(&path, serde_json::to_string_pretty(&out)?)?;
-        println!("saved {}", path.display());
-    }
-    Ok(())
+    let out = serde_json::json!({
+        "nonce": hex::encode(nonce), "quote_hex": hex::encode(&quote_bytes), "card_hex": hex::encode(&card_bytes),
+        "mrenclave": q_mr, "mrsigner": q_ms, "isv_prod_id": body.isv_prod_id, "isv_svn": body.isv_svn,
+        "attributes_flags": format!("0x{attr_flags:x}"), "verification": rec,
+    });
+    Ok((rec, out))
 }
