@@ -68,7 +68,7 @@ public class UITeeSignerController : Controller
         public string? ReceiptsRaw { get; set; }
     }
 
-    private async Task<SettingsVm> BuildVm(string storeId, StoreData store)
+    internal async Task<SettingsVm> BuildVm(string storeId, StoreData store)
     {
         var vm = new SettingsVm { StoreId = storeId };
         var s = await _settings.Get(storeId);
@@ -176,80 +176,6 @@ public class UITeeSignerController : Controller
             }
         }
         return RedirectToAction(nameof(Settings), new { storeId });
-    }
-
-    // ---------------- Greenfield-style API (API-key auth) for automation and the e2e gates ----------------
-
-    public class ApiSettingsBody
-    {
-        public string SignerdUrl { get; set; } = "";
-        public string Token { get; set; } = "";
-        public int MinConfirmations { get; set; } = 1;
-    }
-
-    [HttpPut("api/{storeId}/settings")]
-    [Authorize(Policy = Policies.CanModifyStoreSettings, AuthenticationSchemes = AuthenticationSchemes.Greenfield)]
-    public async Task<IActionResult> ApiSettings(string storeId, [FromBody] ApiSettingsBody body)
-    {
-        if (await _stores.FindStore(storeId) is null) return NotFound();
-        await _settings.Set(storeId, new TeeSignerSettings { SignerdUrl = body.SignerdUrl.Trim(), Token = body.Token.Trim(), MinConfirmations = Math.Max(0, body.MinConfirmations) });
-        return Ok(new { saved = true });
-    }
-
-    [HttpGet("api/{storeId}/status")]
-    [Authorize(Policy = Policies.CanViewStoreSettings, AuthenticationSchemes = AuthenticationSchemes.Greenfield)]
-    public async Task<IActionResult> ApiStatus(string storeId)
-    {
-        var store = await _stores.FindStore(storeId);
-        if (store is null) return NotFound();
-        var vm = await BuildVm(storeId, store);
-        return Ok(new
-        {
-            configured = vm.Configured,
-            walletConfigured = vm.WalletConfigured,
-            walletIsHot = vm.WalletIsHot,
-            walletXpub = vm.WalletXpub,
-            xpubMatches = vm.XpubMatches,
-            processorEnabled = vm.ProcessorEnabled,
-            error = vm.Error,
-            enclave = vm.Status
-        });
-    }
-
-    [HttpPost("api/{storeId}/processor")]
-    [Authorize(Policy = Policies.CanModifyStoreSettings, AuthenticationSchemes = AuthenticationSchemes.Greenfield)]
-    public async Task<IActionResult> ApiProcessor(string storeId, [FromQuery] bool enable = true)
-    {
-        var store = await _stores.FindStore(storeId);
-        if (store is null) return NotFound();
-        var scheme = store.GetDerivationSchemeSettings(_handlers, CryptoCode);
-        if (scheme is null) return UnprocessableEntity(new { error = "no BTC wallet" });
-        if (scheme.IsHotWallet) return UnprocessableEntity(new { error = "wallet is HOT; tee-signer refuses" });
-        var pmId = PayoutTypes.CHAIN.GetPayoutMethodId(CryptoCode);
-        var active = (await _processors.GetProcessors(new PayoutProcessorService.PayoutProcessorQuery
-        {
-            Stores = new[] { storeId },
-            Processors = new[] { _factory.Processor },
-            PayoutMethods = new[] { pmId }
-        })).FirstOrDefault();
-        var tcs = new TaskCompletionSource();
-        if (enable)
-        {
-            active ??= new PayoutProcessorData();
-            active.HasTypedBlob<OnChainAutomatedPayoutBlob>().SetBlob(new OnChainAutomatedPayoutBlob { Interval = TimeSpan.FromMinutes(1), ProcessNewPayoutsInstantly = true, FeeTargetBlock = 2, Threshold = 0 });
-            active.StoreId = storeId;
-            active.PayoutMethodId = pmId.ToString();
-            active.Processor = _factory.Processor;
-            _events.Publish(new PayoutProcessorUpdated { Data = active, Id = active.Id, Processed = tcs });
-            await tcs.Task;
-            return Ok(new { enabled = true });
-        }
-        if (active is not null)
-        {
-            _events.Publish(new PayoutProcessorUpdated { Data = null, Id = active.Id, Processed = tcs });
-            await tcs.Task;
-        }
-        return Ok(new { enabled = false });
     }
 
     public class SendVm

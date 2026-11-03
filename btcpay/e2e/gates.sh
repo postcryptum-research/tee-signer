@@ -20,21 +20,26 @@ pass() { echo "  PASS $1"; }; fail() { echo "  FAIL $1"; exit 1; }
 j() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
 
 if [ "$PHASE" = "setup" ] || [ "$PHASE" = "all" ]; then
+if [ -f "$S/apikey" ] && [ -f "$S/store" ] && curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token $(cat "$S/apikey")" "$BT/api/v1/stores/$(cat "$S/store")" | grep -q 200; then
+  echo "== 1-2. reusing the existing admin API key and store ($(cat "$S/store"))"
+  KEY=$(cat "$S/apikey"); STORE=$(cat "$S/store"); H=(-H "Authorization: token $KEY" -H 'content-type: application/json')
+else
 echo "== 1. admin user + API key"
 curl -s -o /dev/null -w "%{http_code}\n" -X POST "$BT/api/v1/users" -H 'content-type: application/json' -d "{\"email\":\"$EMAIL\",\"password\":\"$PASS\",\"isAdministrator\":true}" | sed 's/^/  users: /'
-KEY=$(curl -s -u "$EMAIL:$PASS" -X POST "$BT/api/v1/api-keys" -H 'content-type: application/json' -d '{"label":"e2e","permissions":["btcpay.server.canmodifyserversettings","btcpay.store.canmodifystoresettings","btcpay.store.canviewstoresettings","btcpay.store.cancreateinvoice","btcpay.store.canviewinvoices","btcpay.store.canmanagepullpayments","btcpay.store.cancreatewallettransactions","btcpay.store.cansigntransactions","btcpay.store.canbroadcasttransactions"]}' | j "d['apiKey']")
+KEY=$(curl -s -u "$EMAIL:$PASS" -X POST "$BT/api/v1/api-keys" -H 'content-type: application/json' -d '{"label":"e2e","permissions":["btcpay.server.canmodifyserversettings","btcpay.store.canmodifystoresettings","btcpay.store.canviewstoresettings","btcpay.store.cancreateinvoice","btcpay.store.canviewinvoices","btcpay.store.canmanagepullpayments","btcpay.store.cancreatepullpayments","btcpay.store.canmanagepayouts","btcpay.store.canviewpayouts","btcpay.store.canmanagewallets","btcpay.store.canviewwallet","btcpay.store.cancreatetransactions","btcpay.store.cansigntransactions","btcpay.store.canbroadcasttransactions"]}' | j "d['apiKey']")
 H=(-H "Authorization: token $KEY" -H 'content-type: application/json')
 echo "$KEY" > "$S/apikey"
 
 echo "== 2. store + COLD wallet from the enclave xpub"
 STORE=$(curl -s "${H[@]}" -X POST "$BT/api/v1/stores" -d '{"name":"tee-signer e2e"}' | j "d['id']"); echo "$STORE" > "$S/store"
 curl -s "${H[@]}" -X PUT "$BT/api/v1/stores/$STORE/payment-methods/BTC-CHAIN" -d "{\"enabled\":true,\"config\":\"[$FP/84'/1'/0']$XPUB\"}" | j "d['config']['accountDerivation'][:20]" | sed 's/^/  wallet set: /'
+fi
 echo "== gate (a): IsHotWallet=false in the store record"
 HOT=$(docker exec generated_postgres_1 psql -U postgres -d btcpayserversignet -tAc "select \"DerivationStrategies\" from \"Stores\" where \"Id\"='$STORE'")
 echo "$HOT" | grep -qi '"IsHotWallet": *true' && fail "wallet flagged hot" || pass "store wallet is cold ($(echo "$HOT" | grep -o '"IsHotWallet":[^,}]*' || echo 'IsHotWallet absent = false'))"
 
 echo "== 3. plugin: signer settings + processor"
-curl -s "${H[@]}" -X PUT "$BT/plugins/teesigner/api/$STORE/settings" -d "{\"signerdUrl\":\"http://tee-signer:7390\",\"token\":\"$SIGNER_TOKEN\",\"minConfirmations\":0}" | sed 's/^/  /'; echo
+curl -s -w " [%{http_code}]" "${H[@]}" -X PUT "$BT/plugins/teesigner/api/$STORE/settings" -d "{\"signerdUrl\":\"http://tee-signer:7390\",\"token\":\"$SIGNER_TOKEN\",\"minConfirmations\":0}" | sed 's/^/  settings: /'; echo
 curl -s "${H[@]}" "$BT/plugins/teesigner/api/$STORE/status" > "$S/status.json"; python3 - "$S/status.json" <<'PY'
 import json,sys;d=json.load(open(sys.argv[1]));e=d.get('enclave') or {}
 print("  enclave:", {k:e.get(k) for k in ['tier','installed','best_height','seq','xpub']}, "xpubMatches:", d.get('xpubMatches'), "walletIsHot:", d.get('walletIsHot'), "error:", d.get('error'))
@@ -42,7 +47,7 @@ assert d.get('xpubMatches') is True, "xpub mismatch"
 assert d.get('walletIsHot') is False, "hot"
 PY
 pass "enclave xpub matches the store wallet"
-curl -s "${H[@]}" -X POST "$BT/plugins/teesigner/api/$STORE/processor?enable=true" | sed 's/^/  processor: /'; echo
+curl -s -w " [%{http_code}]" "${H[@]}" -X POST "$BT/plugins/teesigner/api/$STORE/processor?enable=true" | sed 's/^/  processor: /'; echo
 
 echo "== gate (b): no key material in nbxv1_metadata"
 N=$(docker exec generated_postgres_1 psql -U postgres -d nbxplorersignet -tAc "select count(*) from nbxv1_metadata where key in ('Mnemonic','MasterHDKey','AccountHDKey')")
