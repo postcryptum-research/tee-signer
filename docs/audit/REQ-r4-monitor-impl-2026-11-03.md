@@ -45,13 +45,35 @@ measured, not argued.
 | (d) feed stall | <<the node's bitcoind stopped at 19:53 UTC; the vector runs at the next signet block — filled in below>> |
 | (f) restart keeps the HWM | passes 1 → 12 across separate invocations; the HWM file carries `(51cf9562…, 3)` and the verified txids; the shrunk-log vector is exactly the HWM doing its job |
 
-**The seed-leak vector** ("a thief with the seed spends; no receipt") was prepared as a test
-instrument outside the product (recover the mnemonic offline with the recovery key, import the
-private descriptors into a throwaway node wallet, spend) and **not executed**: the development
-tooling refused to materialise the seed, and that is the owner's call to make, not mine. The
-receipt-withholding vector exercises the same detection path end to end — an on-chain spend of the
-wallet with no verified receipt — which is what the alarm is about; the seed-leak run adds only
-the origin of the spend.
+**The seed-leak vector, executed** (the owner printed the mnemonic themselves with
+`recovery-verify --print-mnemonic` and handed it over; `tools/seed-leak-vector` — a test instrument
+outside the product — turned it into the BIP84 private descriptors, fingerprint `fae69580` = the
+T2 wallet's; imported into a throwaway descriptor wallet on the owner's Hetzner signet node; the
+thief saw the T2 balance, 23 435 sat, and spent 3 000 sat with `sendtoaddress`, txid
+`47ddc1e1…fd95`, no enclave involved):
+
+- **first pass: `OK` — the gap.** The thief spent the T2 wallet's *unconfirmed change* (the
+  output of the funding transaction `ad54a901…`, still in the mempool). The monitor's node source
+  learned "our outputs" from the UTXO set (confirmed only) and from block walks, so an output our
+  own enclave had just created, not yet mined, was unknown to it and a spend of it invisible.
+  Found by this vector, nothing else would have shown it.
+- **fix (same branch):** every receipted transaction not yet confirmed is read from the node and
+  its outputs to our addresses noted, so the mempool spender check covers them.
+- **second pass: `ALARM … SPEND_WITHOUT_RECEIPT` — `47ddc1e1… spends 3282 sat of the wallet (in the
+  mempool) and no verified receipt names it` — FREEZE sent, signer frozen.** Owner unfroze after
+  looking. The throwaway node wallet was unloaded and its files deleted; the derived descriptors
+  deleted from the laptop; the mnemonic exists in the owner's terminal history and this
+  conversation — it is the signet dev wallet's, and the owner knows.
+
+A remaining labeled edge: an output paid to us by a *third party* that is still unconfirmed is
+likewise unknown until mined; a thief spending it before confirmation would be seen one pass
+after the funding confirms (the block walk notes the output, the spend is then in the mempool or
+a later block). Closing it fully means scanning the mempool for outputs to our addresses every
+pass (`getrawmempool` + per-tx reads) — cheap on signet, a cost question on mainnet; labeled.
+
+**A benign restart, observed:** across the ceremony-signed redeploy the receipt for seq 4 carries
+a new `session_id` (`51cf9562…` → `02ddb6dd…`) with seq continuity; the monitor reported it as the
+design says ("session changed … with seq continuity (benign restart)"), not as a fork.
 
 ## 3. Labeled
 
