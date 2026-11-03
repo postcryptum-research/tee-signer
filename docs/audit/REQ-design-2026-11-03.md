@@ -107,3 +107,5 @@ labeled: release launch (impossible here), sealing, attestation, multi-threaded 
 | `docs/audit/RESP-prequestions-2026-11-03.md` | `862fe2dc3a6518f668ce113ab421f055348c5b8cd1c3bf37d14eacf51b56d09f` |
 | `docs/studies/BTCPAY-SIGNING-SEAMS-2026-11-03.md` | `a4b4bdfb440ec0ffed6c7c69dcab3865dda037bf5c4d6a843d57108b4497f47a` |
 | `docs/studies/NOSTD-ENCLAVE-LAB-2026-11-03.md` | `76360e6cdf7c1ff93487cb0da2fee0a11921b89dd091481edb569fa41d642ea2` |
+
+**Committed as `4fb7512d20f6d70eebaa3ab71e2954c80605890f` on `main` of `github.com/77ph/BTCPayTEE` (2026-11-03). The per-file hashes above are the pins; the commit carries the same bytes plus `LICENSE`, `.gitignore` and `docs/DECISIONS.md`.**
