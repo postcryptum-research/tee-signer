@@ -7,6 +7,7 @@ TAG=${TAG:-tee-signer-build:2.28}
 KEY=${ENCLAVE_KEY:-$HOME/tee-signer-keys/enclave-dev-2.28.pem}
 OUT=${OUT:-$HOME/tee-signer-out/$(date +%Y%m%d-%H%M%S)}
 cd "$(dirname "$0")/.."
+mkdir -p "$(dirname "$OUT")"
 if [ ! -f "$KEY" ]; then
   mkdir -p "$(dirname "$KEY")"; openssl genrsa -out "$KEY" -3 3072 2>/dev/null; chmod 600 "$KEY"
   echo "generated DEV signing key $KEY (dev only, labeled; a release key is a ceremony)"

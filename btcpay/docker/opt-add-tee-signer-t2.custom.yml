@@ -1,0 +1,31 @@
+# btcpayserver-docker fragment for the T2 node (Azure DCsv3): tee-signer sidecar on the in-kernel
+# driver, production launch, quoting through the node's aesmd. Nothing publishes beyond loopback.
+services:
+  tee-signer:
+    image: tee-signer/signerd:t2
+    restart: unless-stopped
+    expose:
+      - "7390"
+    ports:
+      - "127.0.0.1:7390:7390"
+    devices:
+      - "/dev/sgx_enclave:/dev/sgx_enclave"
+      - "/dev/sgx_provision:/dev/sgx_provision"
+    environment:
+      SIGNERD_BITCOIND_RPC: http://bitcoind:43782
+      SIGNERD_BITCOIND_COOKIE: /bitcoin/${NBITCOIN_NETWORK:-regtest}/.cookie
+      SIGNERD_HEADERS_INTERVAL: "20"
+      SIGNERD_ENCLAVE_DEBUG: "false"
+      SGX_AESM_ADDR: "1"
+    volumes:
+      - "tee_signer_datadir:/var/lib/signerd"
+      - "bitcoin_datadir:/bitcoin:ro"
+      - "/var/run/aesmd:/var/run/aesmd"
+  btcpayserver:
+    volumes:
+      - "${TEE_PLUGIN_DIR}:/tee-plugin:ro"
+volumes:
+  tee_signer_datadir:
+required:
+  - "bitcoin"
+  - "btcpayserver"
