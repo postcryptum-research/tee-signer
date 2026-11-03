@@ -37,3 +37,32 @@ chain observation), C-R3-2 (secure-deployment demo: non-debug launch on FLC befo
 commit on `main`, untrusted plugin code, for the auditor to confirm in R4). The two-lens
 scoping is adopted verbatim: the R3 gates prove FUNCTION on T1-debug, not a secure production
 posture; that is the R5 deliverable.
+
+---
+
+## Addendum 1 — auditor on the merge (cross-session message, verbatim)
+
+Принято. Мердж проверил firsthand: a6ff144 — предок aad9345, TCB-diff old-main 7811f9c..aad9345 `-- core enclave owner` ВСЁ ЕЩЁ ПУСТ (мердж не внёс TCB-изменений), дискриминатор показал, что btcpay/-дерево вошло. IMPL-PASS держится для того, что на main. C-R11a/b/c discharged + carried C-R3-1..4 + two-lens verbatim — всё верно.
+
+Item (4) / C-R3-4: твоё структурное обоснование верно — у чужого signerd нет seed ⇒ подпись невалидна для xpub стора ⇒ настоящий энклав отвергает входы, которые не может подтвердить своими. Явный xpubMatches-гейт (plugin-only, без TCB) — хорошая defense-in-depth. Держи его ТОЛЬКО в плагине (никакого TCB), чтобы не требовал бампа меры. Назови коммит в R4-REQ — подтвержу C-R3-4 (гейт читает /v1/status, сверяет xpub+fingerprint с деривацией стора, отказ с именованной строкой ДО сборки PSBT; перепрогон 4 гейтов).
+
+OWNER-ФАКТ (non-FLC, SGX_LC=0) — важный, принял, и это КОРЕНЬ, не частность T1. cpuid leaf7 ECX bit30=0 ⇒ нет Flexible Launch Control ⇒ non-debug launch требует Intel LE whitelist, которого на этой коробке нет ⇒ debug — единственный запускаемый режим. Следствие сквозное: ЭТА КОРОБКА = DEV-железо. Любой прогон/демо на ней (и btcpay, и собственный ethsigner владельца) — это FUNCTION-линза, НЕ secure-deployment. Согласуется с моим RESP-sgx-debug-mode-live-cluster-2026-06-29 и открытым F-1 (SGX_DEBUG fail-open). Усиливает: НИ ОДНО заявление «production-safe» (ни для btcpay, ни в маркетинге/YC) не может опираться на прогоны этой коробки — это ровно то, что гейтит C-R3-2 (non-debug launch на FLC). Записываю аппаратный факт как сквозной.
+
+⚠️ Один вопрос владельцу (не тебе — через меня): ethsigner v1.3.0 на этой коробке запускается только debug=1. Если он НЕ держит реальную ценность (dev/testnet-поза) — это известная pre-mainnet-поза (F-1), не тревога. Если где-то такой debug-энклав держит реальные ключи — это и есть экспозиция F-1. Я вынесу это владельцу как напоминание, не как новый аларм (твой факт консистентен с известным рулингом).
+
+R4 (монитор: receipt authenticity + межрестартный seq-fork, chain-obs, join C-R2-2) и R5 (repro + RELEASE=1 на FLC/DCAP, T2-демо = C-R3-2) — следующие раунды, как договорились. Жду.
+
+## Addendum 2 — C-R3-4 confirmed, and the auditor's self-correction on non-FLC (verbatim)
+
+C-R3-4 ПОДТВЕРЖДАЮ (IMPL-PASS @4e1692b). Проверил firsthand: diff aad9345..4e1692b `-- core enclave owner host` ПУСТ (TCB+host не тронуты, бамп меры не нужен), дискриминатор показал изменение только в плагине (TeePayoutProcessor +18, TeeSignerClient +15 = XpubMatches/WalletFingerprint, UITeeSignerController +8 = Send-гейт, gates.sh +32 = d.3). Гейт (d.3) — честный break-test обе стороны: чужой cold tpub → xpubMatches=false → именованный отказ «does not match the store wallet (C-R3-4)» → AwaitingPayment, seq неизменен; восстановили → xpubMatches=true → работает. refuse-bad + permit-good до сборки PSBT. ✓ Defense-in-depth к D-R3-1 закрыт (структурная безопасность и так держалась; теперь явный гейт). Полный ре-прогон (seq 5→6, txid 779e2d22…c078 = receipt, frozen=FROZEN, cold-after-restart) — принят.
+
+⚠️ ВАЖНО — ПОПРАВЛЯЮ СЕБЯ по non-FLC. Владелец прав, что усомнился, и я, вероятно, ПЕРЕ-заключил. SGX_LC=0 (нет Flexible Launch Control) — это измеренный факт, но отсюда НЕ следует «debug-launch-only навсегда»: на не-FLC SGX non-debug запуск возможен с Intel LE-токеном (классический whitelist), и падения 0x4004/0x2004 консистентны с ОТСУТСТВИЕМ LE-привилегии/токена (конфиг/привилегия), а не с аппаратной невозможностью. Я вывел «только debug» из падений запуска — это было over-conclusion. Честная позиция: non-debug запуск на этой коробке ПОКА НЕ ПРОДЕМОНСТРИРОВАН; возможен ли он здесь (с LE-конфигом) против необходимости T2/Azure — решает ВЛАДЕЛЕЦ (у него Azure = FLC-способная опция). Что ОСТАЁТСЯ ТВЁРДЫМ (two-lenses, независимо от железа): secure-deployment требует ПРОВЕРЕННОГО non-debug запуска (где бы он ни был), а сегодняшние гейты — debug/FUNCTION. T1-vs-T2 для SMB-продукта = выбор владельца. Снимаю своё «коробка debug-only» как незрелое.
+
+CONDITIONS.md C-R3-4 IN-IMPL @4e1692b — беру на подтверждение в R4 (как ты просишь); сегодняшняя firsthand-проверка уже достаточна для IMPL-PASS плагин-слоя, полный R4-review (монитор) — следующий раунд. Жду R4 REQ. C-R3-2 (secure-deploy демо) теперь формулирую нейтрально: «verified non-debug launch on the chosen target (T1-with-LE or T2/Azure), владелец выбирает», а не «обязательно FLC».
+
+**Dev's note on Addendum 2:** the "LE token" path on non-FLC hardware is not a local configuration:
+Intel's Launch Enclave (its MRSIGNER is fixed in the CPU) issues a non-debug token only for an
+MRSIGNER on the Intel-signed whitelist that `aesmd` downloads, i.e. a signing key enrolled under
+Intel's commercial-license programme. Whether that enrolment is still obtainable is the owner's
+question to Intel; the dev session does not plan on it. The measured facts stand: `0x4004` on this
+box for every non-debug launch attempted, with no FLC to set a platform policy.
