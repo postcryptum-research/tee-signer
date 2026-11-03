@@ -31,3 +31,11 @@ One line per crate that reaches the enclave through `signer-core` (measured with
 Not in the enclave: `hex`, `serde`, `serde_json` (dev-dependencies), anything behind `std` or
 `hollow-test`. **R2 additions (each a REQ line):** `hmac` + `pbkdf2` (BIP39), `hkdf` + `aes-gcm`
 (recovery blob).
+
+## Cost note (RESP-r1 D-11, C-R1-1)
+
+Trusted-descriptor matching (`wallet::matches_trusted`) derives up to `branches × gap` child keys
+per output that is neither own nor an exact-address match — the dominant per-transaction EC cost
+(≤ `branches × gap × candidates` scalar multiplications; `gap ≤ 1000`). Own-output and own-input
+classification cost one derivation per hinted path. R2 measures this on T1 hardware and sizes
+`maxOutputs × gap` to the enclave's time and heap budget.

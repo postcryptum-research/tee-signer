@@ -197,7 +197,10 @@ secp256k1). Both are later rounds; v1 is P-256 through `hw-signer`.
    mandate stays in force; `GET /v1/policy` and every receipt carry the pending hash.
 5. **Cancel**: a signed `Cancel { enclave_id, nonce }` by the owner **or** the recovery key clears
    `pending`. **Freeze**: `POST /v1/freeze` needs no signature (anyone, fail-closed); **unfreeze**
-   needs the owner's signature with a nonce.
+   needs the owner's signature with a nonce. While a mandate is pending, **every** further update
+   refuses (`POLICY_PENDING`, tightening included) — one change in flight keeps the timelock
+   linear; the owner's answer to a malicious pending is therefore **freeze + cancel**, never a
+   tightening over it (auditor, RESP-r1 D-7).
 6. When `best_height ≥ activation_height`, the pending mandate becomes installed on the next ecall.
 
 The same message family carries `RotateOwner { new_owner_pk }` (signed by the owner — tightening?
