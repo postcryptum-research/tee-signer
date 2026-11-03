@@ -236,6 +236,9 @@ async fn feed_once(shared: &Shared) -> Result<u32> {
         let Some(b) = &d.bitcoind else { return Ok(0) };
         let (url, auth) = (b.url.clone(), b.auth.clone());
         let st = d.status()?;
+        if !st.installed {
+            return Ok(0); // keys only: nothing to feed until a mandate pins the checkpoint
+        }
         (st.best_height, url, auth)
     };
     let bd = Bitcoind { url, auth, http: reqwest::Client::new() };
@@ -678,7 +681,9 @@ async fn h_health() -> &'static str {
 
 // ---------------------------------------------------------------- main
 
-#[tokio::main]
+// One runtime thread: every ecall comes from the same OS thread, the mutex serializes them, and
+// the enclave's single unbound TCS is never contended.
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?))

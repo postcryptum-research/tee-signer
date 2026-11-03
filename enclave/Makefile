@@ -138,7 +138,8 @@ Enclave/Enclave_t.o: Enclave/Enclave_t.c Enclave/Enclave_t.h
 Enclave/%.o: Enclave/%.c Enclave/Enclave_t.h
 	@$(CC) $(SGX_COMMON_CFLAGS) $(Enclave_C_Flags) -c $< -o $@
 	@echo "CC   <=  $<"
-$(Enclave_Name): Enclave/Enclave_t.o $(Enclave_C_Objects) $(RCORE_DIR)/librcore.a
+# depends on the phony `rcore` so a changed Rust core always relinks (an mtime race left a stale .so once)
+$(Enclave_Name): Enclave/Enclave_t.o $(Enclave_C_Objects) rcore
 	$(CC) Enclave/Enclave_t.o $(Enclave_C_Objects) -o $@ $(Enclave_Link_Flags)
 	@echo "LINK =>  $@"
 

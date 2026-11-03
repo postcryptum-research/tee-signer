@@ -4,7 +4,9 @@
      working set on top; the number is a bound to be MEASURED in R2 against the worst-case PSBT
      the mandate allows (maxInputs/maxOutputs) and tightened. No EDMM on SGX1: the heap is
      committed at load and baked into MRENCLAVE.
-     TCSNum 1: one ecall at a time, by construction (the host serializes too).
+     TCSNum 1, TCSPolicy 1 (unbound): one ecall at a time from ANY host thread. A bound policy
+     (0) ties the single TCS to the first thread that entered and every other thread then gets
+     SGX_ERROR_OUT_OF_TCS (0x1003) — found with the daemon's thread pool on hardware.
      DisableDebug is rewritten to 1 by the Makefile for RELEASE=1 builds; on the T1 box the launch
      is debug by hardware necessity and the binary reports tier T1-debug. -->
 <EnclaveConfiguration>
@@ -13,7 +15,7 @@
   <StackMaxSize>0x100000</StackMaxSize>
   <HeapMaxSize>0x2000000</HeapMaxSize>
   <TCSNum>1</TCSNum>
-  <TCSPolicy>0</TCSPolicy>
+  <TCSPolicy>1</TCSPolicy>
   <DisableDebug>0</DisableDebug>
   <MiscSelect>0</MiscSelect>
   <MiscMask>0xFFFFFFFF</MiscMask>
