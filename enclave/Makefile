@@ -28,6 +28,19 @@ else
     CONFIG_DISABLE_DEBUG := 0
 endif
 
+# C-R5-1: when the SDK's LVI mitigation is on (MITIGATION-CVE-2020-0551=LOAD — buildenv.mk adds the
+# lfence-inserting assembler flags and links the mitigated trusted libs from lib64/cve_2020_0551_load),
+# the Rust side is built with LLVM's LVI features too. RUSTFLAGS replaces the config.toml set, so it
+# restates it. Gate 6 asserts the mitigation is in the artifact (lfence density), not just requested.
+MITIGATION-CVE-2020-0551 ?= NONE
+ifeq ($(MITIGATION-CVE-2020-0551), LOAD)
+    RCORE_ENV := RUSTFLAGS="-C relocation-model=pic --cfg aes_force_soft --cfg polyval_force_soft -C target-feature=+lvi-cfi,+lvi-load-hardening"
+    LFENCE_MIN ?= 2000
+else
+    RCORE_ENV :=
+    LFENCE_MIN ?= 0
+endif
+
 SGX_COMMON_FLAGS := -m64 -O2
 SGX_LIBRARY_PATH := $(SGX_SDK)/lib64
 SGX_ENCLAVE_SIGNER := $(SGX_SDK)/bin/x64/sgx_sign
@@ -79,7 +92,7 @@ Enclave_Name := enclave.so
 Signed_Enclave_Name := enclave.signed.so
 Enclave_Config_File := Enclave/Enclave.config.xml
 Enclave_Config_Gen := build/Enclave.config.gen.xml
-Enclave_Test_Key := Enclave/Enclave_private_test.pem
+Enclave_Test_Key ?= Enclave/Enclave_private_test.pem
 
 ifeq ($(SGX_MODE), HW)
 ifeq ($(SGX_DEBUG), 1)
@@ -106,10 +119,10 @@ target: $(Signed_Enclave_Name) $(Bridge_Lib) gates
 rcore:
 	@if [ "$(RELEASE)" = "1" ]; then \
 	    echo "RUST (release, --locked, no test features)"; \
-	    cd $(RCORE_SRC) && $(CARGO) build --release --locked; \
+	    cd $(RCORE_SRC) && $(RCORE_ENV) $(CARGO) build --release --locked $(CARGO_FLAGS); \
 	else \
 	    echo "RUST (dev, --locked, $(RCORE_FEATURES))"; \
-	    cd $(RCORE_SRC) && $(CARGO) build --release --locked $(RCORE_FEATURES); \
+	    cd $(RCORE_SRC) && $(RCORE_ENV) $(CARGO) build --release --locked $(CARGO_FLAGS) $(RCORE_FEATURES); \
 	fi
 	@echo "RUST =>  $(RCORE_DIR)/librcore.a"
 $(RCORE_DIR)/librcore.a: rcore
@@ -162,8 +175,10 @@ endif
 # runtime, so the gate is: every function in the FINAL enclave that contains cpuid is in the
 # pinned SDK list (sdk-cpuid-baseline.txt) and the total equals the pinned count — nothing from
 # Rust or from our C. A change in either is a REQ (docs/ENCLAVE.md §7).
-SDK_CPUID_BASELINE ?= 8
-SDK_CPUID_LIST := sdk-cpuid-baseline.txt
+# The list is per SDK version (the dev host runs 2.25, the T2 image 2.28); the instruction count
+# is pinned beside it in <list>.count when it differs from the number of sites.
+SDK_CPUID_LIST ?= sdk-cpuid-baseline.txt
+SDK_CPUID_BASELINE ?= $(shell cat $(SDK_CPUID_LIST).count 2>/dev/null || LC_ALL=C sort -u $(SDK_CPUID_LIST) | grep -c .)
 gates: $(Enclave_Name)
 	@mkdir -p build
 	@echo "GATE 1: cpuid sites in $(Enclave_Name) are exactly the pinned SDK set"
@@ -178,6 +193,9 @@ gates: $(Enclave_Name)
 	@t=$$(readelf -d $(Enclave_Name) | grep -c TEXTREL || true); if [ "$$t" != "0" ]; then echo "FATAL: TEXTREL in $(Enclave_Name)"; exit 1; fi
 	@echo "GATE 4: DisableDebug in the signed config matches RELEASE"
 	@grep -q "<DisableDebug>$(CONFIG_DISABLE_DEBUG)</DisableDebug>" $(Enclave_Config_Gen)
+	@echo "GATE 6: LVI mitigation in the artifact (MITIGATION-CVE-2020-0551=$(MITIGATION-CVE-2020-0551))"
+	@n=$$(objdump -d $(Enclave_Name) | awk '$$NF=="lfence"' | wc -l); echo "  lfence instructions: $$n (minimum $(LFENCE_MIN))"; echo "$$n" > build/lfence-count.txt; \
+	if [ "$$n" -lt "$(LFENCE_MIN)" ]; then echo "FATAL: mitigation requested but the artifact carries only $$n lfence"; exit 1; fi
 	@echo "GATES: all passed"
 
 clean:

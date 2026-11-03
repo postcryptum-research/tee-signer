@@ -1,0 +1,34 @@
+# The signer daemon as a sidecar for the T2 target (Azure DCsv3: in-kernel driver, PSW 2.28,
+# quoting through the node's aesmd). Built on the Hetzner box from the pinned build outputs
+# (docker/build-enclave.sh) and shipped as an image; never built on the node.
+# Runtime libraries come from Intel's apt repo at exactly the node's versions, so the in-container
+# urts/dcap_ql and the node's aesmd agree. Runs as uid 999 (= the stack's bitcoind user) for the
+# read-only RPC cookie mount, as on T1.
+FROM ubuntu:22.04
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg libprotobuf23 zlib1g && \
+    mkdir -p /etc/apt/keyrings && \
+    curl -fsSL https://download.01.org/intel-sgx/sgx_repo/ubuntu/intel-sgx-deb.key | gpg --dearmor -o /etc/apt/keyrings/intel-sgx.gpg && \
+    echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/intel-sgx.gpg] https://download.01.org/intel-sgx/sgx_repo/ubuntu jammy main' > /etc/apt/sources.list.d/intel-sgx.list && \
+    apt-get update && apt-get install -y --no-install-recommends \
+        libsgx-enclave-common=2.28.100.1-jammy1 \
+        libsgx-urts=2.28.100.1-jammy1 \
+        libsgx-ae-pce=2.28.100.1-jammy1 \
+        libsgx-ae-qe3=1.25.100.1-jammy1 \
+        libsgx-ae-id-enclave=1.25.100.1-jammy1 \
+        libsgx-pce-logic=1.25.100.1-jammy1 \
+        libsgx-qe3-logic=1.25.100.1-jammy1 \
+        libsgx-quote-ex=2.28.100.1-jammy1 \
+        libsgx-dcap-ql=1.25.100.1-jammy1 \
+    && apt-get purge -y curl gnupg && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+RUN useradd -r -u 999 -d /var/lib/signerd signerd && mkdir -p /var/lib/signerd && chown signerd:signerd /var/lib/signerd
+COPY signerd /usr/local/bin/signerd
+COPY dcap-quote-helper /usr/local/bin/dcap-quote-helper
+COPY enclave.signed.so /usr/local/lib/tee-signer/enclave.signed.so
+COPY MANIFEST /usr/local/lib/tee-signer/MANIFEST
+# Quoting goes through the node's aesmd (socket mounted by the compose fragment); production launch.
+ENV SGX_AESM_ADDR=1 SIGNERD_ENCLAVE_DEBUG=false SIGNERD_QUOTE_HELPER=/usr/local/bin/dcap-quote-helper
+USER signerd
+VOLUME /var/lib/signerd
+EXPOSE 7390
+ENTRYPOINT ["/usr/local/bin/signerd", "--enclave", "/usr/local/lib/tee-signer/enclave.signed.so", "run", "--state-dir", "/var/lib/signerd", "--listen", "0.0.0.0:7390"]

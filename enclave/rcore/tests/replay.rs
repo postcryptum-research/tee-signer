@@ -457,3 +457,50 @@ fn replay_r1_vectors_through_the_dispatcher() {
     }
     assert!(failures.is_empty(), "replay failures:\n{}", failures.join("\n"));
 }
+
+/// `REPORT` (REQ-r5 §3): the report binds the identity card and the verifier's nonce in
+/// `report_data`, changes nothing, and refuses anything but a 544-byte input.
+#[test]
+fn report_binds_card_and_nonce() {
+    let owner = p256_key(0xa1);
+    let recovery = p256_key(0xb2);
+    let entropy = [0x33u8; 32];
+    call(op::TEST_RESET_SESSION, &[]);
+    let init = proto::InitRequest { network: 3, owner_pk: owner.pk, recovery_pk: recovery.pk };
+    let treq = proto::TestInitRequest { init, seed: entropy, identity_sk: [0x55; 32], state: vec![] };
+    let r = call(op::TEST_INIT, &treq.encode());
+    assert!(r.ok, "{:?}", r.reasons);
+    let ir = proto::InitResponse::decode(&r.payload).unwrap();
+    let card = IdentityCard::decode(&ir.card).unwrap();
+
+    let nonce = [0x77u8; 32];
+    let mut data = vec![0u8; proto::quote::TARGET_INFO_LEN];
+    data.extend_from_slice(&nonce);
+    let r = call(op::REPORT, &proto::SealedWith { sealed: ir.sealed.clone(), data, extra: None }.encode());
+    assert!(r.ok, "{:?}", r.reasons);
+    let rr = proto::ReportResponse::decode(&r.payload).unwrap();
+    assert_eq!(rr.card.encode(), card.encode(), "the card the report binds is the card INIT signed");
+    let expect = signer_core::sha256(&proto::quote::preimage(&nonce, &card.encode()));
+    let o = proto::quote::REPORT_DATA_OFFSET;
+    assert_eq!(&rr.report[o..o + 32], &expect[..], "report_data[..32] = SHA-256(domain ‖ nonce ‖ card)");
+    assert_eq!(rr.report[o + 32..o + 64], [0u8; 32]);
+    // the same blob, a different nonce: a different binding (anti-replay is the verifier's nonce)
+    let mut data2 = vec![0u8; proto::quote::TARGET_INFO_LEN];
+    data2.extend_from_slice(&[0x78u8; 32]);
+    let r2 = call(op::REPORT, &proto::SealedWith { sealed: ir.sealed.clone(), data: data2, extra: None }.encode());
+    let rr2 = proto::ReportResponse::decode(&r2.payload).unwrap();
+    assert_ne!(rr2.report[o..o + 32], rr.report[o..o + 32]);
+    // read-only: status after is the status before
+    let s1 = call(op::STATUS, &ir.sealed);
+    assert!(s1.ok);
+    // one byte short, one byte long, a stray `extra`: ENCODING
+    for bad in [543usize, 545] {
+        let r = call(op::REPORT, &proto::SealedWith { sealed: ir.sealed.clone(), data: vec![0u8; bad], extra: None }.encode());
+        assert!(!r.ok && r.reasons.iter().any(|x| x == "ENCODING"), "{bad}: {:?}", r.reasons);
+    }
+    let r4 = call(op::REPORT, &proto::SealedWith { sealed: ir.sealed.clone(), data: vec![0u8; 544], extra: Some(vec![1]) }.encode());
+    assert!(!r4.ok && r4.reasons.iter().any(|x| x == "ENCODING"), "{:?}", r4.reasons);
+    // a blob that does not unseal: no report at all
+    let r5 = call(op::REPORT, &proto::SealedWith { sealed: vec![9u8; 40], data: vec![0u8; 544], extra: None }.encode());
+    assert!(!r5.ok && r5.reasons.iter().any(|x| x == "STATE_UNSEALABLE"), "{:?}", r5.reasons);
+}

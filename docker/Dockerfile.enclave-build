@@ -1,0 +1,65 @@
+# Pinned, reproducible build of the tee-signer enclave and daemon for the T2 target (Azure DCsv3:
+# PSW 2.28.100.1-jammy1, DCAP 1.25.100.1-jammy1, in-kernel driver) — docs/ENCLAVE.md §7 gate 5,
+# DESIGN.md §8.10. The same recipe as the sibling projects on this host: one image, one binary,
+# one MRENCLAVE, built on the Hetzner box, attested on the cluster. Run via docker/build-enclave.sh.
+#
+# The signing key is NOT in the image: `make` here produces the unsigned enclave.so and the
+# generated config; signing happens in a `docker run` with the key mounted read-only (a dev key
+# for the T2 demo, labeled; a release key is a ceremony). MRENCLAVE covers pages and config only,
+# so signing elsewhere yields the identical measurement.
+FROM ubuntu:22.04
+ENV DEBIAN_FRONTEND=noninteractive SOURCE_DATE_EPOCH=1700000000 LC_ALL=C.UTF-8
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates curl gnupg python3 openssl binutils git \
+    && rm -rf /var/lib/apt/lists/*
+# Intel SGX repository, every package pinned to what the cluster runs (measured on sgx-node-3).
+RUN mkdir -p /etc/apt/keyrings && \
+    curl -fsSL https://download.01.org/intel-sgx/sgx_repo/ubuntu/intel-sgx-deb.key | gpg --dearmor -o /etc/apt/keyrings/intel-sgx.gpg && \
+    echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/intel-sgx.gpg] https://download.01.org/intel-sgx/sgx_repo/ubuntu jammy main' > /etc/apt/sources.list.d/intel-sgx.list && \
+    apt-get update && apt-get install -y --no-install-recommends \
+        libsgx-headers=2.28.100.1-jammy1 \
+        libsgx-enclave-common=2.28.100.1-jammy1 \
+        libsgx-enclave-common-dev=2.28.100.1-jammy1 \
+        libsgx-urts=2.28.100.1-jammy1 \
+        libsgx-ae-pce=2.28.100.1-jammy1 \
+        libsgx-ae-qe3=1.25.100.1-jammy1 \
+        libsgx-ae-qve=1.25.100.1-jammy1 \
+        libsgx-ae-id-enclave=1.25.100.1-jammy1 \
+        libsgx-pce-logic=1.25.100.1-jammy1 \
+        libsgx-qe3-logic=1.25.100.1-jammy1 \
+        libsgx-quote-ex=2.28.100.1-jammy1 \
+        libsgx-quote-ex-dev=2.28.100.1-jammy1 \
+        libsgx-dcap-ql=1.25.100.1-jammy1 \
+        libsgx-dcap-ql-dev=1.25.100.1-jammy1 \
+        libsgx-dcap-quote-verify=1.25.100.1-jammy1 \
+        libsgx-dcap-quote-verify-dev=1.25.100.1-jammy1 \
+        libsgx-dcap-default-qpl=1.25.100.1-jammy1 \
+    && rm -rf /var/lib/apt/lists/*
+# SGX SDK 2.28, matching the cluster's PSW.
+RUN curl -fsSL https://download.01.org/intel-sgx/sgx-linux/2.28/distro/ubuntu22.04-server/sgx_linux_x64_sdk_2.28.100.1.bin -o /tmp/sgx_sdk.bin && \
+    chmod +x /tmp/sgx_sdk.bin && echo yes | /tmp/sgx_sdk.bin --prefix=/opt/intel && rm /tmp/sgx_sdk.bin
+# Rust, pinned to the exact toolchain the dev host uses (rust-toolchain pin lives here, not in $HOME).
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
+ARG RUST_TOOLCHAIN=1.92.0
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain ${RUST_TOOLCHAIN} --no-modify-path && \
+    rustc --version && cargo --version
+# Sources: the TCB (core, enclave) and the untrusted daemon. The lockfiles are what pin the closure.
+WORKDIR /src
+COPY core /src/core
+COPY enclave /src/enclave
+COPY host /src/host
+# Fetch the locked crate closure once, so the build itself runs offline (--locked --offline).
+RUN cd /src/enclave/rcore && cargo fetch --locked && cd /src/host/signerd && cargo fetch --locked
+# Unsigned enclave + bridge library + daemon. RELEASE=1: DisableDebug=1, no test features, every gate.
+# The SDK-2.28 cpuid baseline is pinned separately from the 2.25 one the dev host uses.
+RUN bash -o pipefail -c 'source /opt/intel/sgxsdk/environment && cd /src/enclave && \
+    make RELEASE=1 MITIGATION-CVE-2020-0551=LOAD CARGO=/opt/cargo/bin/cargo CARGO_FLAGS=--offline SDK_CPUID_LIST=sdk-cpuid-baseline-2.28.txt enclave.so App/libenclave_u.a build/Enclave.config.gen.xml 2>&1 | tail -20'
+RUN bash -o pipefail -c 'source /opt/intel/sgxsdk/environment && cd /src/host/signerd && \
+    ENCLAVE_U_DIR=/src/enclave/App cargo build --release --locked --offline --features sgx 2>&1 | tail -3'
+# The DCAP quote helper (untrusted host side): a separate process, as the sibling projects learned
+# on DCsv3 — the quoting library cannot share a process with the application enclave.
+COPY docker/dcap-quote-helper.c /src/docker/dcap-quote-helper.c
+RUN gcc -O2 -Wall -o /src/host/dcap-quote-helper /src/docker/dcap-quote-helper.c -ldl
+# Manifest of everything that decides the measurement.
+RUN bash -c 'cd /src && { echo "image: tee-signer-build"; echo "ubuntu: $(. /etc/os-release && echo $VERSION)"; echo "gcc: $(gcc --version | head -1)"; echo "rust: $(rustc --version)"; dpkg -l | grep -E "^ii  libsgx" | awk "{print \$2\" \"\$3}"; echo "sdk: $(cat /opt/intel/sgxsdk/version.txt 2>/dev/null || echo 2.28.100.1)"; echo "SOURCE_DATE_EPOCH: $SOURCE_DATE_EPOCH"; } > /src/MANIFEST'
+WORKDIR /src/enclave

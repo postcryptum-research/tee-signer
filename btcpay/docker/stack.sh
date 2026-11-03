@@ -12,7 +12,10 @@ export NBITCOIN_NETWORK=${NBITCOIN_NETWORK:-signet}
 export BTCPAYGEN_CRYPTO1=btc
 export BTCPAYGEN_REVERSEPROXY=none
 export BTCPAYGEN_LIGHTNING=none
-export BTCPAYGEN_ADDITIONAL_FRAGMENTS=opt-add-tee-signer.custom
+# T1 (Hetzner, /dev/isgx) or T2 (Azure, in-kernel driver): TEE_FRAGMENT=opt-add-tee-signer-t2.custom
+export TEE_FRAGMENT=${TEE_FRAGMENT:-opt-add-tee-signer.custom}
+# extra stock fragments, e.g. TEE_EXTRA_FRAGMENTS=opt-save-storage-xxs (prune the node on a small disk)
+export BTCPAYGEN_ADDITIONAL_FRAGMENTS="${TEE_EXTRA_FRAGMENTS:+$TEE_EXTRA_FRAGMENTS;}$TEE_FRAGMENT"
 export NOREVERSEPROXY_HTTP_PORT=${NOREVERSEPROXY_HTTP_PORT:-7392}
 export BTCPAY_HOST=${BTCPAY_HOST:-127.0.0.1}
 export BTCPAY_PROTOCOL=http
@@ -25,7 +28,7 @@ case "$cmd" in
     cd "$ROOT"
     [ -d btcpayserver-docker ] || git clone -q --depth 1 https://github.com/btcpayserver/btcpayserver-docker.git
     cd btcpayserver-docker
-    cp "$HERE/opt-add-tee-signer.custom.yml" docker-compose-generator/docker-fragments/
+    cp "$HERE/$TEE_FRAGMENT.yml" docker-compose-generator/docker-fragments/
     mkdir -p Generated
     docker run --rm -v "$(pwd)/Generated:/app/Generated" \
       -v "$(pwd)/docker-compose-generator/docker-fragments:/app/docker-fragments" \
