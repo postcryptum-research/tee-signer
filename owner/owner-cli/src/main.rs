@@ -720,6 +720,10 @@ enum Cmd {
         /// Write the quote and the verification output as JSON.
         #[arg(long)]
         save: Option<PathBuf>,
+        /// Negative vector: verify a previously saved quote (`--save` output) against a FRESH nonce — a
+        /// genuine quote from an earlier run must be refused at step 6 (replay).
+        #[arg(long)]
+        replay: Option<PathBuf>,
     },
     /// Verify the recovery blob offline: decrypt with the recovery key, derive the xpub, compare.
     RecoveryVerify {
@@ -1029,9 +1033,9 @@ fn main() -> Result<()> {
             let sd = client(&cli)?;
             println!("{}", sd.post("/v1/freeze", serde_json::json!({}))?);
         }
-        Cmd::Attest { wallet, expect_mrenclave, expect_mrsigner, signing_key_label, accept, pccs, pin, save } => {
+        Cmd::Attest { wallet, expect_mrenclave, expect_mrsigner, signing_key_label, accept, pccs, pin, save, replay } => {
             let sd = client(&cli)?;
-            attest(&sd, wallet, expect_mrenclave.clone(), expect_mrsigner.clone(), signing_key_label.clone(), accept, pccs, *pin, save.clone())?;
+            attest(&sd, wallet, expect_mrenclave.clone(), expect_mrsigner.clone(), signing_key_label.clone(), accept, pccs, *pin, save.clone(), replay.clone())?;
         }
         Cmd::Status => {
             let sd = client(&cli)?;
@@ -1158,6 +1162,7 @@ fn attest(
     pccs: &str,
     pin: bool,
     save: Option<PathBuf>,
+    replay: Option<PathBuf>,
 ) -> Result<()> {
     use dcap_qvl::quote::Report;
     use dcap_qvl::verify::QuoteVerifier;
@@ -1177,7 +1182,13 @@ fn attest(
 
     // a fresh nonce; the quote must bind it
     let nonce: [u8; 32] = rand::random();
-    let r = sd.get(&format!("/v1/quote?nonce={}", hex::encode(nonce)))?;
+    let r = match &replay {
+        Some(path) => {
+            println!("REPLAY VECTOR: verifying the quote saved in {} against the fresh nonce {}", path.display(), hex::encode(nonce));
+            serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(path)?)?
+        }
+        None => sd.get(&format!("/v1/quote?nonce={}", hex::encode(nonce)))?,
+    };
     let quote_bytes = hex::decode(r["quote_hex"].as_str().ok_or_else(|| anyhow!("quote_hex"))?)?;
     let card_bytes = hex::decode(r["card_hex"].as_str().ok_or_else(|| anyhow!("card_hex"))?)?;
     let card = IdentityCard::decode(&card_bytes).map_err(|_| anyhow!("card decode"))?;
