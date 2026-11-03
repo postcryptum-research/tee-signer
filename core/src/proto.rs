@@ -32,6 +32,10 @@ pub mod op {
     pub const JUDGE: u32 = 7;
     /// `SignRequest` → `SignResponse`.
     pub const SIGN: u32 = 8;
+    /// `SealedWith { sealed, data: target_info[512] ‖ nonce[32] }` → `ReportResponse`: a report for
+    /// the quoting enclave whose `report_data` binds the identity card and the verifier's nonce
+    /// (`quote::DOMAIN`). Read-only; nothing secret leaves. REQ-r5 §3.
+    pub const REPORT: u32 = 10;
     /// test builds only: `TestInitRequest` → `InitResponse`.
     pub const TEST_INIT: u32 = 100;
     /// test builds only: reset the volatile session (a new "enclave load") → empty `ok`.
@@ -423,6 +427,57 @@ impl PolicyResponse {
         };
         d.finish()?;
         Ok(r)
+    }
+}
+
+
+/// The `REPORT` binding (REQ-r5 §3): `report_data = SHA-256(DOMAIN ‖ nonce ‖ card bytes) ‖ 0[32]`.
+pub mod quote {
+    /// Domain separator in front of the nonce and the card.
+    pub const DOMAIN: &[u8] = b"tee-signer/quote/v1";
+    /// `sgx_target_info_t` size.
+    pub const TARGET_INFO_LEN: usize = 512;
+    /// Verifier nonce size.
+    pub const NONCE_LEN: usize = 32;
+    /// `REPORT` input: target_info ‖ nonce.
+    pub const INPUT_LEN: usize = TARGET_INFO_LEN + NONCE_LEN;
+    /// `sgx_report_t` size.
+    pub const REPORT_LEN: usize = 432;
+    /// Offset of `report_data` inside `sgx_report_t` (after the 320-byte body prefix).
+    pub const REPORT_DATA_OFFSET: usize = 320;
+    /// The bytes the enclave hashes into `report_data[..32]`.
+    pub fn preimage(nonce: &[u8; NONCE_LEN], card_bytes: &[u8]) -> alloc::vec::Vec<u8> {
+        let mut v = alloc::vec::Vec::with_capacity(DOMAIN.len().saturating_add(NONCE_LEN).saturating_add(card_bytes.len()));
+        v.extend_from_slice(DOMAIN);
+        v.extend_from_slice(nonce);
+        v.extend_from_slice(card_bytes);
+        v
+    }
+}
+
+/// Response to `REPORT`: the raw `sgx_report_t` and the identity card whose hash it binds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReportResponse {
+    /// `sgx_report_t`, 432 bytes, targeted at the quoting enclave.
+    pub report: [u8; quote::REPORT_LEN],
+    /// The card (public) recomputed from the envelope for this call.
+    pub card: IdentityCard,
+}
+
+impl ReportResponse {
+    /// Canonical bytes.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut e = Enc::new();
+        e.fixed(&self.report).bytes(&self.card.encode());
+        e.finish()
+    }
+    /// Strict decode.
+    pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
+        let mut d = Dec::new(b);
+        let report = d.fixed()?;
+        let card = IdentityCard::decode(&d.bytes(256)?)?;
+        d.finish()?;
+        Ok(ReportResponse { report, card })
     }
 }
 

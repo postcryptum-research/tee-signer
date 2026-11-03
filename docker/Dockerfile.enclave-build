@@ -53,7 +53,7 @@ RUN cd /src/enclave/rcore && cargo fetch --locked && cd /src/host/signerd && car
 # Unsigned enclave + bridge library + daemon. RELEASE=1: DisableDebug=1, no test features, every gate.
 # The SDK-2.28 cpuid baseline is pinned separately from the 2.25 one the dev host uses.
 RUN bash -o pipefail -c 'source /opt/intel/sgxsdk/environment && cd /src/enclave && \
-    make RELEASE=1 CARGO=/opt/cargo/bin/cargo CARGO_FLAGS=--offline SDK_CPUID_LIST=sdk-cpuid-baseline-2.28.txt enclave.so App/libenclave_u.a build/Enclave.config.gen.xml 2>&1 | tail -20'
+    make RELEASE=1 MITIGATION-CVE-2020-0551=LOAD CARGO=/opt/cargo/bin/cargo CARGO_FLAGS=--offline SDK_CPUID_LIST=sdk-cpuid-baseline-2.28.txt enclave.so App/libenclave_u.a build/Enclave.config.gen.xml 2>&1 | tail -20'
 RUN bash -o pipefail -c 'source /opt/intel/sgxsdk/environment && cd /src/host/signerd && \
     ENCLAVE_U_DIR=/src/enclave/App cargo build --release --locked --offline --features sgx 2>&1 | tail -3'
 # The DCAP quote helper (untrusted host side): a separate process, as the sibling projects learned

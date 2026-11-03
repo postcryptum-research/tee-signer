@@ -119,6 +119,7 @@ pub fn dispatch(op_code: u32, input: &[u8]) -> Response {
         op::HEADERS => headers(input),
         op::JUDGE => judge_op(input),
         op::SIGN => sign_op(input),
+        op::REPORT => report(input),
         #[cfg(feature = "test-init")]
         op::TEST_INIT => test_init(input),
         #[cfg(feature = "test-init")]
@@ -259,6 +260,46 @@ fn install(input: &[u8]) -> Response {
         Ok(sealed) => Response::ok(proto::SealedResponse { sealed }.encode()),
         Err(r) => r,
     }
+}
+
+/// `REPORT` (REQ-r5 §3): a report for the quoting enclave with
+/// `report_data = SHA-256(quote::DOMAIN ‖ nonce ‖ card bytes) ‖ 0[32]`. Read-only — no state
+/// change, nothing secret in the output; the card is recomputed from the envelope at every call,
+/// never cached. `target_info` and `nonce` are untrusted input of fixed size; anything else is
+/// `ENCODING`. Allowed on a keys-only blob (the card exists from `INIT`).
+fn report(input: &[u8]) -> Response {
+    use signer_core::proto::quote;
+    let req = match proto::SealedWith::decode(input, quote::INPUT_LEN) {
+        Ok(r) => r,
+        Err(_) => return refuse_code("ENCODING"),
+    };
+    if req.data.len() != quote::INPUT_LEN || req.extra.is_some() {
+        return refuse_code("ENCODING");
+    }
+    let env = match open(&req.sealed) {
+        Ok(e) => e,
+        Err(r) => return r,
+    };
+    let secp = secp();
+    let Some(network) = network_from(env.network) else { return refuse(Reason::PolicyNetwork.into()) };
+    let Some(keys) = derive_keys(&secp, network, &env.seed) else { return refuse_code("KEY_DERIVATION") };
+    let Some(idpk) = identity_pk(&secp, &env.identity_sk) else { return refuse_code("KEY_DERIVATION") };
+    let card = proto::IdentityCard {
+        mrenclave: sgx::mrenclave(),
+        network: env.network,
+        xpub: keys.xpub,
+        fingerprint: keys.fingerprint,
+        identity_pk: idpk,
+        tier: sgx::tier().to_string(),
+    };
+    let mut target = [0u8; quote::TARGET_INFO_LEN];
+    target.copy_from_slice(&req.data[..quote::TARGET_INFO_LEN]);
+    let mut nonce = [0u8; quote::NONCE_LEN];
+    nonce.copy_from_slice(&req.data[quote::TARGET_INFO_LEN..quote::INPUT_LEN]);
+    let mut report_data = [0u8; 64];
+    report_data[..32].copy_from_slice(&signer_core::sha256(&quote::preimage(&nonce, &card.encode())));
+    let Some(report) = sgx::report_for(&target, &report_data) else { return refuse_code("REPORT") };
+    Response::ok(proto::ReportResponse { report, card }.encode())
 }
 
 fn status(input: &[u8]) -> Response {

@@ -191,6 +191,31 @@ pub fn unseal(sealed: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
     }
 }
 
+/// A report targeted at `target_info` (the quoting enclave) carrying `report_data` — `REPORT`
+/// (REQ-r5 §3). `None` if the SDK refuses (a malformed target). Under `nosgx` the stand-in is a
+/// zero report with `report_data` at its offset, so a host test can check the binding; it is
+/// labeled by the tier and attests nothing.
+pub fn report_for(target_info: &[u8; signer_core::proto::quote::TARGET_INFO_LEN], report_data: &[u8; 64]) -> Option<[u8; signer_core::proto::quote::REPORT_LEN]> {
+    #[cfg(not(feature = "nosgx"))]
+    {
+        let mut report = [0u8; ffi::REPORT_SIZE];
+        // SAFETY: fixed-size buffers of the SDK's documented sizes; the SDK validates target_info.
+        let rc = unsafe { ffi::sgx_create_report(target_info.as_ptr(), report_data.as_ptr(), report.as_mut_ptr()) };
+        if rc != SGX_SUCCESS {
+            return None;
+        }
+        Some(report)
+    }
+    #[cfg(feature = "nosgx")]
+    {
+        let _ = target_info;
+        let mut report = [0u8; signer_core::proto::quote::REPORT_LEN];
+        let o = signer_core::proto::quote::REPORT_DATA_OFFSET;
+        report[o..o.saturating_add(64)].copy_from_slice(report_data);
+        Some(report)
+    }
+}
+
 /// This enclave's MRENCLAVE from a self-report (zeros under `nosgx`).
 pub fn mrenclave() -> [u8; 32] {
     #[cfg(not(feature = "nosgx"))]
