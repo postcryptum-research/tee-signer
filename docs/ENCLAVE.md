@@ -171,6 +171,8 @@ future-time rule (no clock). Signet's cheap PoW and regtest's absent PoW are lab
    `SGX_ERROR_SERVICE_INVALID_PRIVILEGE`: Intel's Launch Enclave issues no token for a non-whitelisted
    MRSIGNER on non-FLC hardware) and with debug=1 (0x2004 `SGX_ERROR_INVALID_ATTRIBUTE`). The build
    is the Makefile's choice; the launch mode is the platform's — FLC hardware lifts it (R5).
+   The non-FLC path (an Intel-whitelisted signing key under a commercial licence, PSW ≤ 2.26) is
+   closed going forward: PSW 2.28 removed the legacy Launch Enclave and whitelist management.
 5. Reproducibility (C-R1-3): two builds in the pinned container compare equal on MRENCLAVE and
    every SIGSTRUCT field except `header.date` and its signature (`sgx_sign dump`), never on the
    `.so` hash.
