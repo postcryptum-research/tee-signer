@@ -149,7 +149,17 @@ future-time rule (no clock). Signet's cheap PoW and regtest's absent PoW are lab
 
 ## 7. Build gates (`enclave/Makefile`, each a hard failure)
 
-1. `objdump -d enclave.so | grep -c '\bcpuid\b'` == 0 (C-R10a).
+1. **No `cpuid` in our code** — `objdump -d librcore.a` and the enclave's own objects count 0 —
+   **and** the final `enclave.so` counts exactly the pinned SDK baseline (C-R10a, refined by the
+   first hardware build): the Intel SDK's trusted runtime itself carries `cpuid` sites
+   (`sgx_trts` calls `sgx_init_crypto_lib`; `libsgx_tcrypto`'s IPP dispatcher probes the CPU),
+   emulated by the runtime's exception handler from tables the **host** supplies at enclave
+   creation. They cannot be removed without dropping the SDK runtime (the same residual
+   trust-bridge's Teaclave patch names), so they are counted, pinned (`SDK_CPUID_BASELINE`) and
+   labeled; a change in the count — a Rust dependency growing a runtime probe, or an SDK update —
+   fails the build and is a REQ. Our own code reaches zero by `sha2`'s `force-soft` feature and the
+   `aes_force_soft` / `polyval_force_soft` cfgs (the first hardware build caught `aes` and
+   `polyval` probing, exactly the case the gate exists for).
 2. `nm enclave.so` has no symbol from `hollow-test` or `test-init` in a release build (C-R9,
    `RELEASE=1` refuses the features and asserts).
 3. `cargo build --locked --release` for `rcore`; no `--allow-multiple-definition`; no TEXTREL

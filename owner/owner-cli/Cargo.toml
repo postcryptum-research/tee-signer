@@ -1,0 +1,30 @@
+[package]
+name = "owner-cli"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+license = "Apache-2.0"
+description = "tee-signer owner tool: owner and recovery keys, mandate build / diff / sign / submit, init, recovery verification, status — runs on the owner's machine, never on the BTCPay box"
+publish = false
+
+[features]
+default = []
+
+[dependencies]
+signer-core = { path = "../../core", features = ["std"] }
+bitcoin = { version = "0.32", features = ["std", "base64"] }
+p256 = { version = "0.13", features = ["ecdsa", "ecdh", "arithmetic", "std"] }
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+anyhow = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+scrypt = "0.11"
+aes-gcm = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+rand = "0.8"
+rpassword = "7"
+zeroize = "1"
+base64 = "0.22"

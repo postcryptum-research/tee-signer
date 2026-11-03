@@ -71,3 +71,13 @@ pub unsafe extern "C" fn rcore_call(
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     sgx::abort()
 }
+
+/// The sysroot's `alloc` rlib keeps a `.data.DW.ref.rust_eh_personality` reference that survives
+/// `--gc-sections`; with `panic = "abort"` the personality routine can never be called. The lab
+/// resolved it with fat LTO, which cargo does not apply to a crate that also builds an rlib; this
+/// definition is the explicit form of the same fact. Aborts if ever reached.
+#[cfg(all(not(feature = "nosgx"), not(test)))]
+#[no_mangle]
+pub extern "C" fn rust_eh_personality() -> ! {
+    sgx::abort()
+}

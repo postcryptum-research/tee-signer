@@ -7,6 +7,7 @@
 #
 # Every gate is a hard failure. Nothing here is advisory.
 
+SHELL := /bin/bash
 SGX_SDK ?= /opt/intel/sgxsdk
 SGX_MODE ?= HW
 SGX_ARCH ?= x64
@@ -154,9 +155,20 @@ endif
 	@echo "SIGN =>  $@ (DisableDebug=$(CONFIG_DISABLE_DEBUG))"
 
 ######## Gates (docs/ENCLAVE.md §7) ########
+# The Intel SDK's own trusted runtime (sgx_trts calls sgx_init_crypto_lib; tcrypto's IPP
+# dispatcher probes the CPU) carries cpuid instructions that the SDK emulates from host-supplied
+# tables when they trap inside the enclave. They cannot be removed without dropping the SDK
+# runtime, so the gate is: every function in the FINAL enclave that contains cpuid is in the
+# pinned SDK list (sdk-cpuid-baseline.txt) and the total equals the pinned count — nothing from
+# Rust or from our C. A change in either is a REQ (docs/ENCLAVE.md §7).
+SDK_CPUID_BASELINE ?= 8
+SDK_CPUID_LIST := sdk-cpuid-baseline.txt
 gates: $(Enclave_Name)
-	@echo "GATE 1: no cpuid in the enclave"
-	@n=$$(objdump -d $(Enclave_Name) | grep -cw cpuid); if [ "$$n" != "0" ]; then echo "FATAL: $$n cpuid instruction(s) in $(Enclave_Name)"; exit 1; fi
+	@mkdir -p build
+	@echo "GATE 1: cpuid sites in $(Enclave_Name) are exactly the pinned SDK set"
+	@objdump -d $(Enclave_Name) | awk '/^[0-9a-f]+ <.*>:/{fn=$$2} $$NF=="cpuid"{print fn}' | sed 's/^<//; s/>:$$//' | LC_ALL=C sort -u > build/cpuid-sites.txt
+	@if ! diff -q build/cpuid-sites.txt <(LC_ALL=C sort -u $(SDK_CPUID_LIST)) >/dev/null; then echo "FATAL: cpuid sites differ from $(SDK_CPUID_LIST):"; diff build/cpuid-sites.txt <(LC_ALL=C sort -u $(SDK_CPUID_LIST)); exit 1; fi
+	@n=$$(objdump -d $(Enclave_Name) | awk '$$NF=="cpuid"' | wc -l); if [ "$$n" != "$(SDK_CPUID_BASELINE)" ]; then echo "FATAL: $$n cpuid instruction(s) in $(Enclave_Name), baseline $(SDK_CPUID_BASELINE)"; exit 1; fi
 	@echo "GATE 2: no test-only symbols in a release build"
 	@if [ "$(RELEASE)" = "1" ]; then \
 	    if nm $(Enclave_Name) 2>/dev/null | grep -E -q 'test_init|hollow|reset_session|nosgx'; then echo "FATAL: test-only symbol present in a release enclave"; exit 1; fi; \

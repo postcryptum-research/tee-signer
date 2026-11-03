@@ -1,0 +1,36 @@
+[package]
+name = "signerd"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+license = "Apache-2.0"
+description = "tee-signer host daemon: loads the enclave, persists the sealed blob, serves the HTTP API, feeds headers, logs receipts — transport and storage only, authorises nothing"
+publish = false
+
+[features]
+default = []
+# The real enclave through libenclave_u.a + libsgx_urts (build on the SGX box with ENCLAVE_U_DIR set).
+sgx = []
+# In-process rcore in host simulation (no SGX): for laptop end-to-end tests of the daemon logic.
+nosgx = ["dep:rcore"]
+
+[dependencies]
+signer-core = { path = "../../core", features = ["std"] }
+rcore = { path = "../../enclave/rcore", features = ["nosgx", "test-init"], optional = true }
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive", "env"] }
+hex = "0.4"
+base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+bitcoin = { version = "0.32", features = ["std", "base64"] }
+rand = "0.8"
+p256 = { version = "0.13", features = ["ecdsa", "ecdh", "arithmetic", "std"] }
+aes-gcm = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"

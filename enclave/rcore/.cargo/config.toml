@@ -4,4 +4,6 @@ target = "x86_64-unknown-linux-gnu"
 [target.x86_64-unknown-linux-gnu]
 # PIC is rustc's default on this target; stated so a toolchain change cannot silently drop it
 # (the enclave is a position-independent shared object; the build asserts TEXTREL == 0).
-rustflags = ["-C", "relocation-model=pic"]
+# aes_force_soft / polyval_force_soft: no runtime CPU detection inside the enclave (cpuid is #UD
+# there); together with sha2's `force-soft` feature. The Makefile's gate 1 asserts the result.
+rustflags = ["-C", "relocation-model=pic", "--cfg", "aes_force_soft", "--cfg", "polyval_force_soft"]
