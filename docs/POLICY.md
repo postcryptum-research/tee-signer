@@ -111,7 +111,7 @@ caps the fee burn below the outflow budget.
 | `window.maxOutflow` | upper bound on the sum of net outflows in a window |
 | `maxFeeAbs` | fee = Σ all inputs − Σ all outputs, absolute bound **per transaction** |
 | `maxFeePerWindow` | optional; sum of fees over the window. Absent = bounded only by `window.maxOutflow` (fee ∈ net outflow, see `destinations`) |
-| `maxFeeRate` | sat/vB against an **upper-bound** vsize estimate computed in-enclave from the input/output types (foreign inputs assumed at the largest standard size) |
+| `maxFeeRate` | sat/vB against a **lower-bound** vsize computed in-enclave from the input/output types (own P2WPKH exact, foreign inputs at P2TR key-path size, shortest DER signatures). Lower bound is the conservative direction: the computed rate is never below the real one, so the check can only refuse more. Liveness note (auditor): a fair fee on a transaction larger than the estimate can be over-refused; set `maxFeeRate` with that in mind, `maxFeeAbs` is the hard backstop |
 | `maxInputs`, `maxOutputs` | sizes the fixed enclave heap; refuse above |
 | `ownIndexGap` | an own output may use an index up to `own_index_bound + gap` on its branch; using it raises the bound |
 | `maxReorg` | a reorg deeper than this freezes the signer until the owner re-pins the checkpoint |

@@ -36,3 +36,4 @@ discharged only by a RESP that names it.
 |---|---|---|
 | pre-questions Q1–Q3 | 2026-11-03 | RULED → `RESP-prequestions-2026-11-03.md` (all tiers acceptable, labels exact; freshness witness recommended) |
 | `REQ-design-2026-11-03.md` | 2026-11-03 | **DESIGN-PASS (CONDITIONAL)** → `RESP-design-2026-11-03.md`; conditions worked in `CONDITIONS.md` |
+| `REQ-r1-signer-core-2026-11-03.md` | 2026-11-03 | **IMPL-PASS** → `RESP-r1-signer-core-2026-11-03.md` at `e4afa1d`; merged to `main`; eleven deviations ruled as a supplement, all accepted |

@@ -121,17 +121,25 @@ layers, both ruled acceptable (RESP-prequestions Q3):
 1. **Parse** the PSBT (BIP174, v0; v2 later) with the `bitcoin` crate in `no_std`. Unknown
    proprietary fields are ignored only if they are in the "may ignore" class; any field that affects
    the sighash or script semantics and is unknown ⇒ refuse.
-2. **Classify inputs.** For each input: require `non_witness_utxo`; recompute its txid; require
-   equality with the outpoint; take the amount and `scriptPubKey` from it. Require
-   `bip32_derivation` for own inputs naming our fingerprint and a path `account/{0|1}/i`; derive the
-   key in-enclave and require `scriptPubKey == P2WPKH(pubkey)`. An input that is not ours is
-   *foreign* (payjoin); it is never signed.
-3. **Classify outputs.** Own (derived match on branch 0/1, index ≤ bound + gap), trusted (mandate
-   address list or descriptor-derived within gap), unlisted (everything else). OP_RETURN outputs
-   with value 0 are allowed if the mandate permits; otherwise refused.
+2. **Classify inputs.** For **every** input, own or foreign: require `non_witness_utxo`; recompute
+   its txid; require equality with the outpoint; take the amount and `scriptPubKey` from it (a
+   `witness_utxo` that disagrees with it refuses). An input is **own** only through a
+   `bip32_derivation` hint naming our fingerprint and a path `account/{0|1}/i` whose in-enclave
+   derivation reproduces both the hinted key and `scriptPubKey == P2WPKH(pubkey)`; a hint that does
+   not reproduce them refuses. An input without such a hint is *foreign* (payjoin): it is never
+   signed, so misclassifying our own coin as foreign can only make the transaction unspendable,
+   never cheaper. (R1 refinement: no bounded search for own inputs — the hint is the pointer.)
+3. **Classify outputs.** Own = a verified hint on branch 0/1 with index < bound + `ownIndexGap`
+   (a hint whose derivation does not reproduce the script refuses; **a missing hint makes the
+   output unlisted**, the safe direction — it is charged to the budget); trusted = mandate address
+   or descriptor-derived within gap; unlisted = everything else. OP_RETURN outputs with value 0
+   are allowed if the mandate permits; otherwise refused.
 4. **Judge.** Invariants I5–I8 (`THREAT-MODEL.md §4`): per-tx caps, window budgets (window = 144
-   blocks from `window.start_height`; rolled forward from the verified best height), fee bounds,
-   sighash, version, script types, payjoin rule. All arithmetic is checked `u64`; overflow refuses.
+   blocks from `window.start_height`; rolled forward from the verified best height), fee bounds
+   (the fee-rate check uses a **lower-bound** vsize: own P2WPKH exact, foreign inputs at P2TR
+   key-path size, shortest DER — a smaller vsize means a higher computed rate, so the estimate can
+   only refuse more, never less), sighash, version, script types, payjoin rule. All arithmetic is
+   checked `u64`; overflow refuses. Own inputs and own outputs both raise the sealed index bounds.
 5. **Commit.** Update window usage, bump `own_index_bound` if change used a new index, `seq += 1`,
    seal, return the blob to the host (ocall-free: the blob comes back as an `[out]` buffer and the
    host writes it; the enclave keeps the new state in memory as the only state).
@@ -189,7 +197,10 @@ secp256k1). Both are later rounds; v1 is P-256 through `hw-signer`.
    mandate stays in force; `GET /v1/policy` and every receipt carry the pending hash.
 5. **Cancel**: a signed `Cancel { enclave_id, nonce }` by the owner **or** the recovery key clears
    `pending`. **Freeze**: `POST /v1/freeze` needs no signature (anyone, fail-closed); **unfreeze**
-   needs the owner's signature with a nonce.
+   needs the owner's signature with a nonce. While a mandate is pending, **every** further update
+   refuses (`POLICY_PENDING`, tightening included) — one change in flight keeps the timelock
+   linear; the owner's answer to a malicious pending is therefore **freeze + cancel**, never a
+   tightening over it (auditor, RESP-r1 D-7).
 6. When `best_height ≥ activation_height`, the pending mandate becomes installed on the next ecall.
 
 The same message family carries `RotateOwner { new_owner_pk }` (signed by the owner — tightening?

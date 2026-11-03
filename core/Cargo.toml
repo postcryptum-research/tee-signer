@@ -1,0 +1,40 @@
+[package]
+name = "signer-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+license = "Apache-2.0"
+description = "tee-signer trusted core: PSBT classification, mandate (policy) engine, canonical encodings, receipts — no_std, pure, host-testable"
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = []
+# Host-side only: std for tests, tools and the owner/daemon crates. Never set for the enclave build.
+std = ["bitcoin/std", "secp256k1/std", "sha2/std", "p256/std"]
+# Test-only guard knobs for the hollow-test (mutation) suite. The release build script refuses it
+# and the build asserts its absence (CONDITIONS C-R12b discipline). Not available without `std`.
+hollow-test = ["std"]
+
+[dependencies]
+# Exact pins — every line here is in the enclave TCB (CONDITIONS C-R10b; core/PROVENANCE.md).
+bitcoin   = { version = "=0.32.102", default-features = false }
+secp256k1 = { version = "=0.29.1", default-features = false, features = ["alloc", "lowmemory"] }
+sha2      = { version = "=0.10.9",  default-features = false, features = ["force-soft"] }
+p256      = { version = "=0.13.2",  default-features = false, features = ["ecdsa", "arithmetic"] }
+
+[dev-dependencies]
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+opt-level = 2
+
+[profile.dev]
+panic = "abort"

@@ -10,30 +10,30 @@ this table is what each IMPL REQ must discharge. **Status:** OPEN · IN IMPL (br
 | C-R3a | RESP-design R3 | header verifier held to the consensus-code bar: target/retarget math, most-cumulative-work, per-network rules incl. testnet-20-min | R4 (`signer-core::headers`) | OPEN |
 | C-R3b | R3 | the signet/testnet weak-PoW label is emitted at `GET /v1/status`, not only in docs | R2 (`signerd`) | OPEN |
 | C-R3c | R3 | checkpoint only moves forward to an enclave-verified header | R4 | OPEN |
-| C-R4a | R4 | own-output search bounded by `ownIndexGap` ≤ 100 and by `maxInputs`/`maxOutputs` | R1 | OPEN |
-| C-R4b | R4 | `own_index_bound` monotonic, only within the sealed account path | R1 | OPEN |
-| C-R4c | R4 | OP_RETURN explicit: non-zero value, or `opReturn=none` ⇒ refuse | R1 | OPEN |
+| C-R4a | R4 | own-output search bounded by `ownIndexGap` ≤ 100 and by `maxInputs`/`maxOutputs` | R1 | DISCHARGED — `RESP-r1-signer-core-2026-11-03.md` (IMPL-PASS at `e4afa1d`) |
+| C-R4b | R4 | `own_index_bound` monotonic, only within the sealed account path | R1 | DISCHARGED — `RESP-r1-signer-core-2026-11-03.md` (IMPL-PASS at `e4afa1d`) |
+| C-R4c | R4 | OP_RETURN explicit: non-zero value, or `opReturn=none` ⇒ refuse | R1 | DISCHARGED — `RESP-r1-signer-core-2026-11-03.md` (IMPL-PASS at `e4afa1d`) |
 | C-R5a | R5 ⭐ | state in `POLICY.md` that fee ∈ net outflow and every class counts toward `window.maxOutflow`, so the per-window fee-burn bound is `window.maxOutflow`, not `maxFeeAbs`; name the fee-burn / budget-exhaustion residual | docs | DISCHARGED in `POLICY.md §3` (this commit) |
-| C-R5b | R5 | vector: many trusted outputs at max fee ⇒ `CAP_WINDOW` | R1 vectors | OPEN |
-| C-R6 | R6 ⭐ | the tightening classifier FAILS TOWARD LOOSENING: field by field on the canonical decoded mandate; any field not provably tightening (unknown, absent, ambiguous) makes the whole update loosening | R1 (`signer-core::policy::compare`) | OPEN — rule written in `POLICY.md §5` (this commit) |
+| C-R5b | R5 | vector: many trusted outputs at max fee ⇒ `CAP_WINDOW` | R1 vectors | DISCHARGED — `RESP-r1-signer-core-2026-11-03.md` (IMPL-PASS at `e4afa1d`) |
+| C-R6 | R6 ⭐ | the tightening classifier FAILS TOWARD LOOSENING: field by field on the canonical decoded mandate; any field not provably tightening (unknown, absent, ambiguous) makes the whole update loosening | R1 (`signer-core::policy::compare`) | DISCHARGED — `RESP-r1-signer-core-2026-11-03.md` (IMPL-PASS at `e4afa1d`) |
 | C-R7 | R7 | on reload the host-supplied sealed blob is untrusted input: seal/MAC verified before use; an older valid blob is the witness's job | R2 (`enclave`) | OPEN |
 | C-R8a | R8 | recovery-blob ephemeral key from in-enclave RDRAND, zeroized after use | R2 | OPEN |
 | C-R8b | R8 | GCM-nonce uniqueness is structural (fresh ephemeral ⇒ fresh HKDF output ⇒ fresh key; nonce fixed) — stated in `DESIGN.md §2` | docs | DISCHARGED (this commit) |
 | C-R8c | R8 | I12 mutation vector: no ecall but init yields the seed or any function of it beyond signatures and public keys | R2 vectors | OPEN |
 | C-R9 | R9 | the test-only software owner key is compile-gated and provably absent from any T1/T2 release build; the build asserts it (symbol/feature check) | R2 build | OPEN |
 | C-R10a | R10 ⭐ | the build asserts `objdump -d enclave.so \| grep -c cpuid` == 0 | R2 build | OPEN |
-| C-R10b | R10 | every enclave crate exact-version pinned, with a provenance line and a REQ to change | R1 (`core/PROVENANCE.md`) | OPEN |
+| C-R10b | R10 | every enclave crate exact-version pinned, with a provenance line and a REQ to change | R1 (`core/PROVENANCE.md`) | DISCHARGED — `RESP-r1-signer-core-2026-11-03.md` (IMPL-PASS at `e4afa1d`) |
 | C-R10c | R10 | secp256k1 context randomization wired to `sgx_read_rand` — a T2 gate, not optional | R2 | OPEN |
 | C-R10d | R10 ⭐ | reproducible enclave build: required for T2, recommended for T1 | R2 build / R5 | OPEN |
 | C-R10e | R10 | sealing and concurrent-ecall atomicity (commit-seal ordering under concurrency) named as IMPL-PASS gates of R2 | R2 REQ | OPEN |
 | C-R11a | R11 | seed generated in-enclave; xpub imported cold; never NBXplorer `GenerateWallet` | R3 (plugin + deploy) | OPEN |
 | C-R11b | R11 | cold from the start; the plugin refuses to operate a store whose wallet is `IsHotWallet=true` | R3 | OPEN |
 | C-R11c | R11 | e2e vector: `IsHotWallet=false` end to end and zero key material in `nbxv1_metadata` | R3 vectors | OPEN |
-| C-R12a | R12 | positive/accept vectors: unlisted within cap accepts; sweep to trusted accepts; valid loosening activates after timelock; valid tightening applies at once | R1 vectors | OPEN |
-| C-R12b | R12 | per-invariant mutation vectors: drop `non_witness_utxo` requirement ⇒ lying-`witness_utxo` fee vector passes (I2); host `bip32_derivation` as decision ⇒ change-to-foreign passes (I3); commit-after-sign ⇒ rollback double-spends (I5/I11) | R1/R2 vectors | OPEN |
+| C-R12a | R12 | positive/accept vectors: unlisted within cap accepts; sweep to trusted accepts; valid loosening activates after timelock; valid tightening applies at once | R1 vectors | DISCHARGED — `RESP-r1-signer-core-2026-11-03.md` (IMPL-PASS at `e4afa1d`) |
+| C-R12b | R12 | per-invariant mutation vectors: drop `non_witness_utxo` requirement ⇒ lying-`witness_utxo` fee vector passes (I2); host `bip32_derivation` as decision ⇒ change-to-foreign passes (I3); commit-after-sign ⇒ rollback double-spends (I5/I11) | R1/R2 vectors | DISCHARGED — `RESP-r1-signer-core-2026-11-03.md` (IMPL-PASS at `e4afa1d`) |
 | C-R12c | R12 | freshness `maxTipLag` boundary vector | R4 vectors | OPEN |
-| C-R12d | R12 | = C-R5b | R1 vectors | OPEN |
-| C-R12e | R12 | u64 overflow vectors: Σ inputs near `u64::MAX` ⇒ `OVERFLOW`, never wrap | R1 vectors | OPEN |
+| C-R12d | R12 | = C-R5b | R1 vectors | DISCHARGED — `RESP-r1-signer-core-2026-11-03.md` (IMPL-PASS at `e4afa1d`) |
+| C-R12e | R12 | u64 overflow vectors: Σ inputs near `u64::MAX` ⇒ `OVERFLOW`, never wrap | R1 vectors | DISCHARGED — `RESP-r1-signer-core-2026-11-03.md` (IMPL-PASS at `e4afa1d`) |
 | C-R13a | R13 | `Rearm { seq }` owner-signed with a nonce; a replayed Rearm cannot re-enable a rolled-back state | R4 | OPEN |
 | C-R13b | R13 | the chosen `maxTipLag` exposure stated per network at `GET /v1/status` and in `POLICY.md` | R4 / docs | OPEN — residual text in `POLICY.md §3` (this commit) |
 | C-R14 | R14 | `policy diff` mandatory before `policy sign`; the signed digest is derived from the shown canonical bytes | R2 (`owner-cli`) | OPEN |
@@ -41,3 +41,9 @@ this table is what each IMPL REQ must discharge. **Status:** OPEN · IN IMPL (br
 | C-D3b | RESP-design supplement (+ refinement) | two parts: (1) code — `owner-cli init` refuses `owner_pk == recovery_pk` (necessary, not sufficient); (2) operational — owner and recovery keys on separate media and machines, a labeled custody assumption the code cannot verify | (1) R2 (`owner-cli`); (2) docs | (2) LABELED in `THREAT-MODEL.md §5`; (1) OPEN |
 | C-D5b | RESP-design supplement | feed outage = our own DoS; no coupling to the bridge project (no restarts, no shared state); weak-clock label at `GET /v1/status` on signet | R2 (`signerd`) | OPEN |
 | C-D5 | owner D5 | header feed from the shared signet node, read-only RPC subset | R2 (`signerd`) / deploy | OPEN — `deploy/README.md` updated (this commit) |
+| C-R1-1 | RESP-r1 D-11 | trusted-descriptor matching derives up to `branches × gap` keys per unlisted-candidate output — the dominant per-tx derivation cost; measure on T1 hardware and size `maxOutputs × gap` so a worst-case PSBT fits the enclave time/heap budget (else DoS-refuse); cost note in `core/PROVENANCE.md` | R2 | OPEN |
+| C-R1-2 | RESP-r1 D-10 | the receipt identity key is distinct from the wallet key: generated separately, never seed-derived; shown in the R2 seal layout | R2 REQ | OPEN |
+| C-R1-3 | RESP-r1 | reproducible build is compared on **MRENCLAVE + every SIGSTRUCT field except `header.date` and its signature**, not on the `.so` sha256 (stack-wide method) | R2 build | OPEN |
+| C-R1-4 | RESP-r1 D-1 | `maxFeeRate` is documented with lower-bound semantics (can over-refuse a fair fee on a transaction larger than the estimate; `maxFeeAbs` is the backstop) | docs | DISCHARGED in `POLICY.md §3` (this commit) |
+| C-R1-5 | RESP-r1 D-7 | while a mandate is pending every update refuses; the owner's response to a malicious pending is **freeze (unauthenticated) + cancel**, not tighten-over — documented | docs | DISCHARGED in `DESIGN.md §6` (this commit) |
+| C-R1-6 | RESP-r1 | `sign.rs` read firsthand by the auditor before the R2 shell wraps it (offered by the auditor, accepted) | R2 REQ | OPEN |
