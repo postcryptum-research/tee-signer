@@ -27,6 +27,9 @@ sha2 = "0.10"
 rand = "0.8"
 rpassword = "7"
 zeroize = "1"
+# The owner's hardware-signer abstraction (TPM 2.0 now, YubiKey PIV next), pinned by revision (REQ-r6 D-R6-2).
+hw-signer = { git = "https://github.com/77ph/TPM_sign", rev = "9fa47b6", default-features = false, features = ["tpm"] }
+tss-esapi = { version = "7", features = ["generate-bindings"] }   # only to list persistent handles (C-R6-2: never evict another key)
 base64 = "0.22"
 dcap-qvl = { version = "=0.7.1", features = ["report"] }
 tokio = { version = "1", features = ["rt", "macros"] }
