@@ -231,7 +231,7 @@ impl Bitcoind {
 /// enclave decides; a feed that lies or lags can only stall it. Only the read-only RPC subset is
 /// used (`getblockchaininfo`, `getblockhash`, `getblockheader`) — owner decision D5.
 async fn feed_once(shared: &Shared) -> Result<u32> {
-    let (best_height, url, auth) = {
+    let (best_height, best_hash, url, auth) = {
         let mut d = shared.lock().await;
         let Some(b) = &d.bitcoind else { return Ok(0) };
         let (url, auth) = (b.url.clone(), b.auth.clone());
@@ -239,14 +239,18 @@ async fn feed_once(shared: &Shared) -> Result<u32> {
         if !st.installed {
             return Ok(0); // keys only: nothing to feed until a mandate pins the checkpoint
         }
-        (st.best_height, url, auth)
+        (st.best_height, st.best_hash, url, auth)
     };
     let bd = Bitcoind { url, auth, http: reqwest::Client::new() };
     let tip = bd.tip_height().await?;
     if tip <= best_height {
         return Ok(0);
     }
-    let start = best_height.saturating_sub(10).saturating_add(1).max(1);
+    // extension when the node agrees with the enclave's best; otherwise offer the last ten
+    // headers again so the enclave can judge the fork (it keeps a longer recent window)
+    let node_best = bd.rpc("getblockhash", serde_json::json!([best_height])).await?;
+    let same = node_best.as_str().map(|h| h == display_hash(best_hash)).unwrap_or(false);
+    let start = if same { best_height.saturating_add(1) } else { best_height.saturating_sub(10).saturating_add(1).max(1) };
     let mut from = start;
     let mut total = 0u32;
     while from <= tip {
