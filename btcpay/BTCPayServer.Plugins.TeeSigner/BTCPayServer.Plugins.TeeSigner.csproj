@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Product>tee-signer for BTCPay Server</Product>
+    <Description>Routes wallet PSBTs to a policy-enforcing SGX signer (tee-signer); the store wallet stays cold in BTCPay.</Description>
+    <Version>0.1.0</Version>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- where the BTCPay Server source (v2.4.7) is checked out; the build container sets it -->
+    <BTCPayServerSrc Condition="'$(BTCPayServerSrc)' == ''">../btcpayserver-src</BTCPayServerSrc>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <AddRazorSupportForMvc>true</AddRazorSupportForMvc>
+    <PreserveCompilationContext>false</PreserveCompilationContext>
+    <GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <ProjectReference>
+      <Properties>StaticWebAssetsEnabled=false</Properties>
+      <Private>false</Private>
+      <ExcludeAssets>runtime;native;build;buildTransitive;contentFiles</ExcludeAssets>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(BTCPayServerSrc)/BTCPayServer/BTCPayServer.csproj" />
+  </ItemGroup>
+
+</Project>

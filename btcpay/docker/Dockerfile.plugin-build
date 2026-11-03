@@ -1,0 +1,11 @@
+# Builds the BTCPay plugin without any .NET on the host. Output: /out/BTCPayServer.Plugins.TeeSigner.dll
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+ARG BTCPAY_TAG=v2.4.7
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+RUN git clone --depth 1 --branch ${BTCPAY_TAG} https://github.com/btcpayserver/btcpayserver.git btcpayserver-src
+COPY BTCPayServer.Plugins.TeeSigner /src/BTCPayServer.Plugins.TeeSigner
+WORKDIR /src/BTCPayServer.Plugins.TeeSigner
+RUN dotnet publish -c Release -o /out -p:BTCPayServerSrc=/src/btcpayserver-src
+FROM scratch AS export
+COPY --from=build /out/BTCPayServer.Plugins.TeeSigner.dll /BTCPayServer.Plugins.TeeSigner.dll

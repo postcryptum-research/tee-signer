@@ -1,0 +1,18 @@
+# The signer daemon as a sidecar container (T1: debug launch through the host's aesmd and /dev/isgx).
+# The Intel PSW runtime libraries are COPIED FROM THE HOST at image build time (build context
+# prepared by btcpay/docker/build-signerd-image.sh): the host's aesmd and the in-container urts
+# must be the same PSW version, and the current Intel apt repo (2.27+) has dropped the legacy
+# /dev/isgx driver that T1 hardware needs. Runs as uid 999 (= the stack's bitcoind user) so the
+# read-only cookie mount is readable.
+FROM ubuntu:22.04
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libprotobuf23 zlib1g && rm -rf /var/lib/apt/lists/*
+COPY libs/libsgx_enclave_common.so.1 libs/libsgx_urts.so.2 libs/libsgx_launch.so.1 /usr/lib/x86_64-linux-gnu/
+RUN ln -s libsgx_urts.so.2 /usr/lib/x86_64-linux-gnu/libsgx_urts.so && ldconfig
+RUN useradd -r -u 999 -d /var/lib/signerd signerd && mkdir -p /var/lib/signerd && chown signerd:signerd /var/lib/signerd
+COPY signerd /usr/local/bin/signerd
+COPY enclave.signed.so /usr/local/lib/tee-signer/enclave.signed.so
+USER signerd
+VOLUME /var/lib/signerd
+EXPOSE 7390
+ENTRYPOINT ["/usr/local/bin/signerd", "--enclave", "/usr/local/lib/tee-signer/enclave.signed.so", "run", "--state-dir", "/var/lib/signerd", "--listen", "0.0.0.0:7390"]
