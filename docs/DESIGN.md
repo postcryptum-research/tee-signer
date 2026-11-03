@@ -201,12 +201,24 @@ the blob path).
 
 Both are P-256 so that TPM_sign's `hw-signer` backends apply unchanged: `yubikey-piv` (PIN + touch),
 `tpm` (Linux TPM 2.0 — the owner's laptop qualifies), `secure-enclave`, `windows-tpm`, `tropic01`.
-**Owner decision D3:** any of these is acceptable for the owner key, and so is an **encrypted
-key file** as the floor — memory-hard KDF (scrypt N ≥ 2^18 or argon2id ≥ 256 MiB) + AEAD,
-passphrase typed at use, never stored — **provided it is never on the BTCPay box**. Hardware is
-the recommendation; the file is what a merchant without a device may use. A **plaintext**
-software key is refused for every state-changing command and the feature that allows it in tests
-is compile-gated and provably absent from release builds (auditor R9, C-R9). Rules carried from
+**Owner decision D3, ruled by the auditor (RESP-design supplement, carried verbatim):**
+
+> A **plaintext** software owner key is refused outside a test-only build. An **encrypted
+> off-box keyfile** meeting KEY_POLICY rule-5 — scrypt N ≥ 2^18 + AEAD at rest, decrypted ONLY off
+> the box, and **never present on the BTCPay box** — is the permitted FLOOR. A hardware backend
+> (YubiKey PIV / Linux-or-Windows TPM 2.0 / Secure Enclave / TROPIC01) is preferred.
+
+Why the floor is sound: the owner key is not a theft-capable key on its own — a thief with it can
+only submit a loosening (timelocked, cancellable by the cold recovery key) or a tightening (DoS),
+so its compromise is bounded by the same timelock + recovery backstop as V5 whichever backend holds
+it. The label the file option carries: *a file-based owner key is extractable on a compromised
+owner signing machine, so a persistent compromise of that machine can forge future owner
+signatures silently; a hardware backend with touch requires per-use presence. With a file key a
+compromise of the owner's machine breaks both WYSIWYS and key secrecy at once; hardware + touch
+splits them.* The test-only plaintext feature is compile-gated and provably absent from release
+builds (C-R9). **The recovery key is held separately from the owner key — different medium,
+different machine** — because it is the backstop that makes a file-based owner key tolerable
+(C-D3b). Rules carried from
 TPM_sign `KEY_POLICY.md`: the owner key never lives on the merchant's BTCPay box; the recovery
 key is cold (encrypted keyfile on removable media, decrypted only off the box); the agent (here:
 the enclave) never opens the owner key — the enclave only holds the *public* keys.
