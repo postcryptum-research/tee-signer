@@ -29,3 +29,4 @@ rpassword = "7"
 zeroize = "1"
 base64 = "0.22"
 dcap-qvl = { version = "=0.7.1", features = ["report"] }
+tokio = { version = "1", features = ["rt", "macros"] }

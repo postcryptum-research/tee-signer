@@ -543,6 +543,18 @@ impl Signerd {
 
 // ---------------------------------------------------------------- wallet record
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct AttestRecord {
+    at_unix: u64,
+    tier: String,
+    tcb_status: String,
+    advisory_ids: Vec<String>,
+    accepted_exceptions: Vec<String>,
+    collateral_source: String,
+    verifier: String,
+    quote_sha256: String,
+}
+
 #[derive(Serialize, Deserialize)]
 struct WalletRecord {
     network: String,
@@ -552,6 +564,18 @@ struct WalletRecord {
     enclave_id: String,
     card_hex: String,
     card_sig_hex: String,
+    /// T2: MRSIGNER pinned at the first `attest --pin` (hex). Labeled: a dev key until the ceremony (C-R5-4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mrsigner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    signing_key_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    isv_prod_id: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    isv_svn: Option<u16>,
+    /// T2: the last successful attestation (what was checked, when, with which exceptions).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attested: Option<AttestRecord>,
     mrenclave: String,
     tier: String,
     recovery_blob_hex: String,
@@ -667,6 +691,36 @@ enum Cmd {
     Freeze,
     /// Status.
     Status,
+    /// T2: fetch a DCAP quote for a fresh nonce from signerd and verify it HERE (REQ-r5 §4):
+    /// 1 chain+collateral from Intel PCS, 2 DEBUG==0, 3 MRENCLAVE == card == pinned, 4 MRSIGNER/ProdID/SVN pinned,
+    /// 5 card signature + tier T2-release, 6 report_data recomputed with this nonce, 7 TCB policy.
+    /// A failure at any step refuses and names the step. The Intel SGX Root CA is pinned in this binary.
+    Attest {
+        #[arg(long)]
+        wallet: PathBuf,
+        /// Expected MRENCLAVE (hex) from the reproducible build; defaults to the wallet record's.
+        #[arg(long)]
+        expect_mrenclave: Option<String>,
+        /// Expected MRSIGNER (hex); defaults to the pinned one in the record. `--pin` stores it on the first attest.
+        #[arg(long)]
+        expect_mrsigner: Option<String>,
+        /// What the signing key is, stored with the pin: e.g. "dev key enclave-dev-2.28.pem, not a ceremony key".
+        #[arg(long)]
+        signing_key_label: Option<String>,
+        /// Ledgered exception `ADVISORY-ID:YYYY-MM-DD:reason`, e.g. `INTEL-SA-00334:2026-11-03:LVI mitigated in the build (gate 6)`.
+        /// Under SW_HARDENING_NEEDED every advisory the platform reports must be listed, or the quote is refused.
+        #[arg(long = "accept-advisory")]
+        accept: Vec<String>,
+        /// Collateral source: Intel PCS v4 (authoritative). Not Azure THIM.
+        #[arg(long, default_value = "https://api.trustedservices.intel.com")]
+        pccs: String,
+        /// Store MRSIGNER/ProdID/SVN and this attestation in the wallet record.
+        #[arg(long)]
+        pin: bool,
+        /// Write the quote and the verification output as JSON.
+        #[arg(long)]
+        save: Option<PathBuf>,
+    },
     /// Verify the recovery blob offline: decrypt with the recovery key, derive the xpub, compare.
     RecoveryVerify {
         #[arg(long)]
@@ -796,6 +850,11 @@ fn main() -> Result<()> {
                 xpub: r["xpub"].as_str().unwrap_or("").into(),
                 fingerprint: r["fingerprint"].as_str().unwrap_or("").into(),
                 identity_pk: hex::encode(idpk),
+                mrsigner: None,
+                signing_key_label: None,
+                isv_prod_id: None,
+                isv_svn: None,
+                attested: None,
                 enclave_id: hex::encode(signer_core::sha256(&idpk)),
                 card_hex,
                 card_sig_hex: hex::encode(card_sig),
@@ -970,6 +1029,10 @@ fn main() -> Result<()> {
             let sd = client(&cli)?;
             println!("{}", sd.post("/v1/freeze", serde_json::json!({}))?);
         }
+        Cmd::Attest { wallet, expect_mrenclave, expect_mrsigner, signing_key_label, accept, pccs, pin, save } => {
+            let sd = client(&cli)?;
+            attest(&sd, wallet, expect_mrenclave.clone(), expect_mrsigner.clone(), signing_key_label.clone(), accept, pccs, *pin, save.clone())?;
+        }
         Cmd::Status => {
             let sd = client(&cli)?;
             println!("{}", serde_json::to_string_pretty(&sd.get("/v1/status")?)?);
@@ -1068,4 +1131,194 @@ fn recovery_decrypt(recovery_sk: &[u8; 32], fingerprint: &[u8; 4], xpub: &[u8; 7
     }
     out.copy_from_slice(&pt);
     Ok(out)
+}
+
+/// SHA-256 of the DER of Intel's SGX Root CA as served at
+/// certificates.trustedservices.intel.com/Intel_SGX_Provisioning_Certification_RootCA.pem on
+/// 2026-11-03 (notAfter 2049-12-31). The PEM is compiled in; the verifier crate's own copy must
+/// agree, so the root is pinned twice and supplied by neither the host nor the network (C-R5-2).
+const INTEL_SGX_ROOT_CA_SHA256: &str = "44a0196b2b99f889b8e149e95b807a350e7424964399e885a7cbb8ccfab674d3";
+const INTEL_SGX_ROOT_CA_PEM: &str = include_str!("intel_sgx_root_ca.pem");
+
+fn pem_der(pem: &str) -> Result<Vec<u8>> {
+    use base64::Engine;
+    let body: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+    Ok(base64::engine::general_purpose::STANDARD.decode(body.trim())?)
+}
+
+/// REQ-r5 §4. Every step refuses by name; nothing is a warning.
+#[allow(clippy::too_many_arguments)]
+fn attest(
+    sd: &Signerd,
+    wallet: &Path,
+    expect_mrenclave: Option<String>,
+    expect_mrsigner: Option<String>,
+    signing_key_label: Option<String>,
+    accept: &[String],
+    pccs: &str,
+    pin: bool,
+    save: Option<PathBuf>,
+) -> Result<()> {
+    use dcap_qvl::quote::Report;
+    use dcap_qvl::verify::QuoteVerifier;
+    use sha2::Digest;
+    use signer_core::proto::quote;
+
+    let mut w: WalletRecord = serde_json::from_str(&std::fs::read_to_string(wallet)?)?;
+    // the root of trust, pinned twice
+    let root_der = pem_der(INTEL_SGX_ROOT_CA_PEM)?;
+    let root_sha = hex::encode(sha2::Sha256::digest(&root_der));
+    if root_sha != INTEL_SGX_ROOT_CA_SHA256 {
+        bail!("refused: the compiled-in Intel SGX Root CA does not match its pinned hash ({root_sha})");
+    }
+    if !pccs.starts_with("https://api.trustedservices.intel.com") {
+        bail!("refused: collateral must come from Intel PCS v4 (got {pccs}); Azure THIM is not the authority here (C-R5-2)");
+    }
+
+    // a fresh nonce; the quote must bind it
+    let nonce: [u8; 32] = rand::random();
+    let r = sd.get(&format!("/v1/quote?nonce={}", hex::encode(nonce)))?;
+    let quote_bytes = hex::decode(r["quote_hex"].as_str().ok_or_else(|| anyhow!("quote_hex"))?)?;
+    let card_bytes = hex::decode(r["card_hex"].as_str().ok_or_else(|| anyhow!("card_hex"))?)?;
+    let card = IdentityCard::decode(&card_bytes).map_err(|_| anyhow!("card decode"))?;
+    println!("quote: {} bytes via {}", quote_bytes.len(), r["quoted_via"].as_str().unwrap_or("?"));
+
+    // 1. chain + collateral (Intel PCS v4) + expiry
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let collateral = rt
+        .block_on(async {
+            let c = dcap_qvl::collateral::CollateralClient::with_default_http(pccs)?;
+            c.fetch(&quote_bytes).await
+        })
+        .map_err(|e| anyhow!("step 1 refused: collateral from {pccs}: {e}"))?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
+    let vr = QuoteVerifier::new(root_der)
+        .verify(&quote_bytes, &collateral, now)
+        .map_err(|e| anyhow!("step 1 refused: quote chain/collateral: {e}"))?;
+    // the verifier crate's own embedded root must agree with ours (two independent pins of one CA)
+    QuoteVerifier::new_prod()
+        .verify(&quote_bytes, &collateral, now)
+        .map_err(|e| anyhow!("step 1 refused: the verifier crate's embedded Intel root disagrees with the pinned one: {e}"))?;
+    println!("step 1 ok: quote chain verifies to the pinned Intel SGX Root CA (sha256 {INTEL_SGX_ROOT_CA_SHA256}); collateral from {pccs}");
+
+    // 2. DEBUG == 0, before anything else about the enclave is believed
+    let Report::SgxEnclave(body) = vr.report else { bail!("step 2 refused: not an SGX enclave quote") };
+    let attr_flags = u64::from_le_bytes(body.attributes[..8].try_into().map_err(|_| anyhow!("attributes"))?);
+    if attr_flags & 0x2 != 0 {
+        bail!("step 2 refused: ATTRIBUTES.DEBUG is set — a debug enclave (host-readable memory) can attest nothing");
+    }
+    println!("step 2 ok: ATTRIBUTES.DEBUG = 0 (flags 0x{attr_flags:x})");
+
+    // 3. MRENCLAVE == card == pinned
+    let expected_mr = expect_mrenclave.unwrap_or_else(|| w.mrenclave.clone());
+    let q_mr = hex::encode(body.mr_enclave);
+    if q_mr != hex::encode(card.mrenclave) || q_mr != expected_mr.to_lowercase() {
+        bail!("step 3 refused: MRENCLAVE quote {q_mr} / card {} / expected {expected_mr}", hex::encode(card.mrenclave));
+    }
+    println!("step 3 ok: MRENCLAVE {q_mr}");
+
+    // 4. MRSIGNER / ProdID / SVN
+    let q_ms = hex::encode(body.mr_signer);
+    match expect_mrsigner.as_deref().or(w.mrsigner.as_deref()) {
+        Some(ms) if ms.to_lowercase() == q_ms => {}
+        Some(ms) => bail!("step 4 refused: MRSIGNER {q_ms}, expected {ms}"),
+        None if pin => println!("step 4: no MRSIGNER pinned yet; pinning {q_ms} ({})", signing_key_label.clone().unwrap_or_else(|| "UNLABELED".into())),
+        None => bail!("step 4 refused: no MRSIGNER pinned — pass --expect-mrsigner, or --pin on the first attest"),
+    }
+    if let Some(p) = w.isv_prod_id {
+        if p != body.isv_prod_id { bail!("step 4 refused: ISV ProdID {} != pinned {p}", body.isv_prod_id) }
+    }
+    if let Some(v) = w.isv_svn {
+        if body.isv_svn < v { bail!("step 4 refused: ISV SVN {} below pinned {v}", body.isv_svn) }
+    }
+    println!("step 4 ok: MRSIGNER {q_ms} ({}), ProdID {}, SVN {}", w.signing_key_label.clone().or(signing_key_label.clone()).unwrap_or_else(|| "label pending".into()), body.isv_prod_id, body.isv_svn);
+
+    // 5. the card is the one INIT signed, under the identity key, and says T2
+    let rec_card = hex::decode(&w.card_hex)?;
+    if rec_card != card_bytes {
+        bail!("step 5 refused: the enclave's card differs from the wallet record's (xpub/identity/tier changed?)");
+    }
+    let secp = bitcoin::secp256k1::Secp256k1::new();
+    let idpk = <[u8; 33]>::try_from(hex::decode(&w.identity_pk)?.as_slice()).map_err(|_| anyhow!("identity pk"))?;
+    let card_sig = <[u8; 64]>::try_from(hex::decode(&w.card_sig_hex)?.as_slice()).map_err(|_| anyhow!("card sig"))?;
+    if !signer_core::sign::verify_digest_secp(&secp, &idpk, &card.digest(), &card_sig) {
+        bail!("step 5 refused: the card's identity signature does not verify");
+    }
+    if card.tier != "T2-release" {
+        bail!("step 5 refused: card tier is {}, not T2-release", card.tier);
+    }
+    println!("step 5 ok: card signed by identity {}, tier {}", w.identity_pk, card.tier);
+
+    // 6. report_data binds this nonce and this card
+    let expect = signer_core::sha256(&quote::preimage(&nonce, &card_bytes));
+    if body.report_data[..32] != expect[..] || body.report_data[32..] != [0u8; 32] {
+        bail!("step 6 refused: report_data does not equal SHA-256(domain ‖ our nonce ‖ card) ‖ 0 — a replayed or foreign quote");
+    }
+    println!("step 6 ok: report_data = SHA-256(domain ‖ nonce {} ‖ card)", hex::encode(nonce));
+
+    // 7. TCB policy: OK, or SW_HARDENING_NEEDED with every advisory in the ledger; everything else refused
+    let status = vr.status.clone();
+    let mut used = Vec::new();
+    match status.as_str() {
+        "UpToDate" => {}
+        "SWHardeningNeeded" => {
+            let ledger: Vec<(String, String, String)> = accept
+                .iter()
+                .map(|e| {
+                    let mut it = e.splitn(3, ':');
+                    (it.next().unwrap_or("").to_string(), it.next().unwrap_or("").to_string(), it.next().unwrap_or("").to_string())
+                })
+                .collect();
+            for adv in &vr.advisory_ids {
+                match ledger.iter().find(|(id, _, _)| id == adv) {
+                    Some((id, date, why)) if !date.is_empty() && !why.is_empty() => used.push(format!("{id} ({date}: {why})")),
+                    _ => bail!("step 7 refused: TCB status SWHardeningNeeded with advisory {adv} not in the dated exception ledger (--accept-advisory {adv}:YYYY-MM-DD:reason)"),
+                }
+            }
+            if vr.advisory_ids.is_empty() {
+                bail!("step 7 refused: SWHardeningNeeded with no advisory IDs — nothing to ledger against");
+            }
+        }
+        other => bail!("step 7 refused: TCB status {other} (advisories {:?})", vr.advisory_ids),
+    }
+    if used.is_empty() {
+        println!("step 7 ok: TCB status {status} — attested");
+    } else {
+        println!("step 7 ok: TCB status {status} — attested WITH RECORDED EXCEPTIONS: {}", used.join("; "));
+    }
+
+    let quote_sha = hex::encode(sha2::Sha256::digest(&quote_bytes));
+    let rec = AttestRecord {
+        at_unix: now,
+        tier: card.tier.clone(),
+        tcb_status: status.clone(),
+        advisory_ids: vr.advisory_ids.clone(),
+        accepted_exceptions: used.clone(),
+        collateral_source: pccs.to_string(),
+        verifier: "dcap-qvl 0.7.1 (pure Rust, owner's machine), Intel SGX Root CA pinned".into(),
+        quote_sha256: quote_sha.clone(),
+    };
+    println!(
+        "ATTESTED: MRENCLAVE {q_mr}, MRSIGNER {q_ms}, {} ; quote sha256 {quote_sha}",
+        if used.is_empty() { "TCB OK".to_string() } else { format!("TCB {status} with recorded exceptions") }
+    );
+    if pin {
+        w.mrsigner = Some(q_ms.clone());
+        if signing_key_label.is_some() { w.signing_key_label = signing_key_label.clone(); }
+        w.isv_prod_id = Some(body.isv_prod_id);
+        w.isv_svn = Some(body.isv_svn);
+        w.attested = Some(rec.clone());
+        std::fs::write(wallet, serde_json::to_string_pretty(&w)?)?;
+        println!("wallet record updated (pinned MRSIGNER, ProdID, SVN; attestation recorded)");
+    }
+    if let Some(path) = save {
+        let out = serde_json::json!({
+            "nonce": hex::encode(nonce), "quote_hex": hex::encode(&quote_bytes), "card_hex": hex::encode(&card_bytes),
+            "mrenclave": q_mr, "mrsigner": q_ms, "isv_prod_id": body.isv_prod_id, "isv_svn": body.isv_svn,
+            "attributes_flags": format!("0x{attr_flags:x}"), "verification": rec,
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&out)?)?;
+        println!("saved {}", path.display());
+    }
+    Ok(())
 }
