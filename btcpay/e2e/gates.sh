@@ -6,7 +6,10 @@
 #      the invoice BIP21; the stock payout processor is not configured; the UI path follows (a));
 #  (d) the plugin only routes: a payout is paid through the enclave (receipt seq advances) and a
 #      frozen signer makes the payout wait with the refusal named, charging nothing.
+#   gates.sh setup   admin, API key, store, COLD wallet, plugin settings + processor, gates (a) and (b)
+#   gates.sh run     gates (c) and (d) — needs the stack synced and the wallet's coins indexed
 set -euo pipefail
+PHASE=${1:-all}
 BT=${BTCPAY_URL:-http://127.0.0.1:7392}
 SIGNER_TOKEN=$(cat "${SIGNER_TOKEN_FILE:-$HOME/tee-signer-state/token}")
 XPUB=${TEE_XPUB:?set TEE_XPUB}; FP=${TEE_FINGERPRINT:?set TEE_FINGERPRINT}
@@ -16,6 +19,7 @@ S=$HOME/tee-signer-btcpay/e2e; mkdir -p "$S"
 pass() { echo "  PASS $1"; }; fail() { echo "  FAIL $1"; exit 1; }
 j() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
 
+if [ "$PHASE" = "setup" ] || [ "$PHASE" = "all" ]; then
 echo "== 1. admin user + API key"
 curl -s -o /dev/null -w "%{http_code}\n" -X POST "$BT/api/v1/users" -H 'content-type: application/json' -d "{\"email\":\"$EMAIL\",\"password\":\"$PASS\",\"isAdministrator\":true}" | sed 's/^/  users: /'
 KEY=$(curl -s -u "$EMAIL:$PASS" -X POST "$BT/api/v1/api-keys" -H 'content-type: application/json' -d '{"label":"e2e","permissions":["btcpay.server.canmodifyserversettings","btcpay.store.canmodifystoresettings","btcpay.store.canviewstoresettings","btcpay.store.cancreateinvoice","btcpay.store.canviewinvoices","btcpay.store.canmanagepullpayments","btcpay.store.cancreatewallettransactions","btcpay.store.cansigntransactions","btcpay.store.canbroadcasttransactions"]}' | j "d['apiKey']")
@@ -43,6 +47,9 @@ curl -s "${H[@]}" -X POST "$BT/plugins/teesigner/api/$STORE/processor?enable=tru
 echo "== gate (b): no key material in nbxv1_metadata"
 N=$(docker exec generated_postgres_1 psql -U postgres -d nbxplorersignet -tAc "select count(*) from nbxv1_metadata where key in ('Mnemonic','MasterHDKey','AccountHDKey')")
 [ "$N" = "0" ] && pass "nbxv1_metadata key rows = 0" || fail "nbxv1_metadata has $N key rows"
+fi
+if [ "$PHASE" = "run" ] || [ "$PHASE" = "all" ]; then
+KEY=$(cat "$S/apikey"); STORE=$(cat "$S/store"); H=(-H "Authorization: token $KEY" -H 'content-type: application/json')
 
 echo "== gate (c): the four in-process signing sites are inert"
 CODE=$(curl -s -o "$S/s2.json" -w "%{http_code}" "${H[@]}" -X POST "$BT/api/v1/stores/$STORE/payment-methods/BTC-CHAIN/wallet/transactions" -d "{\"destinations\":[{\"destination\":\"$PAYEE\",\"amount\":\"0.00001\"}],\"feeRate\":2,\"signWithSeed\":true,\"proceedWithBroadcast\":false}")
@@ -84,3 +91,4 @@ echo "$HOT2" | grep -qi '"IsHotWallet": *true' && fail "wallet flagged hot after
 N2=$(docker exec generated_postgres_1 psql -U postgres -d nbxplorersignet -tAc "select count(*) from nbxv1_metadata where key in ('Mnemonic','MasterHDKey','AccountHDKey')")
 [ "$N2" = "0" ] && pass "nbxv1_metadata key rows still 0" || fail "key rows after restart: $N2"
 echo "R3 gates: ALL PASS (signer left FROZEN for the operator to unfreeze with the owner key)"
+fi

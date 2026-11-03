@@ -22,8 +22,8 @@ services:
       - "bitcoin_datadir:/bitcoin:ro"
       - "/var/run/aesmd:/var/run/aesmd"
   btcpayserver:
-    environment:
-      BTCPAY_DEBUG_PLUGINS: /tee-plugin/BTCPayServer.Plugins.TeeSigner.dll
+    # the built DLL is staged here; `stack.sh install-plugin` copies it into the plugins volume
+    # (release images of BTCPay ignore DEBUG_PLUGINS)
     volumes:
       - "${TEE_PLUGIN_DIR}:/tee-plugin:ro"
 volumes:

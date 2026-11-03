@@ -2,6 +2,8 @@
 # Dev BTCPay stack on the SGX box, docker only, localhost only, no root, no nginx.
 #   stack.sh gen      generate Generated/docker-compose.generated.yml (signet, no reverse proxy, no lightning, tee-signer sidecar)
 #   stack.sh up|down|ps|logs <svc>
+#   stack.sh install-plugin   copy the built DLL into BTCPay's plugins volume and restart it
+#                             (BTCPAY_DEBUG_PLUGINS only works in DEBUG builds of BTCPay; release images load Plugins/<Id>/<Id>.dll)
 # Owner's constraints (2026-11-03): the BTCPay web part runs only in Docker, bound to 127.0.0.1, nothing in nginx.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -41,5 +43,10 @@ case "$cmd" in
   down) cd "$ROOT/btcpayserver-docker" && docker compose -f "$COMPOSE" -p tee-btcpay down;;
   ps)   docker compose -f "$COMPOSE" -p tee-btcpay ps;;
   logs) shift; docker compose -f "$COMPOSE" -p tee-btcpay logs --tail=100 "$@";;
+  install-plugin)
+    docker exec generated_btcpayserver_1 sh -c "mkdir -p /root/.btcpayserver/Plugins/BTCPayServer.Plugins.TeeSigner"
+    docker cp "$TEE_PLUGIN_DIR/BTCPayServer.Plugins.TeeSigner.dll" generated_btcpayserver_1:/root/.btcpayserver/Plugins/BTCPayServer.Plugins.TeeSigner/BTCPayServer.Plugins.TeeSigner.dll
+    docker restart generated_btcpayserver_1 >/dev/null; sleep 30
+    docker logs --since 1m generated_btcpayserver_1 2>&1 | grep -i "Running plugin" | sed 's/^.*PluginManager: //';;
   *) sed -n 2,6p "$0";;
 esac
