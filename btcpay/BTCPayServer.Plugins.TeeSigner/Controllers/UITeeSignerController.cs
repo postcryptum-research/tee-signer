@@ -97,8 +97,7 @@ public class UITeeSignerController : Controller
                 // the enclave's account xpub must be the store's wallet: compare the base58 xpub
                 // against the derivation scheme string (NBXplorer form "tpub...", possibly with
                 // suffixes for non-P2WPKH schemes, which v1 does not use)
-                if (vm.Status?.Xpub is not null && vm.WalletXpub is not null)
-                    vm.XpubMatches = vm.WalletXpub.StartsWith(vm.Status.Xpub, StringComparison.Ordinal);
+                vm.XpubMatches = TeeSignerClient.XpubMatches(vm.Status, vm.WalletXpub, scheme is null ? null : TeeSignerClient.WalletFingerprint(scheme));
                 vm.ReceiptsRaw = await client.ReceiptsRaw();
             }
             catch (Exception e)
@@ -215,6 +214,11 @@ public class UITeeSignerController : Controller
         if (scheme.IsHotWallet) { vm.Error = "the store wallet is HOT; tee-signer refuses"; return View($"{Plugin.ViewsDirectory}/Send.cshtml", vm); }
         var (client, settings) = await _clients.For(storeId);
         if (client is null || settings is null) { vm.Error = "tee-signer is not configured for this store"; return View($"{Plugin.ViewsDirectory}/Send.cshtml", vm); }
+        TeeSignerClient.StatusJson status;
+        try { status = await client.Status(ct); }
+        catch (Exception e) { vm.Error = $"signerd status: {e.Message}"; return View($"{Plugin.ViewsDirectory}/Send.cshtml", vm); }
+        if (!TeeSignerClient.XpubMatches(status, scheme.AccountDerivation?.ToString(), TeeSignerClient.WalletFingerprint(scheme)))
+        { vm.Error = $"the signer's xpub {status.Xpub} / fingerprint {status.Fingerprint} does not match the store wallet; refusing (C-R3-4)"; return View($"{Plugin.ViewsDirectory}/Send.cshtml", vm); }
         BitcoinAddress dest;
         try { dest = BitcoinAddress.Create(vm.Destination.Trim(), network.NBitcoinNetwork); }
         catch (Exception e) { vm.Error = $"destination: {e.Message}"; return View($"{Plugin.ViewsDirectory}/Send.cshtml", vm); }

@@ -13,7 +13,8 @@ wallet is a **cold** xpub in BTCPay; the plugin
 - shows notes on the Send page and the wallet setup page.
 
 It never holds a key; a malicious copy of it can only ask the enclave, which answers inside the
-owner's mandate.
+owner's mandate. Before building any PSBT, both signing paths check that the signer's xpub is the
+store's wallet (C-R3-4) and refuse by name otherwise.
 
 Build (no .NET on the host): `btcpay/docker/Dockerfile.plugin-build` — a `dotnet/sdk:10.0`
 container clones `btcpayserver` at `v2.4.7` and publishes this project. Install: the published

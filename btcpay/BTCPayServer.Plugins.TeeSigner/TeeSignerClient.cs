@@ -62,6 +62,21 @@ public class TeeSignerClient
 
     public record SignResult(SignOk? Ok, SignRefused? Refused);
 
+    /// <summary>C-R3-4: the enclave's account xpub must be the store's wallet. NBXplorer's scheme
+    /// string is the base58 xpub (P2WPKH in v1), possibly followed by a suffix; compare by prefix.</summary>
+    public static bool XpubMatches(StatusJson? status, string? walletScheme, string? walletFingerprint = null)
+        => status?.Xpub is not null && walletScheme is not null
+           && walletScheme.StartsWith(status.Xpub, StringComparison.Ordinal)
+           && (walletFingerprint is null || status.Fingerprint is null
+               || string.Equals(walletFingerprint, status.Fingerprint, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>The store wallet's master fingerprint as imported (`[fp/84'/coin'/0']xpub`), or null.</summary>
+    public static string? WalletFingerprint(BTCPayServer.DerivationSchemeSettings scheme)
+    {
+        try { return scheme.GetSigningAccountKeySettings()?.RootFingerprint?.ToString(); }
+        catch { return null; }
+    }
+
     public async Task<StatusJson> Status(CancellationToken ct = default)
     {
         var r = await _http.GetAsync($"{_base}/v1/status", ct);

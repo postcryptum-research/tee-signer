@@ -89,6 +89,24 @@ public class TeePayoutProcessor : BaseAutomatedPayoutProcessor<OnChainAutomatedP
         if (payouts.Sum(p => p.Amount) < blob.Threshold)
             return;
 
+        // C-R3-4 (defense-in-depth to D-R3-1): the signer must hold THIS store's wallet. A signerd
+        // with another seed could not produce a valid signature for the store's inputs anyway; this
+        // names the misconfiguration before any PSBT is built instead of leaving it to the enclave's refusal.
+        TeeSignerClient.StatusJson status;
+        try { status = await client.Status(CancellationToken); }
+        catch (Exception e)
+        {
+            _log.LogWarning("tee-signer: signerd status unavailable: {Err}", e.Message);
+            return;
+        }
+        var walletScheme = config.AccountDerivation?.ToString();
+        var walletFp = TeeSignerClient.WalletFingerprint(config);
+        if (!TeeSignerClient.XpubMatches(status, walletScheme, walletFp))
+        {
+            _log.LogError("tee-signer: the signer's xpub {SignerXpub} / fingerprint {SignerFp} does not match the store wallet {Wallet} / {WalletFp}; refusing to process payouts (C-R3-4)", status.Xpub, status.Fingerprint, walletScheme, walletFp);
+            return;
+        }
+
         var explorer = _explorerClientProvider.GetExplorerClient(Network.CryptoCode);
         var destinations = new List<(PayoutData payout, CreatePSBTDestination dest)>();
         foreach (var payout in payouts)

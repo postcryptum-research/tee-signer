@@ -4,8 +4,9 @@
 #  (b) nbxv1_metadata holds zero Mnemonic/MasterHDKey/AccountHDKey rows;
 #  (c) the four in-process signing sites are inert (Greenfield signWithSeed → 503; no payjoin in
 #      the invoice BIP21; the stock payout processor is not configured; the UI path follows (a));
-#  (d) the plugin only routes: a payout is paid through the enclave (receipt seq advances) and a
-#      frozen signer makes the payout wait with the refusal named, charging nothing.
+#  (d) the plugin only routes: a payout is paid through the enclave (receipt seq advances), a
+#      frozen signer makes the payout wait with the refusal named, charging nothing, and a store
+#      whose wallet is not the signer's is refused by name before any PSBT is built (C-R3-4).
 #   gates.sh setup   admin, API key, store, COLD wallet, plugin settings + processor, gates (a) and (b)
 #   gates.sh run     gates (c) and (d) — needs the stack synced and the wallet's coins indexed
 set -euo pipefail
@@ -127,6 +128,33 @@ SEQ2=$(curl -s -H "Authorization: Bearer $SIGNER_TOKEN" http://127.0.0.1:7390/v1
 [ "$ST2" = "AwaitingPayment" ] && [ "$SEQ2" = "$SEQ" ] && pass "frozen: payout $PO2 stays AwaitingPayment, seq unchanged ($SEQ2)" || fail "frozen path: state $ST2 seq $SEQ2"
 docker logs --since 2m generated_btcpayserver_1 2>&1 | grep -i "tee-signer" | tail -3 | sed 's/^/  btcpay: /'
 docker logs --since 2m generated_btcpayserver_1 2>&1 | grep -q "refused the payout batch: FROZEN" && pass "BTCPay logged the refusal by name (FROZEN)" || fail "no FROZEN refusal in the BTCPay log"
+
+echo "== gate (d.3): a store whose wallet is not the signer's is refused by the plugin before any PSBT (C-R3-4)"
+foreign_tpub() { python3 - <<'PY'
+import os,hashlib
+A="123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+def b58(b):
+    n=int.from_bytes(b,'big'); s=""
+    while n: n,r=divmod(n,58); s=A[r]+s
+    return "1"*(len(b)-len(b.lstrip(b"\0")))+s
+Gx=bytes.fromhex("79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798")   # a valid point: G
+raw=bytes.fromhex("043587cf")+b"\0"*9+os.urandom(32)+b"\x02"+Gx                       # tpub, depth 0, random chain code
+print(b58(raw+hashlib.sha256(hashlib.sha256(raw).digest()).digest()[:4]))
+PY
+}
+ORIG=$(curl -s "${H[@]}" "$BT/api/v1/stores/$STORE/payment-methods?includeConfig=true" | python3 -c "import sys,json;l=json.load(sys.stdin);print([m for m in l if m['paymentMethodId']=='BTC-CHAIN'][0]['config']['accountDerivation'])")
+FOREIGN=$(foreign_tpub)
+curl -s -o /dev/null -w "  foreign cold wallet set on the store: [%{http_code}]\n" "${H[@]}" -X PUT "$BT/api/v1/stores/$STORE/payment-methods/BTC-CHAIN" -d "{\"enabled\":true,\"config\":\"[$FP/84'/1'/0']$FOREIGN\"}"
+M=$(curl -s "${H[@]}" "$BT/plugins/teesigner/api/$STORE/status" | j "d['xpubMatches']"); [ "$M" = "False" ] && pass "status reports xpubMatches=false" || fail "xpubMatches=$M with a foreign wallet"
+PAYEE3=$(throwaway_addr)
+PO3=$(curl -s "${H[@]}" -X POST "$BT/api/v1/pull-payments/$PP/payouts" -d "{\"destination\":\"$PAYEE3\",\"amount\":\"0.00001\",\"payoutMethodId\":\"BTC-CHAIN\"}" | j "d['id']")
+sleep 20
+ST3=$(curl -s "${H[@]}" "$BT/api/v1/stores/$STORE/payouts/$PO3" | j "d['state']")
+SEQ3=$(curl -s -H "Authorization: Bearer $SIGNER_TOKEN" http://127.0.0.1:7390/v1/status | j "d['seq']")
+docker logs --since 1m generated_btcpayserver_1 2>&1 | grep -q "does not match the store wallet" && pass "refused by name before any PSBT (xpub mismatch); payout $PO3 $ST3, seq $SEQ3" || fail "no xpub-mismatch refusal in the BTCPay log (payout $PO3 $ST3, seq $SEQ3)"
+[ "$ST3" = "AwaitingPayment" ] && [ "$SEQ3" = "$SEQ" ] || fail "mismatch path: state $ST3 seq $SEQ3"
+curl -s -o /dev/null -w "  store wallet restored: [%{http_code}]\n" "${H[@]}" -X PUT "$BT/api/v1/stores/$STORE/payment-methods/BTC-CHAIN" -d "{\"enabled\":true,\"config\":\"[$FP/84'/1'/0']$ORIG\"}"
+M2=$(curl -s "${H[@]}" "$BT/plugins/teesigner/api/$STORE/status" | j "d['xpubMatches']"); [ "$M2" = "True" ] && pass "xpubMatches=true again with the enclave's wallet" || fail "xpubMatches=$M2 after the restore"
 
 echo "== gate (a) again after a BTCPay restart"
 docker restart generated_btcpayserver_1 >/dev/null; sleep 25

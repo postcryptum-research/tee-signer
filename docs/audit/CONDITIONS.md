@@ -55,4 +55,4 @@ this table is what each IMPL REQ must discharge. **Status:** OPEN · IN IMPL (br
 | C-R3-1 | RESP-r3 | R4 monitor: receipt authenticity against the identity key + cross-restart seq-fork detection, chain observation primary (joins C-R2-2) | R4 | OPEN |
 | C-R3-2 | RESP-r3 ⚠️ | secure-deployment demo: non-debug launch (`DisableDebug=1`) on FLC hardware before any "production-safe" claim; R3 gates prove FUNCTION on T1-debug only (two lenses) | R5 | OPEN |
 | C-R3-3 | RESP-r3 | direct S1 (UI seed path) runtime assert in the gates, nice-to-have | R4 gates | OPEN |
-| C-R3-4 | RESP-r3 | xpubMatches gate on the plugin's signing path (defense-in-depth to D-R3-1; structurally safe without it) | follow-up on `main` | IN IMPL |
+| C-R3-4 | RESP-r3 | xpubMatches gate on the plugin's signing path (defense-in-depth to D-R3-1; structurally safe without it) | follow-up on `main` | IN IMPL — `main` follow-up commit (plugin-only: both signing paths read `/v1/status`, compare xpub + fingerprint with the store derivation, refuse by name before any PSBT; gate (d.3) in `gates.sh` executes the negative vector, ALL PASS 2026-11-03); auditor to confirm in R4 |
