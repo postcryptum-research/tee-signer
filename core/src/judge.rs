@@ -138,6 +138,9 @@ fn judge_checks(
     if !s.armed {
         return Err(no(Reason::FreshnessSeqBehind));
     }
+    if s.chain.frozen {
+        return Err(no(Reason::ChainReorg));
+    }
     let best = s.chain.best.ok_or_else(|| no(Reason::ChainStale))?;
     if best.height > m.not_after_height {
         return Err(no(Reason::MandateExpired));

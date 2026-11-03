@@ -241,13 +241,24 @@ pub struct Rules {
     pub rbf: bool,
 }
 
-/// `chain.checkpoint`.
+/// `chain.checkpoint`: the header the enclave's chain view starts from, with what the verifier
+/// needs to continue from it without older headers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Checkpoint {
     /// Block hash (internal byte order, as in the `bitcoin` crate).
     pub hash: [u8; 32],
     /// Height.
     pub height: u32,
+    /// The header's timestamp.
+    pub time: u32,
+    /// The header's `nBits`.
+    pub bits: u32,
+    /// Timestamp of the first block of the retarget period containing the checkpoint
+    /// (`height - height % 2016`); equals `time` when the checkpoint is a boundary.
+    pub period_start_time: u32,
+    /// `nBits` of that first block (the period's difficulty; differs from `bits` only on networks
+    /// with min-difficulty blocks).
+    pub period_bits: u32,
 }
 
 /// `freshness` section.
@@ -309,6 +320,8 @@ pub enum Invalid {
     Freshness,
     /// `notAfterHeight` not after the checkpoint.
     Validity,
+    /// Checkpoint fields malformed (zero bits).
+    Checkpoint,
     /// Timelock zero.
     Timelock,
 }
@@ -366,6 +379,10 @@ impl Mandate {
         e.bool(self.rules.rbf);
         e.fixed(&self.checkpoint.hash);
         e.u32(self.checkpoint.height);
+        e.u32(self.checkpoint.time);
+        e.u32(self.checkpoint.bits);
+        e.u32(self.checkpoint.period_start_time);
+        e.u32(self.checkpoint.period_bits);
         e.bool(self.freshness.required);
         e.option(self.freshness.witness_pk.as_ref(), |e, k| {
             e.fixed(k);
@@ -432,7 +449,14 @@ impl Mandate {
             _ => return Err(DecodeError),
         };
         let rbf = d.bool()?;
-        let checkpoint = Checkpoint { hash: d.fixed::<32>()?, height: d.u32()? };
+        let checkpoint = Checkpoint {
+            hash: d.fixed::<32>()?,
+            height: d.u32()?,
+            time: d.u32()?,
+            bits: d.u32()?,
+            period_start_time: d.u32()?,
+            period_bits: d.u32()?,
+        };
         let freshness = Freshness {
             required: d.bool()?,
             witness_pk: d.option(|d| d.fixed::<65>())?,
@@ -549,6 +573,9 @@ impl Mandate {
             if crate::update::parse_p256_pubkey(pk).is_none() {
                 return Err(Invalid::Freshness);
             }
+        }
+        if self.checkpoint.bits == 0 || self.checkpoint.period_bits == 0 {
+            return Err(Invalid::Checkpoint);
         }
         if self.not_after_height <= self.checkpoint.height {
             return Err(Invalid::Validity);

@@ -43,14 +43,56 @@ pub struct PendingOwner {
     pub activation_height: u32,
 }
 
-/// What the enclave knows about the chain. Filled by the header verifier (R4); in R1 it is set by
-/// the caller and treated as already verified.
+/// One verified header, as the chain view keeps it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeaderRec {
+    /// Block hash (internal byte order).
+    pub hash: [u8; 32],
+    /// Height.
+    pub height: u32,
+    /// Timestamp.
+    pub time: u32,
+    /// `nBits`.
+    pub bits: u32,
+    /// Cumulative work from the checkpoint, `Work::to_le_bytes()`.
+    pub work: [u8; 32],
+}
+
+/// What the enclave knows about the chain. Written only by `headers::apply_headers` (and reset
+/// from a checkpoint at init or at a re-pin); never from a host assertion.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChainState {
     /// Best verified header, if any.
-    pub best: Option<Checkpoint>,
-    /// Recent verified headers, most recent last, bounded by `MAX_RECENT`.
-    pub recent: Vec<Checkpoint>,
+    pub best: Option<HeaderRec>,
+    /// Recent verified headers of the main chain, oldest first, bounded by `MAX_RECENT`.
+    pub recent: Vec<HeaderRec>,
+    /// Timestamp of the first block of the current retarget period.
+    pub period_start_time: u32,
+    /// Timestamp of the first block of the previous period (needed when a fork point lies
+    /// before the current period's first block).
+    pub prev_period_start_time: u32,
+    /// `nBits` of the current period's first block.
+    pub period_bits: u32,
+    /// Frozen by a reorg deeper than `maxReorg`; cleared by a mandate update that re-pins.
+    pub frozen: bool,
+}
+
+impl ChainState {
+    /// A chain view that starts from a checkpoint.
+    pub fn from_checkpoint(c: &Checkpoint) -> Self {
+        let work = bitcoin::pow::Target::from_compact(bitcoin::pow::CompactTarget::from_consensus(c.bits))
+            .to_work()
+            .to_le_bytes();
+        let rec = HeaderRec { hash: c.hash, height: c.height, time: c.time, bits: c.bits, work };
+        ChainState {
+            best: Some(rec),
+            recent: alloc::vec![rec],
+            period_start_time: c.period_start_time,
+            prev_period_start_time: 0,
+            period_bits: c.period_bits,
+            frozen: false,
+        }
+    }
 }
 
 /// Usage counters for the current window.
@@ -116,6 +158,7 @@ impl State {
         mandate_sig: [u8; 64],
     ) -> Self {
         let start = mandate.checkpoint.height;
+        let chain = ChainState::from_checkpoint(&mandate.checkpoint);
         State {
             enclave_id,
             network: mandate.network,
@@ -129,7 +172,7 @@ impl State {
             pending_owner: None,
             frozen: false,
             armed: true,
-            chain: ChainState { best: None, recent: Vec::new() },
+            chain,
             window: Window { start_height: start, ..Default::default() },
             own_index_bound: [0, 0],
             seq: 0,
@@ -164,12 +207,15 @@ impl State {
         });
         e.bool(self.frozen);
         e.bool(self.armed);
-        e.option(self.chain.best.as_ref(), |e, c| {
-            e.fixed(&c.hash).u32(c.height);
-        });
-        e.list(&self.chain.recent, |e, c| {
-            e.fixed(&c.hash).u32(c.height);
-        });
+        let rec = |e: &mut Enc, c: &HeaderRec| {
+            e.fixed(&c.hash).u32(c.height).u32(c.time).u32(c.bits).fixed(&c.work);
+        };
+        e.option(self.chain.best.as_ref(), |e, c| rec(e, c));
+        e.list(&self.chain.recent, |e, c| rec(e, c));
+        e.u32(self.chain.period_start_time);
+        e.u32(self.chain.prev_period_start_time);
+        e.u32(self.chain.period_bits);
+        e.bool(self.chain.frozen);
         e.u32(self.window.start_height);
         e.u64(self.window.outflow);
         e.u64(self.window.unlisted);
@@ -220,8 +266,15 @@ impl State {
             d.option(|d| Ok(PendingOwner { new_owner_pk: d.fixed()?, activation_height: d.u32()? }))?;
         let frozen = d.bool()?;
         let armed = d.bool()?;
-        let best = d.option(|d| Ok(Checkpoint { hash: d.fixed()?, height: d.u32()? }))?;
-        let recent = d.list(MAX_RECENT, |d| Ok(Checkpoint { hash: d.fixed()?, height: d.u32()? }))?;
+        let rec = |d: &mut Dec| -> Result<HeaderRec, DecodeError> {
+            Ok(HeaderRec { hash: d.fixed()?, height: d.u32()?, time: d.u32()?, bits: d.u32()?, work: d.fixed()? })
+        };
+        let best = d.option(rec)?;
+        let recent = d.list(MAX_RECENT, rec)?;
+        let period_start_time = d.u32()?;
+        let prev_period_start_time = d.u32()?;
+        let period_bits = d.u32()?;
+        let chain_frozen = d.bool()?;
         let window = Window {
             start_height: d.u32()?,
             outflow: d.u64()?,
@@ -247,7 +300,7 @@ impl State {
             pending_owner,
             frozen,
             armed,
-            chain: ChainState { best, recent },
+            chain: ChainState { best, recent, period_start_time, prev_period_start_time, period_bits, frozen: chain_frozen },
             window,
             own_index_bound,
             seq,
@@ -266,6 +319,9 @@ impl State {
         if let Some(p) = &self.pending {
             if best >= p.activation_height {
                 let p = p.clone();
+                if self.chain.frozen && p.mandate.checkpoint != self.mandate.checkpoint {
+                    self.chain = ChainState::from_checkpoint(&p.mandate.checkpoint);
+                }
                 self.mandate = p.mandate;
                 self.mandate_sig = p.sig;
                 self.pending = None;
@@ -331,9 +387,16 @@ impl State {
                 if new.wallet != s.wallet {
                     return Err(Reason::PolicyWallet.into());
                 }
-                if new.checkpoint.height > best {
-                    // a checkpoint ahead of what the enclave has verified is not a checkpoint
-                    return Err(Reason::PolicyInvalid.into());
+                // the checkpoint is the trust root: unchanged, or a header this enclave verified
+                // itself, or — only while the chain is frozen by a deep reorg — a fresh re-pin
+                let mut repin = false;
+                if new.checkpoint != s.mandate.checkpoint {
+                    let known = s.chain.recent.iter().any(|r| r.hash == new.checkpoint.hash && r.height == new.checkpoint.height);
+                    if s.chain.frozen {
+                        repin = true;
+                    } else if !known || new.checkpoint.height > best {
+                        return Err(Reason::PolicyInvalid.into());
+                    }
                 }
                 let change = match mandate::compare(&s.mandate, &new) {
                     Ok(c) => c,
@@ -341,6 +404,14 @@ impl State {
                     Err(mandate::Immutable::Wallet) => return Err(Reason::PolicyWallet.into()),
                 };
                 s.nonce = next;
+                if repin {
+                    // a re-pin is a loosening (new trust root) unless it applies at once by
+                    // being a tightening elsewhere; either way the chain restarts from it when
+                    // the mandate takes effect — for a tightening, now
+                    if change == mandate::Change::Tightening {
+                        s.chain = ChainState::from_checkpoint(&new.checkpoint);
+                    }
+                }
                 match change {
                     mandate::Change::Tightening => {
                         s.mandate = new;

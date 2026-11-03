@@ -1,0 +1,7 @@
+[build]
+target = "x86_64-unknown-linux-gnu"
+
+[target.x86_64-unknown-linux-gnu]
+# PIC is rustc's default on this target; stated so a toolchain change cannot silently drop it
+# (the enclave is a position-independent shared object; the build asserts TEXTREL == 0).
+rustflags = ["-C", "relocation-model=pic"]

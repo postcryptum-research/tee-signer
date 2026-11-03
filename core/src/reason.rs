@@ -87,6 +87,11 @@ pub enum Reason {
     PolicyInvalid,
     /// The sealed state could not be opened or decoded.
     StateUnsealable,
+    /// A header did not verify (link, target, proof of work, median time).
+    HeaderInvalid,
+    /// The input state's sequence is below what this enclave session already produced
+    /// (two judges from one base, or an older blob presented after a newer one).
+    SeqBehindSession,
 }
 
 impl Reason {
@@ -133,6 +138,8 @@ impl Reason {
             Reason::PolicyPending => "POLICY_PENDING",
             Reason::PolicyInvalid => "POLICY_INVALID",
             Reason::StateUnsealable => "STATE_UNSEALABLE",
+            Reason::HeaderInvalid => "HEADER_INVALID",
+            Reason::SeqBehindSession => "SEQ_BEHIND_SESSION",
         }
     }
 }

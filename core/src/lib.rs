@@ -5,16 +5,19 @@
 //! Inputs are bytes from the untrusted host; outputs are verdicts, canonical bytes and signatures.
 //!
 //! Module map (design of record: `docs/DESIGN.md`, `docs/POLICY.md`, `docs/THREAT-MODEL.md`):
+//! - `bip39`    — entropy → mnemonic → seed (the enclave's key derivation; the tests' too)
 //! - `encoding` — strict canonical binary encoding (the only wire format the enclave accepts)
 //! - `reason`   — stable refusal identifiers (`POLICY.md §6`)
 //! - `mandate`  — the mandate: types, canonical encode/decode, validation, tightening classifier
 //! - `wallet`   — in-enclave BIP32 derivation and script matching
 //! - `classify` — PSBT → classified inputs/outputs (own / trusted / unlisted / foreign / op_return)
+//! - `headers`  — the header-chain verifier: the enclave's only clock
 //! - `judge`    — the policy engine: classified transaction + mandate + state → verdict
 //! - `state`    — the sealed state (windows, bounds, sequence) and how a verdict charges it
 //! - `sign`     — BIP143 signatures for own inputs with the account key
 //! - `receipt`  — the signed receipt a signature leaves behind
 //! - `update`   — owner / recovery / witness messages and their verification
+//! - `proto`    — the ecall wire protocol shared by the enclave and the daemon
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -23,10 +26,13 @@
 
 extern crate alloc;
 
+pub mod bip39;
 pub mod classify;
 pub mod encoding;
+pub mod headers;
 pub mod judge;
 pub mod mandate;
+pub mod proto;
 pub mod reason;
 pub mod receipt;
 pub mod sign;
