@@ -38,6 +38,6 @@ this table is what each IMPL REQ must discharge. **Status:** OPEN · IN IMPL (br
 | C-R13b | R13 | the chosen `maxTipLag` exposure stated per network at `GET /v1/status` and in `POLICY.md` | R4 / docs | OPEN — residual text in `POLICY.md §3` (this commit) |
 | C-R14 | R14 | `policy diff` mandatory before `policy sign`; the signed digest is derived from the shown canonical bytes | R2 (`owner-cli`) | OPEN |
 | C-D3 | owner D3 | owner key: any `hw-signer` backend; encrypted off-box keyfile allowed as the floor; plaintext refused | R2 (`owner-cli`) | OPEN — design text updated (this commit) |
-| C-D3b | RESP-design supplement | owner key and recovery key held separately (different medium, different machine); `owner-cli init` refuses equal public keys | R2 (`owner-cli`) / docs | OPEN — rule stated in `THREAT-MODEL.md §5` (this commit) |
+| C-D3b | RESP-design supplement (+ refinement) | two parts: (1) code — `owner-cli init` refuses `owner_pk == recovery_pk` (necessary, not sufficient); (2) operational — owner and recovery keys on separate media and machines, a labeled custody assumption the code cannot verify | (1) R2 (`owner-cli`); (2) docs | (2) LABELED in `THREAT-MODEL.md §5`; (1) OPEN |
 | C-D5b | RESP-design supplement | feed outage = our own DoS; no coupling to the bridge project (no restarts, no shared state); weak-clock label at `GET /v1/status` on signet | R2 (`signerd`) | OPEN |
 | C-D5 | owner D5 | header feed from the shared signet node, read-only RPC subset | R2 (`signerd`) / deploy | OPEN — `deploy/README.md` updated (this commit) |
