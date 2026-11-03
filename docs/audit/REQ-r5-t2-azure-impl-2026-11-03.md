@@ -116,9 +116,25 @@ wallet record updated (pinned MRSIGNER, ProdID, SVN; attestation recorded)
   number on T2 (C-R1-1); receipt seq 1, txid
   `de3c3b34ab771fded28f94b36778b1a48eb35a72a0db506f0781243c02d464bd`, window after: outflow 5500,
   unlisted 5000, fees 500. Finalised and broadcast from the owner's machine.
-- The four R3 gates on the node: `gates.sh setup` **PASS** (plugin loaded into BTCPay 2.4.7 on the
-  node, store wallet = the T2 xpub cold, `xpubMatches` true against the T2 enclave, zero key rows
-  in `nbxv1_metadata`). `gates.sh run`: <<PENDING — the node's signet IBD/NBXplorer sync>>.
+- **The four R3 gates on the node, against the T2 enclave** (`gates.sh setup` then `run`, signet
+  fully synced, pruned node, NBXplorer UTXO scan found the T2 change coin): **ALL PASS** —
+
+```
+== gate (a): PASS store wallet is cold · == 3. plugin: settings [200], enclave tier T2-release, xpubMatches True, processor [200]
+== gate (b): PASS nbxv1_metadata key rows = 0
+== gate (c): PASS S2 signWithSeed → 503 · PASS S4 no payjoin · PASS S3 stock processor absent · PASS S1 follows from (a)
+== gate (d.1): payout EPqB5TrGouC7bbUX2gR63ncddRw (2000 sat) → InProgress, proof txid 2c230c0607720ecef4b1ddf992fd4f98417a54188ad1b8e4de09131fa6333551
+  enclave seq 1 → 2 · PASS the tx BTCPay broadcast is the one the enclave signed · PASS node holds it in its mempool
+== gate (d.2): payout LW1t1Zbq9pWRULiQn2dJrTdEMEd created while frozen → PASS stays AwaitingPayment, seq unchanged (2) · PASS BTCPay logged FROZEN
+== gate (d.3): PASS xpubMatches=false with a foreign wallet · PASS refused by name before any PSBT · PASS xpubMatches=true again
+== gate (a) again after a BTCPay restart: PASS still cold · PASS key rows still 0
+R3 gates: ALL PASS
+```
+
+  The run used the `build-3` host binary with the `build-3` enclave; the sidecar was then
+  recreated on the `build-4` image (cookie fix, same MRENCLAVE) and unfrozen by the owner through
+  the tunnel. Non-debug launch, enclave-bound payout, freeze and the xpub gate all hold on T2
+  exactly as on T1 — the plugin and the gates did not know which tier they were on.
 
 ### 5a. Two host-side findings from the T2 run (untrusted; fixed on the branch)
 
