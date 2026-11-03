@@ -26,9 +26,9 @@ this table is what each IMPL REQ must discharge. **Status:** OPEN · IN IMPL (br
 | C-R10c | R10 | secp256k1 context randomization wired to `sgx_read_rand` — a T2 gate, not optional | R2 | DISCHARGED — `RESP-r2-enclave-shell-2026-11-03.md` (IMPL-PASS at `fd64e1e`) |
 | C-R10d | R10 ⭐ | reproducible enclave build: required for T2, recommended for T1 | R2 build / R5 | OPEN |
 | C-R10e | R10 | sealing and concurrent-ecall atomicity (commit-seal ordering under concurrency) named as IMPL-PASS gates of R2 | R2 REQ | DISCHARGED — `RESP-r2-enclave-shell-2026-11-03.md` (IMPL-PASS at `fd64e1e`) |
-| C-R11a | R11 | seed generated in-enclave; xpub imported cold; never NBXplorer `GenerateWallet` | R3 (plugin + deploy) | IN IMPL (`r3-btcpay-plugin`, `REQ-r3-btcpay-plugin-2026-11-03.md`) |
-| C-R11b | R11 | cold from the start; the plugin refuses to operate a store whose wallet is `IsHotWallet=true` | R3 | IN IMPL (`r3-btcpay-plugin`, `REQ-r3-btcpay-plugin-2026-11-03.md`) |
-| C-R11c | R11 | e2e vector: `IsHotWallet=false` end to end and zero key material in `nbxv1_metadata` | R3 vectors | IN IMPL (`r3-btcpay-plugin`, `REQ-r3-btcpay-plugin-2026-11-03.md`) |
+| C-R11a | R11 | seed generated in-enclave; xpub imported cold; never NBXplorer `GenerateWallet` | R3 (plugin + deploy) | DISCHARGED — `RESP-r3-btcpay-plugin-2026-11-03.md` (IMPL-PASS at `a6ff144`) |
+| C-R11b | R11 | cold from the start; the plugin refuses to operate a store whose wallet is `IsHotWallet=true` | R3 | DISCHARGED — `RESP-r3-btcpay-plugin-2026-11-03.md` (IMPL-PASS at `a6ff144`) |
+| C-R11c | R11 | e2e vector: `IsHotWallet=false` end to end and zero key material in `nbxv1_metadata` | R3 vectors | DISCHARGED — `RESP-r3-btcpay-plugin-2026-11-03.md` (IMPL-PASS at `a6ff144`) |
 | C-R12a | R12 | positive/accept vectors: unlisted within cap accepts; sweep to trusted accepts; valid loosening activates after timelock; valid tightening applies at once | R1 vectors | DISCHARGED — `RESP-r1-signer-core-2026-11-03.md` (IMPL-PASS at `e4afa1d`) |
 | C-R12b | R12 | per-invariant mutation vectors: drop `non_witness_utxo` requirement ⇒ lying-`witness_utxo` fee vector passes (I2); host `bip32_derivation` as decision ⇒ change-to-foreign passes (I3); commit-after-sign ⇒ rollback double-spends (I5/I11) | R1/R2 vectors | DISCHARGED — `RESP-r1-signer-core-2026-11-03.md` (IMPL-PASS at `e4afa1d`) |
 | C-R12c | R12 | freshness `maxTipLag` boundary vector | R4 vectors | DISCHARGED — `RESP-r2-enclave-shell-2026-11-03.md` (IMPL-PASS at `fd64e1e`) |
@@ -52,3 +52,7 @@ this table is what each IMPL REQ must discharge. **Status:** OPEN · IN IMPL (br
 | C-R2-3 | RESP-r2 | reproducible build before any custody/TRUST claim (= C-R1-3 / C-R10d) | R5 | OPEN |
 | C-R2-4 | RESP-r2 | the enforce/custody deployment is a `RELEASE=1` build (`DisableDebug=1`, no test ops) on FLC/DCAP hardware; T1-debug is dev only | R5 | OPEN |
 | C-R2-5 | RESP-r2 D-R2-1 | gate 1 keeps asserting the exact pinned SDK cpuid set (count + site-list diff) on the final `.so` | enclave/Makefile | DISCHARGED (in place; a change is a REQ) |
+| C-R3-1 | RESP-r3 | R4 monitor: receipt authenticity against the identity key + cross-restart seq-fork detection, chain observation primary (joins C-R2-2) | R4 | OPEN |
+| C-R3-2 | RESP-r3 ⚠️ | secure-deployment demo: non-debug launch (`DisableDebug=1`) on FLC hardware before any "production-safe" claim; R3 gates prove FUNCTION on T1-debug only (two lenses) | R5 | OPEN |
+| C-R3-3 | RESP-r3 | direct S1 (UI seed path) runtime assert in the gates, nice-to-have | R4 gates | OPEN |
+| C-R3-4 | RESP-r3 | xpubMatches gate on the plugin's signing path (defense-in-depth to D-R3-1; structurally safe without it) | follow-up on `main` | IN IMPL |
