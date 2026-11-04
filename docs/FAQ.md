@@ -57,11 +57,28 @@ TEE_FRAGMENT=opt-add-tee-signer.custom btcpay/docker/stack.sh gen && btcpay/dock
 btcpay/docker/stack.sh install-plugin       # the plugin DLL, built in a dotnet SDK container
 ```
 
-`signerd` listens on `127.0.0.1:7390` only; you reach it from your laptop through an SSH tunnel.
-Its bearer token sits in the sidecar's state volume (`token`); it rate-limits, it is not a secret
-in the threat model (an attacker with it is still bound by the mandate).
+**3. Open the door from your laptop.** The sidecar listens on the server's loopback only
+(`127.0.0.1:7390`); nothing is published on a network interface, nothing goes through nginx.
+Every owner operation below runs `owner-cli` **on your laptop** and has to reach that port, so
+you forward it over the SSH access you already use to administer the server:
 
-**3. Create the keys — on your laptop, never on the box.** `owner-cli` is built with
+```sh
+ssh -N -L 7390:127.0.0.1:7390 you@your-server        # keep this terminal open; Ctrl-C closes the tunnel
+```
+
+While it runs, `http://127.0.0.1:7390` *on the laptop* is the sidecar on the server. That is the
+only way in, and it is deliberate: the owner key never travels to the server, only the messages
+it signed do. `signerd` also wants a bearer token on every request; it generated one at first
+start, in its state volume. Copy it to the laptop once:
+
+```sh
+ssh you@your-server 'docker exec tee-btcpay-tee-signer-1 cat /var/lib/signerd/token' > ./token && chmod 600 ./token
+```
+
+The token rate-limits and keeps stray containers out; it is not a secret in the threat model (an
+attacker who has it is still bound by the mandate).
+
+**4. Create the keys — on your laptop, never on the server.** `owner-cli` is built with
 `cd owner/owner-cli && cargo build` (Linux needs `libtss2-dev` for the TPM backend and `pcscd` +
 `libpcsclite-dev` for the YubiKey one).
 
@@ -78,29 +95,48 @@ $B pubkey --key tpm:0x81000100        # or piv:9a, or the keyfile path — print
 Write the passphrases down somewhere safe: nothing can recover them. The owner key and the
 recovery key go on **different media**; that separation is what makes an owner-key theft bounded.
 
-**4. Initialise the wallet** (once, through the tunnel). The owner is given as a *locator*; a
-YubiKey slot is attested to Yubico's root before it is accepted:
+**5. Initialise the wallet** — once. What happens physically: `owner-cli` on the laptop reads
+the owner's *public* key from the TPM (no passphrase, nothing is signed) and the recovery
+*public* key from the keyfile, and sends the two public keys through the tunnel to the sidecar.
+The sidecar passes them into the enclave. Inside the enclave: 256 bits of hardware randomness
+become a 24-word BIP39 mnemonic and a BIP32 master key; the account `m/84'/1'/0'` is derived; an
+identity key for signing receipts is created; the mnemonic is encrypted to the recovery public
+key (the **recovery blob**); and all of it is sealed to this enclave and written, through the
+sidecar, to its state volume. Back through the tunnel come public things only: the account xpub,
+the master fingerprint, the identity public key, a signed **identity card** and the recovery
+blob. The seed never crosses the tunnel in clear, and nothing on the laptop can sign. The enclave
+has no mandate yet, so it will sign nothing until step 7.
 
 ```sh
-export SIGNERD_URL=http://127.0.0.1:7390 SIGNERD_TOKEN_FILE=./token
+export SIGNERD_URL=http://127.0.0.1:7390 SIGNERD_TOKEN_FILE=./token      # the tunnel and the token from step 3
 $B init --network signet --owner tpm:0x81000100 --recovery-pk $($B pubkey --key /media/$USER/USB1/recovery.key) --out wallet.json
-$B recovery-verify --wallet wallet.json --recovery-key /media/$USER/USB1/recovery.key   # offline machine, ideally
 ```
 
-`init` prints the tier (`T1-debug` here, labeled TOFU: no attestation exists on this hardware),
-the account xpub, the master fingerprint, the enclave identity and writes `wallet.json` (the
-identity card) — keep it, the monitor needs it. `recovery-verify` proves the recovery blob
-decrypts to a mnemonic that derives the same xpub, **without** printing the words. Do it before
-funding anything.
+`--owner` is a *locator*, never a raw key: `tpm:<handle>`, `piv:<slot>` (a YubiKey slot is
+attested to Yubico's root first and refused unless that verifies) or a keyfile path. `init`
+prints the tier (`T1-debug` here, labeled TOFU: no attestation exists on this hardware), the
+xpub, the fingerprint and the enclave identity, and writes `wallet.json` on the laptop — the
+identity card plus the recovery blob. Keep it; the monitor and every later command read it.
 
-**5. Import the wallet into BTCPay as cold.** In the store's wallet setup, import
+Then prove the recovery blob is good **before** any money arrives:
+
+```sh
+$B recovery-verify --wallet wallet.json --recovery-key /media/$USER/USB1/recovery.key
+```
+
+This runs entirely on the laptop (no tunnel needed; ideally on a machine without network): it
+decrypts the blob from `wallet.json` with the recovery key, derives the xpub from the mnemonic,
+compares it with the xpub the enclave reported, and prints only whether they match — never the
+words.
+
+**6. Import the wallet into BTCPay as cold.** In the store's wallet setup, import
 `[<fingerprint>/84'/1'/0']<xpub>` (signet) as a watch-only wallet. The plugin's settings page
 shows whether the signer's xpub matches the store wallet; both signing paths refuse by name if it
 does not. "View seed", PayJoin and the stock payout processor switch themselves off on a cold
 wallet — that is gate (a) of the e2e suite, and gate (b) checks that NBXplorer's database holds
 no key material.
 
-**6. Write and install the mandate.** Start from the example in [`POLICY.md`](POLICY.md) §2:
+**7. Write and install the mandate.** Start from the example in [`POLICY.md`](POLICY.md) §2:
 your cold-storage descriptor as a *trusted* destination with its own caps, `unlisted` caps for
 customer payouts (e.g. `maxPerTx` 1 000 000 sat, `maxPerWindow` 5 000 000 sat), `limits.window`
 of 144 blocks, fee bounds, `validity.notAfterHeight` about a year ahead, `timelockBlocks` 144.
@@ -112,13 +148,13 @@ $B policy-sign  --json mandate.json --key tpm:0x81000100              # nonce 0 
 $B status                                                             # installed: true, nonce 0, best_height follows the chain
 ```
 
-**7. Point BTCPay at the signer.** Plugin settings page: signerd URL `http://tee-signer:7390`
+**8. Point BTCPay at the signer.** Plugin settings page: signerd URL `http://tee-signer:7390`
 (the sidecar's name in the stack), the token, minimum confirmations, a fallback fee rate. Enable
 the **TEE signer** payout processor for the store's on-chain payouts; use **Send through the
 enclave** for manual sends. Create a small pull payment and a payout: the processor builds the
 PSBT, the enclave signs it, the receipt sequence at `status` advances by one.
 
-**8. Run the monitor** on your laptop (or any machine that is not the box), against your own
+**9. Run the monitor** on your laptop (or any machine that is not the box), against your own
 node if you have one:
 
 ```sh
