@@ -61,6 +61,7 @@ impl P256Key {
             | Message::Rearm { sig, .. }
             | Message::RotateOwner { sig, .. }
             | Message::Recover { sig, .. }
+            | Message::Arm { sig, .. }
             | Message::WitnessToken { sig, .. } => *sig = s,
         }
     }
@@ -337,13 +338,53 @@ fn full_flow_init_install_headers_judge_sign_and_fork_refusal() {
     let st2 = proto::StatusResponse::decode(&call(op::STATUS, &charged2).payload).unwrap();
     assert_eq!(st2.seq, 2);
     assert_eq!(st2.window_outflow, 902_000 + 802_000);
-    // after an enclave "reload" the mark is gone: the stale blob is accepted again — the labeled
-    // limit the monitor exists for (session id changes)
+    // --- after an enclave "reload" the volatile mark is gone — and so is the owner's approval:
+    // REQ-r7 makes a reloaded process one that judges and signs nothing until `Arm` ---
     call(op::TEST_RESET_SESSION, &[]);
     let r = call(op::JUDGE, &proto::SealedWith { sealed: sealed1.clone(), data: psbt_b.serialize(), extra: None }.encode());
-    assert!(r.ok, "a restart resets the volatile mark — by design, and labeled");
+    assert!(!r.ok && r.reasons == vec!["NOT_ARMED"], "a reload is unarmed: {:?}", r.reasons);
+    let r = call(op::SIGN, &proto::SealedWith { sealed: charged.clone(), data: bytes.clone(), extra: None }.encode());
+    assert!(!r.ok && r.reasons == vec!["NOT_ARMED"], "the signing entrypoint checks the boot-arm itself: {:?}", r.reasons);
     let st3 = proto::StatusResponse::decode(&call(op::STATUS, &charged2).payload).unwrap();
     assert_ne!(st3.session_id, st.session_id);
+    assert!(!st3.boot_armed && !st3.auto_arm);
+    assert_ne!(st3.boot_challenge, st.boot_challenge, "a fresh challenge per load");
+    // a replayed Arm — an earlier load's challenge — is refused
+    let mut stale = Message::Arm { enclave_id, nonce: 1, boot_challenge: st.boot_challenge, seq_seen: 2, sig: [0; 64] };
+    owner.sign(&mut stale);
+    let r = call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: charged2.clone(), data: stale.encode(), extra: None }.encode());
+    assert!(!r.ok && r.reasons == vec!["ARM_CHALLENGE"], "{:?}", r.reasons);
+    // the owner saw #2: a rolled-back blob (#0) cannot be armed with that knowledge
+    let mut arm_old = Message::Arm { enclave_id, nonce: 1, boot_challenge: st3.boot_challenge, seq_seen: 2, sig: [0; 64] };
+    owner.sign(&mut arm_old);
+    let r = call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: sealed1.clone(), data: arm_old.encode(), extra: None }.encode());
+    assert!(!r.ok && r.reasons == vec!["ARM_SEQ_BEHIND"], "{:?}", r.reasons);
+    // the wrong key, the wrong nonce
+    let thief = p256_key(0xb2);
+    let mut arm_thief = Message::Arm { enclave_id, nonce: 1, boot_challenge: st3.boot_challenge, seq_seen: 2, sig: [0; 64] };
+    thief.sign(&mut arm_thief);
+    let r = call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: charged2.clone(), data: arm_thief.encode(), extra: None }.encode());
+    assert!(!r.ok && r.reasons == vec!["POLICY_SIG"], "{:?}", r.reasons);
+    let mut arm_nonce = Message::Arm { enclave_id, nonce: 7, boot_challenge: st3.boot_challenge, seq_seen: 2, sig: [0; 64] };
+    owner.sign(&mut arm_nonce);
+    let r = call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: charged2.clone(), data: arm_nonce.encode(), extra: None }.encode());
+    assert!(!r.ok && r.reasons == vec!["POLICY_NONCE"], "{:?}", r.reasons);
+    // still unarmed after all of that
+    assert!(!proto::StatusResponse::decode(&call(op::STATUS, &charged2).payload).unwrap().boot_armed);
+    // the genuine Arm over THIS load's challenge, on the current blob
+    let mut arm = Message::Arm { enclave_id, nonce: 1, boot_challenge: st3.boot_challenge, seq_seen: 2, sig: [0; 64] };
+    owner.sign(&mut arm);
+    let r = call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: charged2.clone(), data: arm.encode(), extra: None }.encode());
+    assert!(r.ok, "{:?}", r.reasons);
+    let charged2 = proto::SealedResponse::decode(&r.payload).unwrap().sealed; // the nonce is consumed: 1
+    let st4 = proto::StatusResponse::decode(&call(op::STATUS, &charged2).payload).unwrap();
+    assert!(st4.boot_armed && st4.nonce == 1 && st4.seq == 2, "{st4:?}");
+    // the same Arm again within the load: the nonce is spent
+    let r = call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: charged2.clone(), data: arm.encode(), extra: None }.encode());
+    assert!(!r.ok && r.reasons == vec!["POLICY_NONCE"], "{:?}", r.reasons);
+    // C-R7-3: arming ratcheted the mark to #2 — the stale blob is refused inside this armed process
+    let r = call(op::JUDGE, &proto::SealedWith { sealed: sealed1.clone(), data: psbt_b.serialize(), extra: None }.encode());
+    assert!(!r.ok && r.reasons == vec!["SEQ_BEHIND_SESSION"], "{:?}", r.reasons);
 
     // --- FREEZE (unauthenticated) then a message ---
     let r = call(op::FREEZE, &charged2);
@@ -351,7 +392,7 @@ fn full_flow_init_install_headers_judge_sign_and_fork_refusal() {
     let frozen = proto::SealedResponse::decode(&r.payload).unwrap().sealed;
     let r = call(op::JUDGE, &proto::SealedWith { sealed: frozen.clone(), data: bytes.clone(), extra: None }.encode());
     assert!(!r.ok && r.reasons == vec!["FROZEN"]);
-    let mut un = Message::Unfreeze { enclave_id, nonce: 1, sig: [0; 64] };
+    let mut un = Message::Unfreeze { enclave_id, nonce: 2, sig: [0; 64] }; // 1 went to the Arm
     owner.sign(&mut un);
     let r = call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: frozen, data: un.encode(), extra: None }.encode());
     assert!(r.ok, "{:?}", r.reasons);

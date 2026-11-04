@@ -68,9 +68,18 @@ pub fn read_rand(buf: &mut [u8]) {
     }
     #[cfg(feature = "nosgx")]
     {
-        // deterministic stand-in for host tests: SHA-256 counter stream, NEVER used in an enclave
-        use core::sync::atomic::{AtomicU64, Ordering};
+        // deterministic stand-in for host tests: SHA-256 counter stream, NEVER used in an enclave.
+        // The stream starts from a per-process value (an ASLR'd address), so two processes — a
+        // restarted T0 signerd, say — do not draw the same session id and boot challenge (REQ-r7
+        // restart drills need distinct challenges per load, as hardware RDRAND gives).
+        use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        static SEEDED: AtomicBool = AtomicBool::new(false);
         static CTR: AtomicU64 = AtomicU64::new(0x5eed);
+        if !SEEDED.swap(true, Ordering::AcqRel) {
+            let marker = 0u8;
+            let aslr = core::ptr::addr_of!(marker) as usize as u64 ^ (core::ptr::addr_of!(CTR) as usize as u64).rotate_left(17);
+            CTR.store(0x5eed ^ aslr.wrapping_mul(0x9E37_79B9_7F4A_7C15), Ordering::Release);
+        }
         let mut off = 0usize;
         while off < buf.len() {
             let c = CTR.fetch_add(1, Ordering::SeqCst);

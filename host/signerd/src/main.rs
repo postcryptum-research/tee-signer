@@ -387,6 +387,9 @@ struct StatusJson {
     pending: Option<(String, u32)>,
     pending_owner: Option<u32>,
     clock_label: String,
+    boot_armed: bool,
+    boot_challenge: String,
+    auto_arm: bool,
 }
 
 fn display_hash(mut h: [u8; 32]) -> String {
@@ -429,6 +432,9 @@ async fn h_status(AxState(s): AxState<Shared>, headers: HeaderMap) -> axum::resp
             pending: st.pending.map(|(h, a)| (hex::encode(h), a)),
             pending_owner: st.pending_owner,
             clock_label: st.clock_label,
+            boot_armed: st.boot_armed,
+            boot_challenge: hex::encode(st.boot_challenge),
+            auto_arm: st.auto_arm,
         })
         .into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), vec![]),

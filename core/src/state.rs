@@ -495,7 +495,36 @@ impl State {
                 s.pending_owner = None;
                 Ok(s)
             }
+            // Arm is a statement about a process, not about the sealed state alone: only `apply_arm`,
+            // which takes this load's challenge as data, may accept it.
+            Message::Arm { .. } => Err(Reason::PolicyInvalid.into()),
             Message::WitnessToken { .. } => Err(Reason::PolicyInvalid.into()),
         }
+    }
+
+    /// The boot-arm transition (REQ-r7). Verified like every owner message — signature, enclave
+    /// id, next nonce (consumed) — plus the two checks that bind it to THIS process: the challenge
+    /// the enclave drew at this load, handed in by the shell as data (the core holds no volatile
+    /// state), and the sequence the owner last saw, which an enclave that was rolled back cannot
+    /// reach. Whether the process is then armed is the shell's volatile fact, never sealed.
+    pub fn apply_arm(&self, msg: &Message, boot_challenge: &[u8; 32]) -> Result<State, Refusal> {
+        let Message::Arm { nonce, boot_challenge: c, seq_seen, .. } = msg else { return Err(Reason::PolicyInvalid.into()) };
+        if msg.enclave_id() != &self.enclave_id || !msg.verify(&self.owner_pk) {
+            return Err(Reason::PolicySig.into());
+        }
+        let mut s = self.clone();
+        s.activate_pending();
+        let next = s.nonce.checked_add(1).ok_or_else(|| Refusal::one(Reason::Overflow))?;
+        if *nonce != next {
+            return Err(Reason::PolicyNonce.into());
+        }
+        if c != boot_challenge {
+            return Err(Reason::ArmChallenge.into());
+        }
+        if *seq_seen > s.seq {
+            return Err(Reason::ArmSeqBehind.into());
+        }
+        s.nonce = next;
+        Ok(s)
     }
 }

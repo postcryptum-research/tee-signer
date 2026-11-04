@@ -18,6 +18,11 @@ nosgx = []
 # The vector replay entry point (TEST_INIT with a known seed). Never in a release enclave; the
 # release build refuses the feature and asserts the symbol is absent (C-R9 bar).
 test-init = []
+# REQ-r7 §2.6, the operator's opt-out AT BUILD TIME ONLY: the pause after a restart is compiled OUT
+# and the enclave arms itself at load. Its MRENCLAVE differs from the pinned one, STATUS/the card say
+# `auto_arm`, and the Makefile refuses it together with CEREMONY=1 (the ceremony key never signs it).
+# Never a runtime switch: a config/env/signerd flag would be root's to flip (C-R7-8).
+auto-arm = []
 
 [dependencies]
 signer-core = { path = "../../core", default-features = false }

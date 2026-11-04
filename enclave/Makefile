@@ -28,6 +28,21 @@ else
     CONFIG_DISABLE_DEBUG := 0
 endif
 
+# REQ-r7 §2.6 — the operator's opt-out, AT BUILD TIME ONLY: AUTO_ARM=1 compiles the pause after a
+# restart OUT (rcore feature `auto-arm`): the enclave arms itself at load, its MRENCLAVE differs from
+# the pinned one, STATUS and the identity card say `AUTO_ARM`. Never a runtime switch (a config, env
+# or signerd flag would be root's to flip). The ceremony key never signs such a build (C-R7-8).
+AUTO_ARM ?= 0
+ifeq ($(AUTO_ARM), 1)
+    ifeq ($(CEREMONY), 1)
+        $(error AUTO_ARM=1 with CEREMONY=1: the ceremony key never signs an auto-arm enclave (REQ-r7 §2.6))
+    endif
+    RCORE_FEATURES += --features auto-arm
+    AUTO_ARM_LABEL := AUTO_ARM (rollback pause compiled OUT — own MRENCLAVE, dev-signed only)
+else
+    AUTO_ARM_LABEL := pause-after-restart (REQ-r7)
+endif
+
 # C-R5-1: when the SDK's LVI mitigation is on (MITIGATION-CVE-2020-0551=LOAD — buildenv.mk adds the
 # lfence-inserting assembler flags and links the mitigated trusted libs from lib64/cve_2020_0551_load),
 # the Rust side is built with LLVM's LVI features too. RUSTFLAGS replaces the config.toml set, so it
@@ -117,9 +132,10 @@ target: $(Signed_Enclave_Name) $(Bridge_Lib) gates
 
 ######## Rust staticlib ########
 rcore:
+	@echo "ARM POLICY: $(AUTO_ARM_LABEL)"
 	@if [ "$(RELEASE)" = "1" ]; then \
-	    echo "RUST (release, --locked, no test features)"; \
-	    cd $(RCORE_SRC) && $(RCORE_ENV) $(CARGO) build --release --locked $(CARGO_FLAGS); \
+	    echo "RUST (release, --locked, features: $(RCORE_FEATURES))"; \
+	    cd $(RCORE_SRC) && $(RCORE_ENV) $(CARGO) build --release --locked $(CARGO_FLAGS) $(RCORE_FEATURES); \
 	else \
 	    echo "RUST (dev, --locked, $(RCORE_FEATURES))"; \
 	    cd $(RCORE_SRC) && $(RCORE_ENV) $(CARGO) build --release --locked $(CARGO_FLAGS) $(RCORE_FEATURES); \

@@ -98,6 +98,19 @@ fn identity_pk(secp: &Secp256k1<All>, sk: &[u8; 32]) -> Option<[u8; 33]> {
     Some(k.public_key(secp).serialize())
 }
 
+/// The tier as the card and STATUS carry it; an `auto-arm` build says so in the label itself,
+/// so the fact travels with the measurement into every attestation (C-R7-7).
+fn tier_label() -> String {
+    #[cfg(feature = "auto-arm")]
+    {
+        alloc::format!("{}/AUTO_ARM", sgx::tier())
+    }
+    #[cfg(not(feature = "auto-arm"))]
+    {
+        sgx::tier().to_string()
+    }
+}
+
 fn clock_label(n: Network) -> &'static str {
     match n {
         Network::Mainnet => "",
@@ -164,7 +177,12 @@ fn init(input: &[u8]) -> Response {
             break;
         }
     }
-    build_init(secp, network, seed, identity_sk, req.owner_pk, req.recovery_pk, None)
+    let r = build_init(secp, network, seed, identity_sk, req.owner_pk, req.recovery_pk, None);
+    if r.ok {
+        // init is an attended owner operation on a fresh enclave: the process it runs in is armed
+        session::arm();
+    }
+    r
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -194,7 +212,7 @@ fn build_init(
         xpub: keys.xpub,
         fingerprint: keys.fingerprint,
         identity_pk: idpk,
-        tier: sgx::tier().to_string(),
+        tier: tier_label(),
     };
     let Ok(id_sk) = SecretKey::from_slice(&identity_sk) else { return refuse_code("KEY_DERIVATION") };
     let card_sig = sign_digest_secp(&secp, &id_sk, &card.digest());
@@ -290,7 +308,7 @@ fn report(input: &[u8]) -> Response {
         xpub: keys.xpub,
         fingerprint: keys.fingerprint,
         identity_pk: idpk,
-        tier: sgx::tier().to_string(),
+        tier: tier_label(),
     };
     let mut target = [0u8; quote::TARGET_INFO_LEN];
     target.copy_from_slice(&req.data[..quote::TARGET_INFO_LEN]);
@@ -315,7 +333,7 @@ fn status(input: &[u8]) -> Response {
         // keys-only blob: identity and wallet facts, nothing else
         let r = proto::StatusResponse {
             installed: false,
-            tier: sgx::tier().to_string(),
+            tier: tier_label(),
             mrenclave: sgx::mrenclave(),
             session_id: session::id(),
             network: env.network,
@@ -337,6 +355,9 @@ fn status(input: &[u8]) -> Response {
             pending: None,
             pending_owner: None,
             clock_label: clock_label(network).to_string(),
+            boot_armed: session::armed(),
+            boot_challenge: session::challenge(),
+            auto_arm: cfg!(feature = "auto-arm"),
         };
         return Response::ok(r.encode());
     };
@@ -345,7 +366,7 @@ fn status(input: &[u8]) -> Response {
     st.roll_window();
     let r = proto::StatusResponse {
         installed: true,
-        tier: sgx::tier().to_string(),
+        tier: tier_label(),
         mrenclave: sgx::mrenclave(),
         session_id: session::id(),
         network: env.network,
@@ -367,6 +388,9 @@ fn status(input: &[u8]) -> Response {
         pending: st.pending.as_ref().map(|p| (p.mandate.hash(), p.activation_height)),
         pending_owner: st.pending_owner.as_ref().map(|p| p.activation_height),
         clock_label: clock_label(network).to_string(),
+        boot_armed: session::armed(),
+        boot_challenge: session::challenge(),
+        auto_arm: cfg!(feature = "auto-arm"),
     };
     Response::ok(r.encode())
 }
@@ -398,8 +422,19 @@ fn apply_message(input: &[u8]) -> Response {
         return refuse(Reason::SeqBehindSession.into());
     }
     let Ok(msg) = Message::decode(&req.data) else { return refuse(Reason::PolicyInvalid.into()) };
-    match s.apply_message(&msg) {
+    let result = match &msg {
+        // REQ-r7: the boot-arm takes THIS load's challenge as data; the core stays pure
+        Message::Arm { .. } => s.apply_arm(&msg, &session::challenge()),
+        _ => s.apply_message(&msg),
+    };
+    match result {
         Ok(ns) => {
+            // the HWM ratchets on every accepted blob, Arm included (C-R7-3): an armed process can
+            // never be handed a blob older than the one it was armed on
+            session::raise(ns.seq);
+            if matches!(msg, Message::Arm { .. }) {
+                session::arm();
+            }
             env.state = Some(ns);
             match seal_or(&env) {
                 Ok(sealed) => Response::ok(proto::SealedResponse { sealed }.encode()),
@@ -469,6 +504,11 @@ fn judge_op(input: &[u8]) -> Response {
     if !session::check_seq(s.seq) {
         return refuse(Reason::SeqBehindSession.into());
     }
+    // REQ-r7 (C-R7-4): no judging, hence no charging and no signing, until the owner armed this load
+    #[cfg(not(feature = "auto-arm"))]
+    if !session::armed() {
+        return refuse(Reason::NotArmed.into());
+    }
     let witness = match &req.extra {
         None => None,
         Some(b) => match Message::decode(b) {
@@ -524,6 +564,11 @@ fn sign_op(input: &[u8]) -> Response {
     if !session::check_seq(s.seq) {
         return refuse(Reason::SeqBehindSession.into());
     }
+    // REQ-r7 (C-R7-4): the signing entrypoint checks the volatile boot-arm itself, not only judge
+    #[cfg(not(feature = "auto-arm"))]
+    if !session::armed() {
+        return refuse(Reason::NotArmed.into());
+    }
     // the two-phase rule: only the PSBT this very blob was charged for, byte for byte
     let Some(lj) = env.last_judged.as_ref() else { return refuse(Reason::PsbtParse.into()) };
     if lj.psbt_hash != signer_core::sha256(&req.data) || lj.seq != s.seq {
@@ -570,7 +615,11 @@ fn test_init(input: &[u8]) -> Response {
             Err(_) => return refuse(Reason::StateUnsealable.into()),
         }
     };
-    build_init(secp(), network, req.seed, req.identity_sk, req.init.owner_pk, req.init.recovery_pk, state)
+    let r = build_init(secp(), network, req.seed, req.identity_sk, req.init.owner_pk, req.init.recovery_pk, state);
+    if r.ok {
+        session::arm();
+    }
+    r
 }
 
 #[allow(dead_code)]

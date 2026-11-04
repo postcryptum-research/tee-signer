@@ -326,6 +326,12 @@ pub struct StatusResponse {
     pub pending_owner: Option<u32>,
     /// Weak-clock label for this network (signet/regtest), empty on mainnet.
     pub clock_label: String,
+    /// REQ-r7: this enclave load has been approved by the owner (volatile; false after every load).
+    pub boot_armed: bool,
+    /// REQ-r7: the challenge drawn at this load, which the owner's `Arm` must carry.
+    pub boot_challenge: [u8; 32],
+    /// REQ-r7: built with the `auto-arm` feature (the pause after a restart compiled OUT; its own MRENCLAVE).
+    pub auto_arm: bool,
 }
 
 impl StatusResponse {
@@ -358,7 +364,10 @@ impl StatusResponse {
             .option(self.pending_owner.as_ref(), |e, a| {
                 e.u32(*a);
             })
-            .str(&self.clock_label);
+            .str(&self.clock_label)
+            .bool(self.boot_armed)
+            .fixed(&self.boot_challenge)
+            .bool(self.auto_arm);
         e.finish()
     }
     /// Strict decode.
@@ -388,6 +397,9 @@ impl StatusResponse {
             pending: d.option(|d| Ok((d.fixed()?, d.u32()?)))?,
             pending_owner: d.option(|d| d.u32())?,
             clock_label: d.str(128)?,
+            boot_armed: d.bool()?,
+            boot_challenge: d.fixed()?,
+            auto_arm: d.bool()?,
         };
         d.finish()?;
         Ok(r)

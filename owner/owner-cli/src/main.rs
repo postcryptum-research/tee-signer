@@ -387,6 +387,7 @@ fn sign_message(key: &OpenKey, msg: &mut Message) -> Result<()> {
         | Message::Rearm { sig, .. }
         | Message::RotateOwner { sig, .. }
         | Message::Recover { sig, .. }
+        | Message::Arm { sig, .. }
         | Message::WitnessToken { sig, .. } => *sig = s,
     }
     Ok(())
@@ -740,6 +741,9 @@ impl Node {
 struct Signerd {
     url: String,
     token: String,
+    /// The owner's wallet record on THIS machine (C-R7-5): every status read raises its
+    /// `last_seen_seq`, so `arm` can tell a rolled-back enclave from the one the owner last saw.
+    record: Option<PathBuf>,
 }
 
 impl Signerd {
@@ -749,6 +753,16 @@ impl Signerd {
         let v: serde_json::Value = r.json()?;
         if !status.is_success() {
             bail!("signerd {path}: {status} {v}");
+        }
+        if path == "/v1/status" {
+            if let (Some(rec), Some(seq)) = (&self.record, v["seq"].as_u64()) {
+                if let Err(e) = note_seq(rec, seq) {
+                    eprintln!("warning: could not record the sequence in {}: {e}", rec.display());
+                }
+            }
+            if v["auto_arm"].as_bool() == Some(true) {
+                eprintln!("AUTO_ARM: this enclave was built WITHOUT the pause after a restart — rollback protection OFF; the loss bound against root is the hot-wallet float (REQ-r7 §2.6)");
+            }
         }
         Ok(v)
     }
@@ -785,6 +799,33 @@ struct AttestRecord {
     quote_sha256: String,
 }
 
+/// Raise the record's `last_seen_seq` to `seq` (never lowered here; `arm --i-have-investigated`
+/// is the one place it is reset, and that is logged in the record).
+fn note_seq(path: &Path, seq: u64) -> Result<()> {
+    let mut w: WalletRecord = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+    if seq > w.last_seen_seq.unwrap_or(0) {
+        w.last_seen_seq = Some(seq);
+        std::fs::write(path, serde_json::to_string_pretty(&w)?)?;
+    }
+    Ok(())
+}
+
+/// `T2-release/AUTO_ARM` → `T2-release`: the tier the hardware gives, without the build flag.
+fn tier_base(tier: &str) -> &str {
+    tier.split('/').next().unwrap_or(tier)
+}
+
+/// The enclave says it was built with the pause compiled out (REQ-r7 §2.6): own MRENCLAVE, never
+/// ceremony-signed, labeled in every attestation (C-R7-7).
+fn is_auto_arm(tier: &str) -> bool {
+    tier.split('/').any(|p| p == "AUTO_ARM")
+}
+
+fn now_utc() -> String {
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    format!("{t}")
+}
+
 #[derive(Serialize, Deserialize)]
 struct WalletRecord {
     network: String,
@@ -815,6 +856,14 @@ struct WalletRecord {
     recovery_blob_hex: String,
     owner_pk: String,
     recovery_pk: String,
+    /// REQ-r7 (C-R7-5): the highest receipt sequence this machine has seen from the enclave. Lives
+    /// here, on the owner's machine, never on the server; `arm` refuses when the enclave remembers less.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_seen_seq: Option<u64>,
+    /// Every time the owner armed over a sequence regression with `--i-have-investigated`: an
+    /// owner-attested acceptance of a rollback, kept on record (unix time, enclave seq, last seen).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rollback_acceptances: Option<Vec<String>>,
 }
 
 // ---------------------------------------------------------------- CLI
@@ -830,6 +879,10 @@ struct Cli {
     token: Option<String>,
     #[arg(long, env = "SIGNERD_TOKEN_FILE", global = true)]
     token_file: Option<PathBuf>,
+    /// The wallet record on this machine (`init --out`); every status read raises its `last_seen_seq`,
+    /// which `arm` needs to tell a rolled-back enclave from the one you last saw (REQ-r7, C-R7-5).
+    #[arg(long, env = "OWNER_WALLET", global = true)]
+    wallet_record: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -890,6 +943,10 @@ enum Cmd {
         accept: Vec<String>,
         #[arg(long, default_value = "https://api.trustedservices.intel.com")]
         pccs: String,
+        /// Accept an enclave built with AUTO_ARM (the pause after a restart compiled out; REQ-r7 §2.6).
+        /// Without it, `init` refuses to write a record for such an enclave.
+        #[arg(long)]
+        accept_auto_arm: bool,
     },
     /// Fill a mandate JSON's chain.checkpoint from a node (read-only RPC) or an Esplora API, and print the canonical hex + hash.
     PolicyBuild {
@@ -940,6 +997,17 @@ enum Cmd {
         key: String,
         #[arg(long)]
         seq: u64,
+    },
+    /// Approve THIS enclave load (REQ-r7): after every restart the enclave signs nothing until the owner
+    /// signs the challenge it drew at that load. Needs `--wallet-record` (the sequence you last saw lives
+    /// there, on this machine); refuses when the enclave remembers less than that — the signature of a
+    /// state rollback — unless `--i-have-investigated` is given, which is logged in the record.
+    Arm {
+        #[arg(long)]
+        key: String,
+        /// Arm over a sequence regression anyway (an owner-attested acceptance of a rollback; logged).
+        #[arg(long)]
+        i_have_investigated: bool,
     },
     /// Hand the owner role to another key (a timelocked loosening, signed by the current owner).
     RotateOwner {
@@ -1131,7 +1199,7 @@ fn client(cli: &Cli) -> Result<Signerd> {
         (None, Some(f)) => std::fs::read_to_string(f)?.trim().to_string(),
         _ => bail!("--token or --token-file"),
     };
-    Ok(Signerd { url: cli.signerd.trim_end_matches('/').to_string(), token })
+    Ok(Signerd { url: cli.signerd.trim_end_matches('/').to_string(), token, record: cli.wallet_record.clone() })
 }
 
 fn submit_message(sd: &Signerd, msg: &Message) -> Result<()> {
@@ -1201,7 +1269,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&a)?);
             eprintln!("ATTESTED: generated on YubiKey {} (firmware {}), PIN {} / touch {}, chain {}", a.serial, a.firmware, a.pin_policy, a.touch_policy, a.chain.join(" <- "));
         }
-        Cmd::Init { network, owner, recovery_pk, out, expect_mrenclave, signing_key_label, accept, pccs } => {
+        Cmd::Init { network, owner, recovery_pk, out, expect_mrenclave, signing_key_label, accept, pccs, accept_auto_arm } => {
             let sd = client(&cli)?;
             let (opk, owner_label) = owner_pk_of_locator(owner)?;
             let owner_pk = &hex::encode(opk);
@@ -1242,11 +1310,19 @@ fn main() -> Result<()> {
                 recovery_blob_hex: r["recovery_blob_hex"].as_str().unwrap_or("").into(),
                 owner_pk: owner_pk.clone(),
                 recovery_pk: recovery_pk.clone(),
+                last_seen_seq: Some(0),
+                rollback_acceptances: None,
             };
+            if is_auto_arm(&rec.tier) {
+                eprintln!("AUTO_ARM: this enclave was built with the pause after a restart compiled OUT (REQ-r7 §2.6). Rollback protection is OFF: the loss bound against root is the hot-wallet float. It has its own MRENCLAVE and is never ceremony-signed.");
+                if !*accept_auto_arm {
+                    bail!("REFUSED: not writing a record for an AUTO_ARM enclave without --accept-auto-arm (the enclave holds a fresh key set: wipe signerd's state dir if you did not mean this)");
+                }
+            }
             // C-R5-6: on T2 the verifier decides whether a record exists at all. The enclave has
             // generated its keys either way; a failed attestation means: do not keep, do not fund —
             // wipe the daemon's state and start over.
-            if rec.tier == "T2-release" {
+            if tier_base(&rec.tier) == "T2-release" {
                 println!("T2 card: running the verifier before writing the record (C-R5-6)");
                 if let Err(e) = attest_record(&sd, &mut rec, expect_mrenclave.clone(), None, signing_key_label.clone(), accept, pccs, true, None) {
                     bail!("REFUSED: attestation failed — {e}\nThe wallet record is NOT written. The enclave holds a fresh, untrusted key set: wipe signerd's state dir and initialise again; do not fund.");
@@ -1454,7 +1530,53 @@ fn main() -> Result<()> {
         }
         Cmd::Status => {
             let sd = client(&cli)?;
-            println!("{}", serde_json::to_string_pretty(&sd.get("/v1/status")?)?);
+            let st = sd.get("/v1/status")?;
+            println!("{}", serde_json::to_string_pretty(&st)?);
+            if st["initialised"].as_bool() == Some(true) && st["boot_armed"].as_bool() == Some(false) {
+                eprintln!("NOT ARMED: the enclave was (re)started and signs nothing until you approve this load: owner-cli arm --key <owner> --wallet-record <wallet.json> (REQ-r7)");
+            }
+        }
+        Cmd::Arm { key, i_have_investigated } => {
+            let sd = client(&cli)?;
+            let rec_path = cli.wallet_record.clone().ok_or_else(|| anyhow!("arm needs --wallet-record <wallet.json> (or OWNER_WALLET): the sequence you last saw lives there, on this machine (C-R7-5)"))?;
+            // the record FIRST: a status read raises its last_seen_seq to the enclave's, and the whole
+            // point of this command is to compare the enclave against what the owner saw BEFORE
+            let mut w: WalletRecord = serde_json::from_str(&std::fs::read_to_string(&rec_path)?)?;
+            let last = w.last_seen_seq.unwrap_or(0);
+            let st = sd.get("/v1/status")?;
+            let seq = st["seq"].as_u64().unwrap_or(0);
+            let armed = st["boot_armed"].as_bool().unwrap_or(false);
+            let challenge_hex = st["boot_challenge"].as_str().unwrap_or("").to_string();
+            let session = st["session_id"].as_str().unwrap_or("").to_string();
+            if armed {
+                bail!("this enclave load is already armed (session {session}); nothing to do");
+            }
+            println!("enclave load {session}: boot challenge {challenge_hex}");
+            println!("enclave remembers seq {seq}; you last saw seq {last}");
+            let mut seq_seen = last;
+            if seq < last {
+                eprintln!("ROLLBACK SIGNATURE: the enclave remembers {} fewer operations than you last saw (it has {seq}, you saw {last}). This is what a restored older state file looks like. Do NOT arm unless you know why (a restore from backup you did yourself, a crash between an operation and this record).", last - seq);
+                if !*i_have_investigated {
+                    bail!("REFUSED to arm over a sequence regression; after investigating, repeat with --i-have-investigated (this acceptance is logged in the record)");
+                }
+                let line = format!("{} enclave seq {seq} < last seen {last}: armed with --i-have-investigated", now_utc());
+                eprintln!("ACCEPTED BY THE OWNER and logged: {line}");
+                w.rollback_acceptances.get_or_insert_with(Vec::new).push(line);
+                w.last_seen_seq = Some(seq);
+                std::fs::write(&rec_path, serde_json::to_string_pretty(&w)?)?;
+                seq_seen = seq;
+            }
+            let boot_challenge = <[u8; 32]>::try_from(hex::decode(&challenge_hex)?.as_slice()).map_err(|_| anyhow!("boot challenge is not 32 bytes"))?;
+            let okey = open_locator(key)?;
+            let mut msg = Message::Arm { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, boot_challenge, seq_seen, sig: [0; 64] };
+            sign_message(&okey, &mut msg)?;
+            submit_message(&sd, &msg)?;
+            let st = sd.get("/v1/status")?;
+            if st["boot_armed"].as_bool() == Some(true) {
+                println!("armed: this load (session {session}) signs inside the mandate again");
+            } else {
+                bail!("the enclave did not report armed after the message was accepted");
+            }
         }
         Cmd::RecoveryVerify { wallet, recovery_key, print_mnemonic } => {
             let w: WalletRecord = serde_json::from_str(&std::fs::read_to_string(wallet)?)?;
@@ -1720,8 +1842,11 @@ fn attest_record(
     if !signer_core::sign::verify_digest_secp(&secp, &idpk, &card.digest(), &card_sig) {
         bail!("step 5 refused: the card's identity signature does not verify");
     }
-    if card.tier != "T2-release" {
+    if tier_base(&card.tier) != "T2-release" {
         bail!("step 5 refused: card tier is {}, not T2-release", card.tier);
+    }
+    if is_auto_arm(&card.tier) {
+        eprintln!("AUTO_ARM: the attested card says the pause after a restart is compiled OUT — rollback protection OFF, loss bound against root = hot-wallet float; this MRENCLAVE is not the pinned pause build and is never ceremony-signed (REQ-r7 §2.6, C-R7-7)");
     }
     println!("step 5 ok: card signed by identity {}, tier {}", w.identity_pk, card.tier);
 
