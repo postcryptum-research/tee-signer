@@ -44,143 +44,210 @@ English: [`FAQ.md`](FAQ.md). Картина на одной странице: [`
 Продукт работает на уровне **T2**: SGX с Flexible Launch Control и аттестацией DCAP — Azure DCsv3
 (на нём проект и работает) или Xeon E-2200+/Ice Lake+ с FLC, включённым в прошивке. (Дешёвые
 серверы с SGX1 без FLC — это **сборочно-тестовый уровень T1** проекта: анклав там запускается,
-но не для денег — root читает debug-анклав.) План: подписанный проектом анклав и `signerd` как
-sidecar вашего стека btcpayserver-docker; ключ владельца в TPM 2.0 ноутбука (YubiKey — сценарий
-2; зашифрованный файл на USB — допустимый минимум); ключ восстановления — зашифрованный файл на
-двух USB-носителях в двух местах.
+но не для денег — root читает debug-анклав.)
 
-**1. Проверьте железо.** Штатный драйвер SGX в ядре даёт `/dev/sgx_enclave` и
+Три вещи, порознь, и между ними не ходит ничего, кроме файлов:
+
+- **ваш ноутбук** держит ключ владельца и ключ восстановления и запускает `owner-cli`;
+- **сервер** запускает BTCPay, sidecar с анклавом и `signerd`;
+- **каталог обмена на каждой стороне** держит то, что переносится: `~/tee-owner/exchange/` на
+  ноутбуке, `~/tee-signer-exchange/` на сервере (sidecar видит его как `/exchange`).
+
+Каждый блок ниже говорит, где он выполняется. Туннеля нет: `owner-cli` никогда не обращается к
+серверу, сервер никогда не обращается к ноутбуку, файл переезжает `scp` в любую сторону. Каждая
+сторона заканчивает свой шаг и отдаёт файл; на этом работа одного участника кончается, а другого
+начинается.
+
+**1. Сервер: железо и sidecar.** Штатный драйвер SGX в ядре даёт `/dev/sgx_enclave` и
 `/dev/sgx_provision`; работает `aesmd` с провайдером DCAP-quote (на Azure — `az-dcap-client`);
 `cpuid`, лист 7, показывает FLC. На этом железе анклав запускается в **не-debug** режиме, и его
-идентичность можно аттестовать — именно это делает сид нечитаемым для root.
-
-**2. Запустите sidecar.** Анклав собирается воспроизводимо и подписывается офлайн-церемониальным
-ключом проекта на сборочной машине, никогда на ноде (сценарий 2, шаг 1, рассказывает, как
-воспроизвести его самому); на ноду попадает образ sidecar. На ноде, с T2-фрагментом и — на
-маленьком диске — фрагментом стека с обрезанной нодой:
+идентичность можно аттестовать — именно это делает сид нечитаемым для root. Анклав собирается
+воспроизводимо и подписывается офлайн-церемониальным ключом проекта на сборочной машине, никогда
+на сервере (сценарий 2 рассказывает, как воспроизвести его самому); на сервер попадает образ
+sidecar.
 
 ```sh
-docker load -i signerd-t2-image.tar.gz      # образ sidecar со сборочной машины (анклав + signerd)
-TEE_FRAGMENT=opt-add-tee-signer-t2.custom TEE_EXTRA_FRAGMENTS=opt-save-storage-xxs btcpay/docker/stack.sh gen && btcpay/docker/stack.sh up
-btcpay/docker/stack.sh install-plugin       # DLL плагина, собранная в контейнере dotnet SDK
+mkdir -p ~/tee-signer-exchange
+docker load -i signerd-t2-image.tar.gz
+TEE_FRAGMENT=opt-add-tee-signer-t2.custom TEE_EXTRA_FRAGMENTS=opt-save-storage-xxs btcpay/docker/stack.sh gen
+btcpay/docker/stack.sh up
+btcpay/docker/stack.sh install-plugin
 ```
 
-**3. Откройте дверь с ноутбука.** Sidecar слушает только loopback сервера (`127.0.0.1:7390`);
-наружу, на сетевой интерфейс, ничего не опубликовано, через nginx ничего не идёт. Все операции
-владельца ниже выполняет `owner-cli` **на вашем ноутбуке**, и ему нужно дотянуться до этого
-порта, поэтому вы пробрасываете его через тот же SSH-доступ, которым администрируете сервер:
+**2. Ноутбук: ключи.** Приватные ключи рождаются здесь и никуда не уходят; переезжают только
+публичные. На Linux нужны `libtss2-dev` для TPM и `pcscd` + `libpcsclite-dev` для YubiKey;
+инструмент собирается командой `cd owner/owner-cli && cargo build`.
 
 ```sh
-ssh -N -L 7390:127.0.0.1:7390 you@your-server        # держите этот терминал открытым; Ctrl-C закрывает туннель
+mkdir -p ~/tee-owner/exchange
+cd owner/owner-cli/target/debug
+./owner-cli keygen --role recovery --out /media/USB1/recovery.key
+./owner-cli keygen --role owner --backend tpm --handle 0x81000100
+./owner-cli pubkey --key tpm:0x81000100 > ~/tee-owner/exchange/owner.pub
+./owner-cli pubkey --key /media/USB1/recovery.key > ~/tee-owner/exchange/recovery.pub
 ```
 
-Пока он работает, `http://127.0.0.1:7390` *на ноутбуке* — это sidecar на сервере. Это
-единственный вход, и так задумано: ключ владельца на сервер не ездит никогда, ездят только
-подписанные им сообщения. Ещё `signerd` требует bearer-токен в каждом запросе; он сгенерировал
-его при первом старте в своём томе состояния. Скопируйте его на ноутбук один раз:
+Ключ восстановления спрашивает пароль и ложится на два USB-носителя в двух местах; ключ владельца
+живёт внутри TPM ноутбука (YubiKey — сценарий 2; зашифрованный файл на третьем носителе —
+допустимый минимум). Запишите пароли в надёжное место: восстановить их нельзя.
+
+Перенесите два публичных ключа на сервер:
 
 ```sh
-ssh you@your-server 'docker exec tee-btcpay-tee-signer-1 cat /var/lib/signerd/token' > ./token && chmod 600 ./token
+scp ~/tee-owner/exchange/owner.pub ~/tee-owner/exchange/recovery.pub you@your-server:tee-signer-exchange/
 ```
 
-Токен ограничивает частоту запросов и не пускает посторонние контейнеры; секретом в модели угроз
-он не является (атакующий с токеном всё равно связан мандатом).
-
-**4. Создайте ключи — на ноутбуке, никогда на сервере.** `owner-cli` собирается командой
-`cd owner/owner-cli && cargo build` (на Linux нужен `libtss2-dev` для TPM и `pcscd` +
-`libpcsclite-dev` для YubiKey).
+**3. Сервер: `init`.** Что физически происходит: два публичных ключа попадают в анклав. Внутри
+256 бит аппаратной случайности превращаются в мнемонику BIP39 из 24 слов и мастер-ключ BIP32;
+выводится счёт `m/84'/1'/0'`; создаётся второй, маленький ключ — **печать** анклава, которой он
+подписывает карточку идентичности и квитанции и никогда транзакции; мнемоника шифруется на
+публичный ключ восстановления (**блоб восстановления**); всё это запечатывается под этот анклав и
+записывается в том состояния sidecar. Ответ — xpub счёта, отпечаток мастер-ключа, публичный
+ключ печати, подписанная карточка идентичности и блоб восстановления — это файл. Сида в нём нет,
+и ничто на сервере не может подписывать без анклава.
 
 ```sh
-B=owner/owner-cli/target/debug/owner-cli
-$B keygen --role recovery --out /media/$USER/USB1/recovery.key     # спросит пароль; скопируйте файл и на USB2
-# ключ владельца, один из вариантов:
-$B keygen --role owner --backend tpm --handle 0x81000100            # внутри TPM ноутбука; занятый handle отвергается
-ykman piv keys generate -a ECCP256 --pin-policy ALWAYS --touch-policy ALWAYS 9a 9a.pub.pem   # на YubiKey 5
-$B keygen --role owner --out /media/$USER/USB3/owner.key            # минимум: зашифрованный файл, вне сервера
-$B pubkey --key tpm:0x81000100        # или piv:9a, или путь к файлу — печатает публичный ключ
+docker exec tee-btcpay-tee-signer-1 signerd init --state-dir /var/lib/signerd --network signet --owner-pk-file /exchange/owner.pub --recovery-pk-file /exchange/recovery.pub --out /exchange/init-response.json
 ```
 
-Запишите пароли в надёжное место: восстановить их нельзя. Ключ владельца и ключ восстановления —
-на **разных носителях**; именно это разделение делает кражу ключа владельца ограниченной.
-
-**5. Инициализируйте кошелёк** — один раз. Что физически происходит: `owner-cli` на ноутбуке
-читает *публичный* ключ владельца из TPM (без пароля, ничего не подписывается) и *публичный*
-ключ восстановления из файла и отправляет оба публичных ключа через туннель в sidecar. Sidecar
-передаёт их в анклав. Внутри анклава: 256 бит аппаратной случайности превращаются в мнемонику
-BIP39 из 24 слов и мастер-ключ BIP32; выводится счёт `m/84'/1'/0'`; создаётся второй,
-маленький ключ — **печать** анклава, которой он подписывает карточку и квитанции и никогда
-транзакции; мнемоника шифруется на публичный ключ восстановления (**блоб
-восстановления**); всё это запечатывается под этот анклав и через sidecar записывается в его том
-состояния. Обратно через туннель приходит только публичное: xpub счёта, отпечаток мастер-ключа,
-публичный ключ печати, подписанная **карточка идентичности** и блоб восстановления. Сид
-через туннель открытым не проходит никогда, и ничто на ноутбуке подписывать не может. Мандата у
-анклава ещё нет, поэтому до шага 7 он ничего не подпишет.
+На T2 вам нужно ещё и доказательство идентичности анклава. Nonce для него ваш, выбранный на
+ноутбуке, чтобы quote, сделанный для кого-то другого, был отвергнут:
 
 ```sh
-export SIGNERD_URL=http://127.0.0.1:7390 SIGNERD_TOKEN_FILE=./token      # туннель и токен из шага 3
-$B init --network signet --owner tpm:0x81000100 --recovery-pk $($B pubkey --key /media/$USER/USB1/recovery.key) --out wallet.json \
-   --expect-mrenclave <MRENCLAVE релиза> --accept-advisory INTEL-SA-00615:2026-11-03:reviewed
+openssl rand -hex 32 > ~/tee-owner/exchange/nonce.txt
+scp ~/tee-owner/exchange/nonce.txt you@your-server:tee-signer-exchange/
+```
+
+и на сервере:
+
+```sh
+docker exec tee-btcpay-tee-signer-1 signerd quote --state-dir /var/lib/signerd --nonce-file /exchange/nonce.txt --out /exchange/quote.json
+```
+
+Перенесите оба ответа на ноутбук:
+
+```sh
+scp you@your-server:tee-signer-exchange/init-response.json ~/tee-owner/exchange/
+scp you@your-server:tee-signer-exchange/quote.json ~/tee-owner/exchange/
+```
+
+**4. Ноутбук: проверить ответ, записать карточку кошелька, проверить блоб восстановления.** На
+этом шаге ничего никуда не отправляется. `init --response` проверяет подпись карточки
+идентичности и что карточка называет возвращённый xpub, а с quote запускает верификатор
+аттестации **до** того, как что-либо записать: цепочка сертификатов до Intel SGX Root CA,
+вшитого в `owner-cli`, сброшенный бит DEBUG, MRENCLAVE равен релизному (его печатает сборка),
+MRSIGNER равен церемониальному ключу, подпись карточки, **ваш** nonce и статус TCB от Intel
+(рассмотренное вами платформенное advisory принимается по имени, с датой и причиной, и это
+принятие — часть записи). Сбой на любом шаге — отказ с именем шага; запись не пишется, кошелёк вы
+не финансируете.
+
+```sh
+cd owner/owner-cli/target/debug
+./owner-cli init --response ~/tee-owner/exchange/init-response.json --network signet --owner tpm:0x81000100 --recovery-pk-file ~/tee-owner/exchange/recovery.pub --out ~/tee-owner/wallet.json --expect-mrenclave <MRENCLAVE релиза> --quote ~/tee-owner/exchange/quote.json --nonce-file ~/tee-owner/exchange/nonce.txt --accept-advisory INTEL-SA-00615:2026-11-03:reviewed
+./owner-cli recovery-verify --wallet ~/tee-owner/wallet.json --recovery-key /media/USB1/recovery.key
 ```
 
 `--owner` — это *локатор*, никогда не сырой ключ: `tpm:<handle>`, `piv:<slot>` (слот YubiKey
 сначала проходит аттестацию до корня Yubico и отвергается, если она не сходится) или путь к
-файлу. На T2 `init` запускает верификатор аттестации **до** того, как что-либо записать: цепочка
-сертификатов до Intel SGX Root CA, вшитого в `owner-cli`, сброшенный бит DEBUG, MRENCLAVE равен
-переданному значению (релизному, его печатает сборка), MRSIGNER равен церемониальному ключу,
-подпись карточки идентичности, nonce и статус TCB от Intel (рассмотренное вами платформенное
-advisory принимается по имени, с датой и причиной, и это принятие — часть записи). Сбой на любом
-шаге — отказ с именем шага; запись не пишется, кошелёк вы не финансируете. При успехе печатается
-уровень (`T2-release`), xpub, отпечаток и публичный ключ печати, и на ноутбуке пишется
-`wallet.json` — карточка идентичности вместе с блобом восстановления. Храните его; каждая
-следующая команда его читает.
+файлу. `init` печатает уровень (`T2-release`), xpub, отпечаток и публичный ключ печати и пишет
+`~/tee-owner/wallet.json` — карточку идентичности вместе с блобом восстановления. Храните его;
+каждая следующая команда его читает. `recovery-verify` расшифровывает блоб ключом
+восстановления, выводит из мнемоники xpub, сравнивает с тем, что сообщил анклав, и печатает только
+«сходится / не сходится» — никогда сами слова. Сделайте это до того, как придут деньги.
 
-Затем докажите, что блоб восстановления годный, **до того**, как придут деньги:
+**5. Импортируйте кошелёк в BTCPay как холодный.** В настройке кошелька магазина импортируйте
+`[<fingerprint>/84'/1'/0']<xpub>` (signet; оба значения есть в `wallet.json`) как watch-only.
+Страница настроек плагина показывает, совпадает ли xpub подписанта с кошельком магазина; оба пути
+подписи отказывают по имени, если нет. «Показать сид», PayJoin и штатный обработчик выплат на
+холодном кошельке отключаются сами — это gate (a) e2e-набора, а gate (b) проверяет, что в базе
+NBXplorer нет ключевого материала.
 
-```sh
-$B recovery-verify --wallet wallet.json --recovery-key /media/$USER/USB1/recovery.key
-```
+**6. Мандат: написан и подписан на ноутбуке, отдан серверу.** Возьмите за основу пример в
+[`POLICY.md`](POLICY.md) §2: дескриптор холодного хранилища как *доверенный* адрес со своими
+лимитами, лимиты `unlisted` для выплат покупателям (например `maxPerTx` 1 000 000 сат,
+`maxPerWindow` 5 000 000 сат), `limits.window` в 144 блока, границы комиссии,
+`validity.notAfterHeight` примерно на год вперёд, `timelockBlocks` 144. Подписанное сообщение
+называет анклав и следующий nonce, поэтому ноутбуку сначала нужен файл статуса с сервера.
 
-Это выполняется целиком на ноутбуке (туннель не нужен; в идеале на машине без сети): блоб из
-`wallet.json` расшифровывается ключом восстановления, из мнемоники выводится xpub, он
-сравнивается с xpub, который сообщил анклав, и печатается только «сходится / не сходится» —
-никогда сами слова.
-
-**6. Импортируйте кошелёк в BTCPay как холодный.** В настройке кошелька магазина импортируйте
-`[<fingerprint>/84'/1'/0']<xpub>` (signet) как watch-only. Страница настроек плагина показывает,
-совпадает ли xpub подписанта с кошельком магазина; оба пути подписи отказывают по имени, если
-нет. «Показать сид», PayJoin и штатный обработчик выплат на холодном кошельке отключаются сами —
-это gate (a) e2e-набора, а gate (b) проверяет, что в базе NBXplorer нет ключевого материала.
-
-**7. Напишите и установите мандат.** Возьмите за основу пример в [`POLICY.md`](POLICY.md) §2:
-дескриптор холодного хранилища как *доверенный* адрес со своими лимитами, лимиты `unlisted` для
-выплат покупателям (например `maxPerTx` 1 000 000 сат, `maxPerWindow` 5 000 000 сат),
-`limits.window` в 144 блока, границы комиссии, `validity.notAfterHeight` примерно на год вперёд,
-`timelockBlocks` 144.
+На сервере:
 
 ```sh
-$B policy-build --json mandate.json --esplora https://mempool.space/signet/api --write   # читает вершину signet, заполняет chain.checkpoint, печатает хэш
-$B policy-show  --json mandate.json                                   # diff с установленным (пока пусто)
-$B policy-sign  --json mandate.json --key tpm:0x81000100              # nonce 0 = установка; показывает все поля, потом подписывает
-$B status                                                             # installed: true, nonce 0, best_height идёт за цепочкой
+docker exec tee-btcpay-tee-signer-1 signerd status --state-dir /var/lib/signerd --out /exchange/status.json
 ```
 
-**8. Укажите BTCPay на подписанта.** Страница настроек плагина: URL signerd
-`http://tee-signer:7390` (имя sidecar в стеке), токен, минимум подтверждений, запасная ставка
-комиссии. Включите обработчик выплат **TEE signer** для on-chain-выплат магазина; для ручных
-отправок — **Send through the enclave**. Создайте небольшой pull payment и выплату: обработчик
-соберёт PSBT, анклав подпишет, и `seq` в `status` — счётчик подписей анклава — вырастет на единицу.
+Перенесите его, подпишите, перенесите сообщение обратно:
+
+```sh
+scp you@your-server:tee-signer-exchange/status.json ~/tee-owner/exchange/
+cd owner/owner-cli/target/debug
+./owner-cli policy-build --json ~/tee-owner/mandate.json --esplora https://mempool.space/signet/api --write
+./owner-cli --status-file ~/tee-owner/exchange/status.json --wallet-record ~/tee-owner/wallet.json --out ~/tee-owner/exchange/policy-install.msg policy-sign --json ~/tee-owner/mandate.json --key tpm:0x81000100
+scp ~/tee-owner/exchange/policy-install.msg you@your-server:tee-signer-exchange/
+```
+
+`policy-build` читает вершину signet с публичного Esplora (для ценности — собственная нода,
+`--node-rpc URL --node-cookie FILE`) и заполняет `chain.checkpoint`; `policy-sign` показывает
+все поля, подписывает канонические байты ключом владельца (nonce 0 = установка) и пишет
+сообщение. На сервере файл уходит в анклав, а его ответ возвращается файлом:
+
+```sh
+docker exec tee-btcpay-tee-signer-1 signerd submit --state-dir /var/lib/signerd --file /exchange/policy-install.msg --out /exchange/policy-install.result.json
+docker exec tee-btcpay-tee-signer-1 signerd status --state-dir /var/lib/signerd --out /exchange/status.json
+```
+
+В `policy-install.result.json` стоит `ok` или `REFUSED` с причинами анклава; в `status.json` —
+`installed: true`. Переносите `status.json` обратно всякий раз, когда хотите обновить копию на
+ноутбуке.
+
+**7. Укажите BTCPay на подписанта.** Страница настроек плагина: URL signerd
+`http://tee-signer:7390` (имя sidecar в стеке), токен (лежит в томе состояния sidecar:
+`docker exec tee-btcpay-tee-signer-1 cat /var/lib/signerd/token`), минимум подтверждений, запасная
+ставка комиссии. Включите обработчик выплат **TEE signer** для on-chain-выплат магазина; для
+ручных отправок — **Send through the enclave**. Создайте небольшой pull payment и выплату:
+обработчик соберёт PSBT, анклав подпишет, и `seq` в статусе — счётчик подписей анклава —
+вырастет на единицу. Токен ограничивает частоту запросов и не пускает посторонние контейнеры;
+секретом в модели угроз он не является (атакующий с токеном всё равно связан мандатом).
+
+**8. После любого перезапуска подписанта** — перезагрузка, обновление, падение — анклав ничего
+не подписывает, пока вы не подтвердите этот запуск (R7). В файле статуса стоит `boot_armed:
+false` и вызов этого запуска; страница плагина показывает то же. Подтверждение — такой же шаг, как
+любой другой: файл статуса на ноутбук, подписанное сообщение обратно.
+
+На сервере:
+
+```sh
+docker exec tee-btcpay-tee-signer-1 signerd status --state-dir /var/lib/signerd --out /exchange/status.json
+```
+
+На ноутбуке:
+
+```sh
+scp you@your-server:tee-signer-exchange/status.json ~/tee-owner/exchange/
+cd owner/owner-cli/target/debug
+./owner-cli --status-file ~/tee-owner/exchange/status.json --wallet-record ~/tee-owner/wallet.json --out ~/tee-owner/exchange/arm.msg arm --key tpm:0x81000100
+scp ~/tee-owner/exchange/arm.msg you@your-server:tee-signer-exchange/
+```
+
+`arm` сравнивает номер подписи анклава с наибольшим, который видел ваш ноутбук (он хранится в
+`wallet.json`), и отказывает, если анклав помнит меньше — это признак восстановленного старого
+состояния; переопределить это можно только письменно, и это записывается в карточку. На сервере:
+
+```sh
+docker exec tee-btcpay-tee-signer-1 signerd submit --state-dir /var/lib/signerd --file /exchange/arm.msg --out /exchange/arm.result.json
+```
+
+Выплаты продолжаются. Перезагрузка ночью — пауза до вашего утра, никогда не потеря.
 
 **Что вы получаете:** сид никогда не файл; украденный вход администратора, плохой плагин или
 взломанный контейнер BTCPay могут потратить максимум бюджет неизвестных адресов текущего окна, с
-лимитом на транзакцию — этот лимит окна и есть потолок ущерба. Разморозить, отменить или
-ужесточить вы можете с ноутбука ключом владельца; для рутинных выплат никто не должен
-присутствовать.
+лимитом на транзакцию — этот лимит окна и есть потолок ущерба. Root на сервере не может ни
+прочитать сид, ни повторить выплаты окна, пока вас нет: для этого нужен перезапуск, а
+перезапущенный анклав ждёт вашего ключа. Мандат, разморозку и отмену вы делаете, отдавая серверу
+подписанный файл; для рутинных выплат никто не должен присутствовать.
 
-**Что нужно знать:** root на сервере не может ни прочитать сид, ни повторить выплаты окна, пока
-вас нет: для этого нужен перезапуск, а перезапущенный анклав ничего не подписывает, пока вы не
-подтвердите запуск своим ключом (R7; `owner-cli status` пишет `NOT ARMED`, `owner-cli arm`
-подтверждает). После любой перезагрузки сервера выплаты ждут этого подтверждения — в ваше время.
-Собственная T2-нода проекта — общая VM в Azure; продуктивному развёртыванию нужна своя. Сегодня
+**Что нужно знать:** собственная T2-нода проекта — общая VM в Azure; продуктивному развёртыванию
+нужна своя. Страница плагина — естественное место для файла статуса и вставленного ответа, это
+следующий шаг, чтобы операции владельца не требовали вообще никакой оболочки на сервере. Сегодня
 только signet.
 
 ---
@@ -189,43 +256,52 @@ $B status                                                             # installe
 
 Всё из сценария 1 плюс три вещи ниже. Что ещё не сделано — названо в конце.
 
-**1. Анклав собирается воспроизводимо и подписывается офлайн, никогда на ноде.** Сборка идёт в
-закреплённом контейнере на сборочной машине (`docker/build-enclave.sh` с `RELEASE=1`); две
-независимые сборки дают один и тот же MRENCLAVE, который скрипт печатает в конце каждой сборки
-(`MRENCLAVE: …`; это `enclave_css.body.enclave_hash.m` в `sigstruct.dump` среди результатов) —
-именно это значение `init` и `attest` закрепляют ниже. Подпись — церемония в два шага: сборка выдаёт
-хэш анклава, церемониальный ключ (RSA-3072, офлайн, под паролем) подписывает его на машине
-владельца (`scripts/ceremony-sign.sh`), сборочная машина собирает подписанный анклав. Makefile
-отказывает сборке, чей MRSIGNER не равен закреплённому церемониальному ключу (gate 7), чей код
-содержит опрос CPU во время выполнения или чьё число LVI-митигаций ниже порога.
+**1. Воспроизведите сборку сами.** Сборка идёт в закреплённом контейнере на сборочной машине
+(`docker/build-enclave.sh` с `RELEASE=1`); две независимые сборки дают один и тот же MRENCLAVE,
+который скрипт печатает в конце каждой сборки (`MRENCLAVE: …`; это
+`enclave_css.body.enclave_hash.m` в `sigstruct.dump` среди результатов) — именно это значение
+`init` и `attest` закрепляют. Подпись — церемония в два шага: сборка выдаёт хэш анклава,
+церемониальный ключ (RSA-3072, офлайн, под паролем) подписывает его на машине владельца
+(`scripts/ceremony-sign.sh`), сборочная машина собирает подписанный анклав. Makefile отказывает
+сборке, чей MRSIGNER не равен закреплённому церемониальному ключу (gate 7), чей код содержит опрос
+CPU во время выполнения или чьё число LVI-митигаций ниже порога.
 
-**2. Sidecar на ноде** — как в сценарии 1, шаг 2, с образом, который вы собрали на шаге 1. Дверь
-та же, что в сценарии 1, шаг 3.
-
-**3. Ключ владельца на YubiKey 5.** Сгенерируйте его на устройстве с политиками PIN ALWAYS и
+**2. Ключ владельца на YubiKey 5.** Сгенерируйте его на устройстве с политиками PIN ALWAYS и
 touch ALWAYS (единственные, которые `owner-cli` принимает для роли владельца), затем проверьте
 аттестацию слота:
 
 ```sh
-ykman piv access change-pin; ykman piv access change-puk; ykman piv access change-management-key --protect --touch
-ykman piv keys generate -a ECCP256 --pin-policy ALWAYS --touch-policy ALWAYS 9a 9a.pub.pem
-$B piv-attest --key piv:9a --out ./9a-attest     # цепочка до Yubico Attestation Root 1 (закреплён), политика ALWAYS/ALWAYS, серийный, ключ == слот
+ykman piv access change-pin
+ykman piv access change-puk
+ykman piv access change-management-key --protect --touch
+ykman piv keys generate -a ECCP256 --pin-policy ALWAYS --touch-policy ALWAYS 9a ~/tee-owner/9a.pub.pem
+cd owner/owner-cli/target/debug
+./owner-cli piv-attest --key piv:9a --out ~/tee-owner/9a-attest
+./owner-cli pubkey --key piv:9a > ~/tee-owner/exchange/owner.pub
 ```
 
-Каждая подпись владельца после этого спрашивает PIN и ждёт касания. `init` и `rotate-owner`
-принимают владельца как `piv:9a` и отказывают слоту, если его аттестация не проходит:
-импортированный ключ или ключ со слабой политикой владельцем стать не может.
+Каждая подпись владельца после этого спрашивает PIN и ждёт касания. В сценарии 1 используйте
+`--owner piv:9a` и `--key piv:9a`; `init` и `rotate-owner` отказывают слоту, если его аттестация
+не проходит (импортированный ключ или ключ со слабой политикой владельцем стать не может).
 
-**4. `init` и `attest`.** `init` как в сценарии 1, шаг 5, с `--owner piv:9a` и MRENCLAVE, который вы
-воспроизвели на шаге 1. `attest --wallet wallet.json` повторяет те же семь проверок в любой момент
-позже; `--pin` перезаписывает.
+**3. Проверяйте анклав снова, в любой момент.** Тот же обмен «nonce — quote», что при `init`,
+проверка на ноутбуке, ничего не отправляется:
 
-**5. Дальше как в сценарии 1:** холодный импорт в BTCPay, мандат, настройки плагина.
+```sh
+openssl rand -hex 32 > ~/tee-owner/exchange/nonce.txt
+scp ~/tee-owner/exchange/nonce.txt you@your-server:tee-signer-exchange/
+```
 
-**Что вы получаете на T2:** всё из T1, плюс сид вне досягаемости root (в рамках модели угроз
-SGX: побочные каналы и микрокод Intel исключены) и криптографический ответ на вопрос «тот ли
-это анклав, который проходил аудит?». Чего вы не получаете: баланс вне досягаемости root —
-сценарий 3 в «Что злоумышленник всё ещё может украсть?»; держите горячий кошелёк небольшим.
+на сервере `docker exec tee-btcpay-tee-signer-1 signerd quote --state-dir /var/lib/signerd --nonce-file /exchange/nonce.txt --out /exchange/quote.json`, затем на ноутбуке:
+
+```sh
+scp you@your-server:tee-signer-exchange/quote.json ~/tee-owner/exchange/
+cd owner/owner-cli/target/debug
+./owner-cli attest --wallet ~/tee-owner/wallet.json --replay ~/tee-owner/exchange/quote.json --nonce-file ~/tee-owner/exchange/nonce.txt --expect-mrenclave <MRENCLAVE релиза>
+```
+
+**Что вы получаете на T2:** всё из сценария 1, плюс ключ владельца за физическим касанием и
+собственный ответ на вопрос «тот ли это анклав, который проходил аудит?».
 
 **Чего ещё честно нет:** mainnet требует явного решения владельца, и в этом репозитории его не
 касалось ничего; *собственное* воспроизведение аудитором закреплённого MRENCLAVE — перенесённый
@@ -262,9 +338,11 @@ dev-нода T2 проекта — общая VM в Azure, продуктивн�
   злоумышленник всё ещё может украсть?»).
 
 Чего он не может: изменить мандат (нужна подпись вашего ключа владельца со следующим nonce),
-разморозить, сменить владельца или вытащить сид из T2-анклава. Что делаете вы: **заморозка** (может
-кто угодно, подпись не нужна), взгляд на цепочку, чистка сервера, затем `unfreeze` ключом
-владельца — или сначала ужесточите мандат (ужесточение применяется сразу).
+разморозить, сменить владельца или вытащить сид из T2-анклава. Что делаете вы: на сервере
+**заморозка** — `docker exec tee-btcpay-tee-signer-1 signerd freeze --state-dir /var/lib/signerd
+--out /exchange/freeze.result.json`, подпись не нужна, — взгляд на цепочку, чистка сервера, затем
+отдаёте серверу подписанный файл `unfreeze` с ноутбука (файл статуса туда, `--out unfreeze.msg
+unfreeze --key …` обратно) — или сначала ужесточение, которое применяется сразу.
 
 ### Что злоумышленник всё ещё может украсть?
 
@@ -374,15 +452,32 @@ dev-нода T2 проекта — общая VM в Azure, продуктивн�
 
 ### Как менять мандат в обычной жизни?
 
+Те же три места, что в сценарии 1. На сервере — установленный мандат и статус в файлы:
+
 ```sh
-$B policy-show --json mandate-v2.json                          # поле за полем, DIFF отмечен; хэш, который вы подпишете
-$B policy-sign --json mandate-v2.json --key piv:9a              # nonce = установленный + 1; PIN + касание на YubiKey
-$B status                                                        # применено (ужесточение) или ожидает с высотой активации
+docker exec tee-btcpay-tee-signer-1 signerd policy --state-dir /var/lib/signerd --out /exchange/policy.json
+docker exec tee-btcpay-tee-signer-1 signerd status --state-dir /var/lib/signerd --out /exchange/status.json
 ```
 
-Файл — это намерение; запечатанное состояние — закон. Правка JSON ничего не меняет, пока она не
-подписана следующим nonce и не принята. Держите JSON установленного мандата рядом с
-`wallet.json`: монитор читает из него лимиты.
+На ноутбуке — разница поле за полем, подпись, сообщение обратно:
+
+```sh
+scp you@your-server:tee-signer-exchange/policy.json you@your-server:tee-signer-exchange/status.json ~/tee-owner/exchange/
+cd owner/owner-cli/target/debug
+./owner-cli policy-show --installed-file ~/tee-owner/exchange/policy.json --json ~/tee-owner/mandate-v2.json
+./owner-cli --status-file ~/tee-owner/exchange/status.json --wallet-record ~/tee-owner/wallet.json --out ~/tee-owner/exchange/policy-v2.msg policy-sign --json ~/tee-owner/mandate-v2.json --key tpm:0x81000100
+scp ~/tee-owner/exchange/policy-v2.msg you@your-server:tee-signer-exchange/
+```
+
+На сервере:
+
+```sh
+docker exec tee-btcpay-tee-signer-1 signerd submit --state-dir /var/lib/signerd --file /exchange/policy-v2.msg --out /exchange/policy-v2.result.json
+```
+
+В файле результата — «применено» (ужесточение) или «ожидает» с высотой активации (ослабление).
+Файл — это намерение; запечатанное состояние — закон: правка JSON ничего не меняет, пока она не
+подписана следующим nonce и не принята. Держите подписанный JSON мандата рядом с `wallet.json`.
 
 ### Зачем анклаву два ключа?
 
