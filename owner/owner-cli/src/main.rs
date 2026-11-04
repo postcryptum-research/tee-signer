@@ -744,16 +744,27 @@ struct Signerd {
     /// The owner's wallet record on THIS machine (C-R7-5): every status read raises its
     /// `last_seen_seq`, so `arm` can tell a rolled-back enclave from the one the owner last saw.
     record: Option<PathBuf>,
+    /// R8: a status file instead of the live daemon; `get("/v1/status")` returns it, nothing else is reachable.
+    offline: Option<serde_json::Value>,
+    /// R8: write signed messages here instead of posting them.
+    out: Option<PathBuf>,
 }
 
 impl Signerd {
     fn get(&self, path: &str) -> Result<serde_json::Value> {
-        let r = reqwest::blocking::Client::new().get(format!("{}{path}", self.url)).bearer_auth(&self.token).send()?;
-        let status = r.status();
-        let v: serde_json::Value = r.json()?;
-        if !status.is_success() {
-            bail!("signerd {path}: {status} {v}");
-        }
+        let v: serde_json::Value = match &self.offline {
+            Some(st) if path == "/v1/status" => st.clone(),
+            Some(_) => bail!("no tunnel: {path} is not in the status file; this step needs the live daemon's answer carried as a file"),
+            None => {
+                let r = reqwest::blocking::Client::new().get(format!("{}{path}", self.url)).bearer_auth(&self.token).send()?;
+                let status = r.status();
+                let v: serde_json::Value = r.json()?;
+                if !status.is_success() {
+                    bail!("signerd {path}: {status} {v}");
+                }
+                v
+            }
+        };
         if path == "/v1/status" {
             if let (Some(rec), Some(seq)) = (&self.record, v["seq"].as_u64()) {
                 if let Err(e) = note_seq(rec, seq) {
@@ -767,6 +778,9 @@ impl Signerd {
         Ok(v)
     }
     fn post(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value> {
+        if self.offline.is_some() {
+            bail!("no tunnel: nothing is sent from this machine; use --out <file> and carry the file to the server ({path})");
+        }
         let r = reqwest::blocking::Client::new().post(format!("{}{path}", self.url)).bearer_auth(&self.token).json(&body).send()?;
         let status = r.status();
         let v: serde_json::Value = r.json()?;
@@ -883,6 +897,15 @@ struct Cli {
     /// which `arm` needs to tell a rolled-back enclave from the one you last saw (REQ-r7, C-R7-5).
     #[arg(long, env = "OWNER_WALLET", global = true)]
     wallet_record: Option<PathBuf>,
+    /// R8 (no tunnel): the daemon's status as a FILE (`signerd status --out …` on the server, carried
+    /// here). With it, owner-cli never talks to the server: it reads the enclave's id, nonce, sequence
+    /// and boot challenge from the file.
+    #[arg(long, env = "OWNER_STATUS", global = true)]
+    status_file: Option<PathBuf>,
+    /// R8 (no tunnel): write the signed owner message to this FILE (hex) instead of sending it; carry it
+    /// to the server and hand it to `signerd submit --file …`.
+    #[arg(long, global = true)]
+    out: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -947,6 +970,15 @@ enum Cmd {
         /// Without it, `init` refuses to write a record for such an enclave.
         #[arg(long)]
         accept_auto_arm: bool,
+        /// R8 (no tunnel): the file `signerd init --out …` wrote on the server, carried here; nothing is sent.
+        #[arg(long)]
+        response: Option<PathBuf>,
+        /// R8 (no tunnel, T2): the file `signerd quote --nonce <your nonce> --out …` wrote; verified here with `--nonce`.
+        #[arg(long)]
+        quote: Option<PathBuf>,
+        /// The 32-byte hex nonce YOU chose for that quote (so a saved quote for another nonce is refused).
+        #[arg(long)]
+        nonce: Option<String>,
     },
     /// Fill a mandate JSON's chain.checkpoint from a node (read-only RPC) or an Esplora API, and print the canonical hex + hash.
     PolicyBuild {
@@ -1112,6 +1144,10 @@ enum Cmd {
         /// genuine quote from an earlier run must be refused at step 6 (replay).
         #[arg(long)]
         replay: Option<PathBuf>,
+        /// R8 (no tunnel): with `--replay <quote file>`, the 32-byte hex nonce YOU chose for it — then the
+        /// file is the carried quote and must verify; without `--nonce`, `--replay` is the negative vector.
+        #[arg(long)]
+        nonce: Option<String>,
     },
     /// Verify the recovery blob offline: decrypt with the recovery key, derive the xpub, compare.
     RecoveryVerify {
@@ -1193,16 +1229,37 @@ enum Cmd {
     },
 }
 
+/// A file written by `signerd … --out` wraps the answer as `{"http_status", "ok", "response"}`; a bare
+/// answer (an older file, or a hand-copied one) is accepted as is.
+fn unwrap_server_file(v: serde_json::Value) -> Result<serde_json::Value> {
+    if let Some(r) = v.get("response") {
+        if v.get("ok") == Some(&serde_json::Value::Bool(false)) {
+            bail!("the server file records a refusal: {r}");
+        }
+        return Ok(r.clone());
+    }
+    Ok(v)
+}
+
 fn client(cli: &Cli) -> Result<Signerd> {
+    if let Some(f) = &cli.status_file {
+        let st = unwrap_server_file(serde_json::from_str(&std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?)?)?;
+        return Ok(Signerd { url: String::new(), token: String::new(), record: cli.wallet_record.clone(), offline: Some(st), out: cli.out.clone() });
+    }
     let token = match (&cli.token, &cli.token_file) {
         (Some(t), _) => t.clone(),
         (None, Some(f)) => std::fs::read_to_string(f)?.trim().to_string(),
-        _ => bail!("--token or --token-file"),
+        _ => bail!("--token or --token-file (live), or --status-file (no tunnel)"),
     };
-    Ok(Signerd { url: cli.signerd.trim_end_matches('/').to_string(), token, record: cli.wallet_record.clone() })
+    Ok(Signerd { url: cli.signerd.trim_end_matches('/').to_string(), token, record: cli.wallet_record.clone(), offline: None, out: cli.out.clone() })
 }
 
 fn submit_message(sd: &Signerd, msg: &Message) -> Result<()> {
+    if let Some(out) = &sd.out {
+        std::fs::write(out, hex::encode(msg.encode()))?;
+        println!("signed message written to {} — carry it to the server and run there: signerd submit --file <it> --out <answer>", out.display());
+        return Ok(());
+    }
     let r = sd.post("/v1/message", serde_json::json!({"message_hex": hex::encode(msg.encode())}))?;
     println!("{r}");
     Ok(())
@@ -1269,8 +1326,12 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&a)?);
             eprintln!("ATTESTED: generated on YubiKey {} (firmware {}), PIN {} / touch {}, chain {}", a.serial, a.firmware, a.pin_policy, a.touch_policy, a.chain.join(" <- "));
         }
-        Cmd::Init { network, owner, recovery_pk, out, expect_mrenclave, signing_key_label, accept, pccs, accept_auto_arm } => {
-            let sd = client(&cli)?;
+        Cmd::Init { network, owner, recovery_pk, out, expect_mrenclave, signing_key_label, accept, pccs, accept_auto_arm, response, quote, nonce } => {
+            // no tunnel: with a carried response nothing is sent from this machine at all
+            let sd = match response {
+                Some(_) => Signerd { url: String::new(), token: String::new(), record: cli.wallet_record.clone(), offline: Some(serde_json::Value::Null), out: cli.out.clone() },
+                None => client(&cli)?,
+            };
             let (opk, owner_label) = owner_pk_of_locator(owner)?;
             let owner_pk = &hex::encode(opk);
             eprintln!("owner key: {owner_label}");
@@ -1278,7 +1339,10 @@ fn main() -> Result<()> {
                 bail!("owner and recovery keys must differ (and live on different media and machines)");
             }
             let net = network_of(network)?;
-            let r = sd.post("/v1/init", serde_json::json!({"network": net as u8, "owner_pk_hex": owner_pk, "recovery_pk_hex": recovery_pk}))?;
+            let r = match response {
+                Some(f) => unwrap_server_file(serde_json::from_str(&std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?)?)?,
+                None => sd.post("/v1/init", serde_json::json!({"network": net as u8, "owner_pk_hex": owner_pk, "recovery_pk_hex": recovery_pk}))?,
+            };
             let card_hex = r["card_hex"].as_str().unwrap_or("").to_string();
             let card = IdentityCard::decode(&hex::decode(&card_hex)?).map_err(|_| anyhow!("card"))?;
             let identity_pk = hex::decode(r["identity_pk"].as_str().unwrap_or(""))?;
@@ -1324,7 +1388,10 @@ fn main() -> Result<()> {
             // wipe the daemon's state and start over.
             if tier_base(&rec.tier) == "T2-release" {
                 println!("T2 card: running the verifier before writing the record (C-R5-6)");
-                if let Err(e) = attest_record(&sd, &mut rec, expect_mrenclave.clone(), None, signing_key_label.clone(), accept, pccs, true, None) {
+                if sd.offline.is_some() && quote.is_none() {
+                    bail!("REFUSED: a T2 card with no tunnel needs the quote as a file: on the server `signerd quote --nonce <your 32-byte hex> --out quote.json`, then here `--quote quote.json --nonce <the same hex>`; no record is written");
+                }
+                if let Err(e) = attest_record(&sd, &mut rec, expect_mrenclave.clone(), None, signing_key_label.clone(), accept, pccs, true, quote.clone(), nonce.clone()) {
                     bail!("REFUSED: attestation failed — {e}\nThe wallet record is NOT written. The enclave holds a fresh, untrusted key set: wipe signerd's state dir and initialise again; do not fund.");
                 }
                 rec.trust_label = Some("attested".into());
@@ -1430,13 +1497,16 @@ fn main() -> Result<()> {
             let m = to_mandate(&j)?;
             let sd = client(&cli)?;
             let enclave_id = sd.enclave_id()?;
-            let installed = sd.get("/v1/policy").ok();
+            let st = sd.get("/v1/status")?;
             let nonce = match nonce {
                 Some(n) => *n,
-                None => match &installed {
-                    Some(p) => p["nonce"].as_u64().unwrap_or(0) + 1,
-                    None => 0,
-                },
+                None => {
+                    if st["installed"].as_bool() == Some(true) {
+                        st["nonce"].as_u64().unwrap_or(0) + 1
+                    } else {
+                        0
+                    }
+                }
             };
             println!("signing mandate {} for enclave {} at nonce {nonce}", hex::encode(m.hash()), hex::encode(enclave_id));
             for (k, v) in describe(&m) {
@@ -1452,8 +1522,12 @@ fn main() -> Result<()> {
                 return Ok(());
             }
             if nonce == 0 {
-                let r = sd.post("/v1/install", serde_json::json!({"mandate_hex": hex::encode(m.encode()), "sig_hex": hex::encode(msg.sig())}))?;
-                println!("installed: {r}");
+                if sd.out.is_some() {
+                    submit_message(&sd, &msg)?; // `signerd submit` routes a nonce-0 PolicyUpdate to /v1/install
+                } else {
+                    let r = sd.post("/v1/install", serde_json::json!({"mandate_hex": hex::encode(m.encode()), "sig_hex": hex::encode(msg.sig())}))?;
+                    println!("installed: {r}");
+                }
             } else {
                 submit_message(&sd, &msg)?;
             }
@@ -1501,9 +1575,9 @@ fn main() -> Result<()> {
             let sd = client(&cli)?;
             println!("{}", sd.post("/v1/freeze", serde_json::json!({}))?);
         }
-        Cmd::Attest { wallet, expect_mrenclave, expect_mrsigner, signing_key_label, accept, pccs, pin, save, replay } => {
+        Cmd::Attest { wallet, expect_mrenclave, expect_mrsigner, signing_key_label, accept, pccs, pin, save, replay, nonce } => {
             let sd = client(&cli)?;
-            attest(&sd, wallet, expect_mrenclave.clone(), expect_mrsigner.clone(), signing_key_label.clone(), accept, pccs, *pin, save.clone(), replay.clone())?;
+            attest(&sd, wallet, expect_mrenclave.clone(), expect_mrsigner.clone(), signing_key_label.clone(), accept, pccs, *pin, save.clone(), replay.clone(), nonce.clone())?;
         }
         Cmd::Monitor { wallet, mandate, esplora, interval, esplora_delay_ms, full_every, journal, once, no_freeze, witness_key, stall_after, max_tip_lag, max_addresses, node_rpc, node_cookie, acknowledge } => {
             let sd = client(&cli)?;
@@ -1571,11 +1645,15 @@ fn main() -> Result<()> {
             let mut msg = Message::Arm { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, boot_challenge, seq_seen, sig: [0; 64] };
             sign_message(&okey, &mut msg)?;
             submit_message(&sd, &msg)?;
-            let st = sd.get("/v1/status")?;
-            if st["boot_armed"].as_bool() == Some(true) {
-                println!("armed: this load (session {session}) signs inside the mandate again");
+            if sd.out.is_some() {
+                println!("after `signerd submit` on the server, `signerd status --out …` there will show boot_armed: true for load {session}");
             } else {
-                bail!("the enclave did not report armed after the message was accepted");
+                let st = sd.get("/v1/status")?;
+                if st["boot_armed"].as_bool() == Some(true) {
+                    println!("armed: this load (session {session}) signs inside the mandate again");
+                } else {
+                    bail!("the enclave did not report armed after the message was accepted");
+                }
             }
         }
         Cmd::RecoveryVerify { wallet, recovery_key, print_mnemonic } => {
@@ -1709,9 +1787,10 @@ fn attest(
     pin: bool,
     save: Option<PathBuf>,
     replay: Option<PathBuf>,
+    nonce_hex: Option<String>,
 ) -> Result<()> {
     let mut w: WalletRecord = serde_json::from_str(&std::fs::read_to_string(wallet)?)?;
-    let (_rec, out) = attest_record(sd, &mut w, expect_mrenclave, expect_mrsigner, signing_key_label, accept, pccs, pin, replay)?;
+    let (_rec, out) = attest_record(sd, &mut w, expect_mrenclave, expect_mrsigner, signing_key_label, accept, pccs, pin, replay, nonce_hex)?;
     if pin {
         std::fs::write(wallet, serde_json::to_string_pretty(&w)?)?;
         println!("wallet record updated (pinned MRSIGNER, ProdID, SVN; attestation recorded)");
@@ -1737,6 +1816,7 @@ fn attest_record(
     pccs: &str,
     pin: bool,
     replay: Option<PathBuf>,
+    nonce_hex: Option<String>,
 ) -> Result<(AttestRecord, serde_json::Value)> {
     use dcap_qvl::quote::Report;
     use dcap_qvl::verify::QuoteVerifier;
@@ -1753,12 +1833,19 @@ fn attest_record(
         bail!("refused: collateral must come from Intel PCS v4 (got {pccs}); Azure THIM is not the authority here (C-R5-2)");
     }
 
-    // a fresh nonce; the quote must bind it
-    let nonce: [u8; 32] = rand::random();
+    // the nonce the quote must bind: fresh here (live), or the one the owner chose for a carried quote
+    let nonce: [u8; 32] = match &nonce_hex {
+        Some(h) => <[u8; 32]>::try_from(hex::decode(h)?.as_slice()).map_err(|_| anyhow!("--nonce must be 32 bytes hex"))?,
+        None => rand::random(),
+    };
     let r = match &replay {
         Some(path) => {
-            println!("REPLAY VECTOR: verifying the quote saved in {} against the fresh nonce {}", path.display(), hex::encode(nonce));
-            serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(path)?)?
+            if nonce_hex.is_some() {
+                println!("NO TUNNEL: verifying the quote carried in {} against the nonce you chose, {}", path.display(), hex::encode(nonce));
+            } else {
+                println!("REPLAY VECTOR: verifying the quote saved in {} against the fresh nonce {}", path.display(), hex::encode(nonce));
+            }
+            unwrap_server_file(serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(path)?)?)?
         }
         None => sd.get(&format!("/v1/quote?nonce={}", hex::encode(nonce)))?,
     };

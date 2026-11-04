@@ -51,6 +51,56 @@ struct Args {
 
 #[derive(Subcommand, Debug, Clone)]
 enum Cmd {
+    /// R8 (no tunnel): write the running daemon's status to a file the owner carries away.
+    Status {
+        #[arg(long, env = "SIGNERD_STATE_DIR")]
+        state_dir: PathBuf,
+        #[arg(long, default_value = "http://127.0.0.1:7390")]
+        url: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// R8 (no tunnel): hand a signed owner message file (hex, written by `owner-cli … --out`) to the
+    /// daemon; the enclave's answer goes to a file. A `PolicyUpdate` at nonce 0 is the install.
+    Submit {
+        #[arg(long, env = "SIGNERD_STATE_DIR")]
+        state_dir: PathBuf,
+        #[arg(long, default_value = "http://127.0.0.1:7390")]
+        url: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// R8 (no tunnel): initialise the enclave wallet with the owner's two PUBLIC keys; the response
+    /// (identity card, recovery blob, xpub) goes to a file the owner carries to their machine.
+    Init {
+        #[arg(long, env = "SIGNERD_STATE_DIR")]
+        state_dir: PathBuf,
+        #[arg(long, default_value = "http://127.0.0.1:7390")]
+        url: String,
+        /// mainnet | testnet4 | signet | regtest
+        #[arg(long)]
+        network: String,
+        #[arg(long)]
+        owner_pk: String,
+        #[arg(long)]
+        recovery_pk: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// R8 (no tunnel, T2): fetch a DCAP quote for the owner's nonce into a file for `owner-cli attest --replay`.
+    Quote {
+        #[arg(long, env = "SIGNERD_STATE_DIR")]
+        state_dir: PathBuf,
+        #[arg(long, default_value = "http://127.0.0.1:7390")]
+        url: String,
+        /// 32 bytes hex, chosen by the owner on their machine.
+        #[arg(long)]
+        nonce: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Serve the API (the daemon).
     Run {
         /// Directory for the sealed blob, the receipt log and the token.
@@ -350,6 +400,64 @@ struct ErrorBody {
 
 fn err(status: StatusCode, msg: impl Into<String>, reasons: Vec<String>) -> axum::response::Response {
     (status, Json(ErrorBody { error: msg.into(), reasons })).into_response()
+}
+
+/// R8: one server-side owner step — file in, file out. The daemon's token is read from its state
+/// directory (this runs on the server, as the same user); the answer is written verbatim as JSON
+/// with the HTTP status, so a refusal travels to the owner's machine exactly as the enclave said it.
+enum OwnerStep {
+    Status,
+    Submit(PathBuf),
+    Init { network: String, owner_pk: String, recovery_pk: String },
+    Quote(String),
+}
+
+async fn owner_step(state_dir: &Path, url: &str, out: &Path, step: OwnerStep) -> Result<()> {
+    let token = std::fs::read_to_string(state_dir.join("token")).with_context(|| format!("reading {}/token (is the daemon initialised here?)", state_dir.display()))?;
+    let token = token.trim().to_string();
+    let http = reqwest::Client::new();
+    let base = url.trim_end_matches('/');
+    let resp = match step {
+        OwnerStep::Status => http.get(format!("{base}/v1/status")).bearer_auth(&token).send().await?,
+        OwnerStep::Quote(nonce) => http.get(format!("{base}/v1/quote")).query(&[("nonce", nonce)]).bearer_auth(&token).send().await?,
+        OwnerStep::Init { network, owner_pk, recovery_pk } => {
+            let net: u8 = match network.as_str() {
+                "mainnet" => 0,
+                "testnet4" => 1,
+                "signet" => 2,
+                "regtest" => 3,
+                other => anyhow::bail!("network {other:?}: mainnet | testnet4 | signet | regtest"),
+            };
+            http.post(format!("{base}/v1/init"))
+                .bearer_auth(&token)
+                .json(&serde_json::json!({"network": net, "owner_pk_hex": owner_pk, "recovery_pk_hex": recovery_pk}))
+                .send()
+                .await?
+        }
+        OwnerStep::Submit(file) => {
+            let hex_text = std::fs::read_to_string(&file).with_context(|| format!("reading {}", file.display()))?;
+            let bytes = hex::decode(hex_text.trim()).context("the message file is not hex")?;
+            let msg = signer_core::update::Message::decode(&bytes).map_err(|_| anyhow::anyhow!("the file does not decode as an owner message"))?;
+            match &msg {
+                signer_core::update::Message::PolicyUpdate { nonce: 0, mandate, sig, .. } => http
+                    .post(format!("{base}/v1/install"))
+                    .bearer_auth(&token)
+                    .json(&serde_json::json!({"mandate_hex": hex::encode(mandate), "sig_hex": hex::encode(sig)}))
+                    .send()
+                    .await?,
+                _ => http.post(format!("{base}/v1/message")).bearer_auth(&token).json(&serde_json::json!({"message_hex": hex_text.trim()})).send().await?,
+            }
+        }
+    };
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+    let record = serde_json::json!({"http_status": status.as_u16(), "ok": status.is_success(), "response": body});
+    std::fs::write(out, serde_json::to_string_pretty(&record)?)?;
+    println!("{} -> {}", if status.is_success() { "ok" } else { "REFUSED" }, out.display());
+    if !status.is_success() {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 fn authorized(headers: &HeaderMap, token: &str) -> bool {
@@ -866,6 +974,16 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?))
         .init();
     let args = Args::parse();
+    // R8: the file commands talk to the running daemon on this machine; no enclave is loaded here
+    match &args.cmd {
+        Cmd::Status { state_dir, url, out } => return owner_step(state_dir, url, out, OwnerStep::Status).await,
+        Cmd::Submit { state_dir, url, file, out } => return owner_step(state_dir, url, out, OwnerStep::Submit(file.clone())).await,
+        Cmd::Init { state_dir, url, network, owner_pk, recovery_pk, out } => {
+            return owner_step(state_dir, url, out, OwnerStep::Init { network: network.clone(), owner_pk: owner_pk.clone(), recovery_pk: recovery_pk.clone() }).await
+        }
+        Cmd::Quote { state_dir, url, nonce, out } => return owner_step(state_dir, url, out, OwnerStep::Quote(nonce.clone())).await,
+        _ => {}
+    }
     let mut enclave = load_enclave(&args)?;
 
     match args.cmd.clone() {
@@ -880,6 +998,7 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         Cmd::Run { .. } => {}
+        _ => unreachable!("the file commands returned above"),
     }
     let Cmd::Run { state_dir, listen, bitcoind_rpc, bitcoind_cookie, headers_interval } = args.cmd else { unreachable!() };
     std::fs::create_dir_all(&state_dir)?;
