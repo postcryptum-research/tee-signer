@@ -32,32 +32,35 @@ The words used below:
   never on the box;
 - **recovery key** — a cold encrypted keyfile that can cancel a pending change, replace a lost
   owner key, and decrypt the **recovery blob** (the seed, encrypted at init to this key);
-- **tiers** — T1: SGX1 without Flexible Launch Control (debug launch, no attestation); T2: FLC +
-  DCAP (non-debug, attested); T0: software, tests only ([`HOW_IT_WORKS.md`](HOW_IT_WORKS.md)).
+- **tiers** — T2: SGX with FLC + DCAP (non-debug, attested) — the product; T1: SGX1 without
+  Flexible Launch Control (debug launch, no attestation) — the project's build-and-test tier,
+  runs but not for money; T0: software, tests only ([`HOW_IT_WORKS.md`](HOW_IT_WORKS.md)).
 
 ---
 
-## 1. "I run BTCPay on one rented box. It has SGX (an older Xeon E3). Customer payouts are small, I sweep to cold storage weekly. What do I do, and what do I get?"
+## 1. "I run BTCPay on one server. Which server do I need, what do I do, and what do I get?"
 
-That is tier **T1**, the merchant tier the project exists for. Plan: the enclave and `signerd` as
-a sidecar of your btcpayserver-docker stack; the owner key in your laptop's TPM 2.0 or on a
-YubiKey (an encrypted keyfile on a USB drive is the permitted floor); the recovery key as an
-encrypted keyfile on two USB drives in two places.
+The product runs on tier **T2**: SGX with Flexible Launch Control and DCAP attestation — Azure
+DCsv3 (what the project runs), or Xeon E-2200+/Ice Lake+ bare metal with FLC enabled in the
+firmware. (Cheap SGX1 servers without FLC are the project's **build-and-test tier T1**: the
+enclave runs there, but not for money — root reads a debug enclave.) Plan: the project's signed
+enclave and `signerd` as a sidecar of your btcpayserver-docker stack; the owner key in your
+laptop's TPM 2.0 (a YubiKey is setup 2; an encrypted keyfile on a USB drive is the permitted
+floor); the recovery key as an encrypted keyfile on two USB drives in two places.
 
-**1. Check the hardware.** `cpuid` must show SGX; the legacy driver gives `/dev/isgx`; `aesmd`
-runs. On this class of hardware the enclave launches only in **debug** mode (Intel's launch
-whitelist was retired with SDK 2.28; FLC hardware does not need it). That is the T1 label: the
-November 2026 attack is closed; what T1 does **not** add is protection from root on the server —
-see "What does root see?" below for what that means in practice.
+**1. Check the hardware.** The in-kernel SGX driver gives `/dev/sgx_enclave` and
+`/dev/sgx_provision`; `aesmd` runs with a DCAP quote provider (on Azure, `az-dcap-client`);
+`cpuid` leaf 7 reports FLC. On this hardware the enclave launches **non-debug** and its identity
+can be attested — that is what makes the seed unreadable to root.
 
-**2. Build and run the sidecar** (the dev stack's own scripts; an operator guide is a carried
-item):
+**2. Run the sidecar.** The enclave is built reproducibly and signed with the project's offline
+ceremony key on a build box, never on the node (setup 2, step 1, says how to reproduce it
+yourself); what reaches the node is the sidecar image. On the node, with the T2 fragment and —
+on a small disk — the stack's pruned-node fragment:
 
 ```sh
-# on the SGX box: the enclave + signerd are built in a pinned container (reproducible MRENCLAVE)
-docker/build-enclave.sh                     # TAG=…, RELEASE=1, SIGN=dev|ceremony → ~/tee-signer-out/<name>/
-btcpay/docker/build-signerd-image.sh        # the sidecar image for btcpayserver-docker
-TEE_FRAGMENT=opt-add-tee-signer.custom btcpay/docker/stack.sh gen && btcpay/docker/stack.sh up
+docker load -i signerd-t2-image.tar.gz      # the sidecar image from the build box (enclave + signerd)
+TEE_FRAGMENT=opt-add-tee-signer-t2.custom TEE_EXTRA_FRAGMENTS=opt-save-storage-xxs btcpay/docker/stack.sh gen && btcpay/docker/stack.sh up
 btcpay/docker/stack.sh install-plugin       # the plugin DLL, built in a dotnet SDK container
 ```
 
@@ -114,14 +117,21 @@ has no mandate yet, so it will sign nothing until step 7.
 
 ```sh
 export SIGNERD_URL=http://127.0.0.1:7390 SIGNERD_TOKEN_FILE=./token      # the tunnel and the token from step 3
-$B init --network signet --owner tpm:0x81000100 --recovery-pk $($B pubkey --key /media/$USER/USB1/recovery.key) --out wallet.json
+$B init --network signet --owner tpm:0x81000100 --recovery-pk $($B pubkey --key /media/$USER/USB1/recovery.key) --out wallet.json \
+   --expect-mrenclave <the release's MRENCLAVE> --accept-advisory INTEL-SA-00615:2026-11-03:reviewed
 ```
 
 `--owner` is a *locator*, never a raw key: `tpm:<handle>`, `piv:<slot>` (a YubiKey slot is
-attested to Yubico's root first and refused unless that verifies) or a keyfile path. `init`
-prints the tier (`T1-debug` here, labeled TOFU: no attestation exists on this hardware), the
-xpub, the fingerprint and the stamp's public key, and writes `wallet.json` on the laptop — the
-identity card plus the recovery blob. Keep it; the monitor and every later command read it.
+attested to Yubico's root first and refused unless that verifies) or a keyfile path. On T2,
+`init` runs the attestation verifier **before** writing anything: the certificate chain to the
+Intel SGX Root CA compiled into `owner-cli`, the DEBUG bit clear, MRENCLAVE equal to the value
+you pass (the release's, printed by the build), MRSIGNER equal to the ceremony key, the identity
+card's signature, the nonce, and Intel's TCB status (a platform advisory you have reviewed is
+accepted by name, with a date and a reason, and that acceptance is part of the record). A failure
+at any step refuses and names the step; no record is written, and you do not fund the wallet.
+On success it prints the tier (`T2-release`), the xpub, the fingerprint and the stamp's public
+key, and writes `wallet.json` on the laptop — the identity card plus the recovery blob. Keep it;
+every later command reads it.
 
 Then prove the recovery blob is good **before** any money arrives:
 
@@ -164,21 +174,18 @@ container can at most spend the current window's unlisted budget, to destination
 transaction — that window cap is the ceiling on the damage. You unfreeze, cancel or tighten from
 your laptop with the owner key; nobody has to be present for routine payouts.
 
-**What to know:** T1 protects against the attack that happened — anyone acting as BTCPay — but
-not against root on the server; today's BTCPay seed is readable by root too, so nothing gets
-worse, and nothing gets better on that one front ("What does root see?" below). If your threat
-includes the hosting provider or a root compromise, that is what T2 is for. The enclave's
-identity is trust-on-first-use (pinned in `wallet.json`); there is no remote attestation on this
-hardware. Signet only, today.
+**What to know:** root on the server cannot read the seed. What root can still do today is
+scenario 3 of "What can an attacker still steal?" — repeat a window's payouts by restoring an old
+copy of the enclave's state file; the fix (the enclave signs nothing after a restart until you
+approve that start with your key, REQ-r7) is in design. The project's own T2 node is a shared
+Azure VM; a production deployment wants a node of its own. Signet only, today.
 
 ---
 
-## 2. "I want the real thing: a node where even root cannot reach the seed, a YubiKey for the owner key, and proof that the enclave is the audited code. What do I do?"
+## 2. "I want the strongest form: a YubiKey for the owner key, and my own proof that the enclave is the audited code. What else do I do?"
 
-That is tier **T2** — SGX with Flexible Launch Control and DCAP attestation: Azure DCsv3 (what
-the project runs), or Xeon E-2200+/Ice Lake+ bare metal with FLC enabled in the firmware. It is
-the same enclave binary, launched non-debug, and its identity is **attested** and verified on
-your machine. Here is the sequence; the parts that are not done yet are named at the end.
+Everything in setup 1, plus the three things below. The parts that are not done yet are named
+at the end.
 
 **1. The enclave is built reproducibly and signed offline, never on the node.** The build runs
 in a pinned container on a build box (`docker/build-enclave.sh` with `RELEASE=1`); two
@@ -190,16 +197,8 @@ owner's machine (`scripts/ceremony-sign.sh`), and the build box assembles the si
 Makefile refuses a build whose MRSIGNER is not the pinned ceremony key (gate 7), whose code
 contains a runtime CPU probe, or whose LVI mitigation count is below the floor.
 
-**2. The sidecar on the node** uses the T2 fragment (`/dev/sgx_enclave` + `/dev/sgx_provision`,
-the AESM socket, `SIGNERD_ENCLAVE_DEBUG=false`); on a small disk, the stack's pruned-node
-fragment:
-
-```sh
-TEE_FRAGMENT=opt-add-tee-signer-t2.custom TEE_EXTRA_FRAGMENTS=opt-save-storage-xxs btcpay/docker/stack.sh gen && btcpay/docker/stack.sh up
-```
-
-The door is the same as in setup 1, step 3: an SSH forward of the node's loopback port 7390 to
-your laptop, and the token copied once from the sidecar's state volume.
+**2. The sidecar on the node** — as in setup 1, step 2, with the image you built in step 1. The
+door is the same as in setup 1, step 3.
 
 **3. The owner key on a YubiKey 5.** Generate it on the device with PIN ALWAYS and touch ALWAYS
 (the only policies `owner-cli` accepts for the owner role), then verify the slot's attestation:
@@ -214,21 +213,9 @@ Every owner signature then asks the PIN and waits for a touch. `init` and `rotat
 owner as `piv:9a` and refuse the slot unless its attestation verifies — an imported key, or one
 with a weaker policy, cannot become the owner.
 
-**4. `init` with the verifier in front of the record.** On T2, `init` fetches a DCAP quote for a
-fresh nonce and verifies it on your machine *before* writing `wallet.json`: certificate chain to
-the Intel SGX Root CA compiled into `owner-cli`, DEBUG bit clear, MRENCLAVE equal to the pinned
-value you pass, MRSIGNER equal to the ceremony key, the identity card's signature, the nonce, and
-Intel's TCB status. A platform advisory you have reviewed is accepted by name with a date and a
-reason, and that acceptance is part of the record:
-
-```sh
-$B init --network signet --owner piv:9a --recovery-pk … --out wallet.json \
-   --expect-mrenclave <the reproducible build's MRENCLAVE> --accept-advisory INTEL-SA-00615:2026-11-03:reviewed
-$B attest --wallet wallet.json            # the same seven checks, any time later; --pin re-records
-```
-
-A failure at any step refuses and names the step; no record is written, and you do not fund the
-wallet.
+**4. `init` and `attest`.** `init` as in setup 1, step 5, with `--owner piv:9a` and the MRENCLAVE
+you reproduced in step 1. `attest --wallet wallet.json` repeats the same seven checks any time
+later; `--pin` re-records.
 
 **5. Then as in setup 1:** cold import into BTCPay, the mandate, the plugin settings.
 
@@ -288,7 +275,8 @@ transaction and 0.05 BTC per window of 144 blocks.
    and cannot take the seed. *Closed down to the window budget, on both tiers.*
 2. **Root on your T1 server** (the hosting provider, a full compromise). They read the seed out
    of the enclave's memory and own the whole hot wallet — what is in it now and what arrives
-   later — exactly as with today's BTCPay. *Not closed on T1.* On T2 the seed is unreadable.
+   later — exactly as with today's BTCPay. *Not closed on T1* — which is why T1 is the project's
+   build-and-test tier and not offered for money. On T2 the seed is unreadable.
 3. **Root on your T2 server.** They cannot read the seed and cannot make the enclave sign a
    transaction outside the mandate's shape. What they can do: let the enclave pay a window's
    budget to them, restore an older copy of the enclave's state file, restart it, and collect the
@@ -437,7 +425,7 @@ NBXplorer processes run as an ordinary service user, **not root**, and read it f
 the seed is readable by that user, by anyone who logs in as BTCPay admin, by any plugin — and, of
 course, by root.
 
-**T1** (SGX1 without FLC) moves the seed into the enclave. The BTCPay user, the admin, the plugin,
+**T1** (SGX1 without FLC) — the project's build-and-test tier, not for money — moves the seed into the enclave. The BTCPay user, the admin, the plugin,
 the container cannot read it any more — that is the attack that happened, closed. What T1 does
 **not** change is root: on this hardware the enclave can only run in debug mode, and root can
 read a debug enclave's memory through the SGX debug interface, as it could read the seed before.

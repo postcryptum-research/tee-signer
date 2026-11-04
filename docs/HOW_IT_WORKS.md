@@ -69,7 +69,8 @@ transaction and 0.05 BTC per window of 144 blocks.
    and cannot take the seed. *Closed down to the window budget, on both tiers.*
 2. **Root on your T1 server** (the hosting provider, a full compromise). They read the seed out
    of the enclave's memory and own the whole hot wallet — what is in it now and what arrives
-   later — exactly as with today's BTCPay. *Not closed on T1.* On T2 the seed is unreadable.
+   later — exactly as with today's BTCPay. *Not closed on T1* — which is why T1 is the project's
+   build-and-test tier and not offered for money. On T2 the seed is unreadable.
 3. **Root on your T2 server.** They cannot read the seed and cannot make the enclave sign a
    transaction outside the mandate's shape. What they can do: let the enclave pay a window's
    budget to them, restore an older copy of the enclave's state file, restart it, and collect the
@@ -126,15 +127,14 @@ owner unfreezes.
 
 | Tier | Hardware | Closes the November 2026 attack | Protects from root on the server |
 |---|---|---|---|
-| **T1** | SGX1 without FLC (cheap bare metal, e.g. Xeon E3 v5/v6); the enclave can only be launched in debug mode; no remote attestation | yes | **no** — labeled, by the hardware |
+| **T1** | SGX1 without FLC (cheap bare metal, e.g. Xeon E3 v5/v6); the enclave can only be launched in debug mode; no remote attestation. **The project's build-and-test tier: it runs, but not for money** | yes | **no** — root reads a debug enclave |
 | **T2** | SGX with FLC + DCAP (Azure DCsv3, Xeon E-2200+, Ice Lake+); non-debug launch; the enclave's identity is attested and verified on the owner's machine | yes | the seed: yes; the balance: no — root can repeat a window's payouts by restoring an old state file (scenario 3), so what you keep in the hot wallet is the exposure |
 | **T0** | software, no TEE | dev and CI only | no |
 
 In practice: today's BTCPay seed is readable by the BTCPay service user (not root), by the admin,
 by a plugin — and by root. T1 takes it away from everyone below root and leaves root where it
-was. T2 takes it away from root as well. Pick T1 for the attack that happened, on the hardware
-you already rent; pick T2 when your threat includes the hosting provider or a root compromise.
-Both tiers run the same enclave binary, reproducibly built and signed with an offline ceremony
+was — which is why T1 is the project's build-and-test tier and not offered for money. T2 takes
+it away from root as well: that is the product. Both tiers run the same enclave binary, reproducibly built and signed with an offline ceremony
 key. Today the project runs on **signet** only.
 
 ## Where to go next
