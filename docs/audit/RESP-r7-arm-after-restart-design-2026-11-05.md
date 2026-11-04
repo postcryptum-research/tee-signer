@@ -30,7 +30,26 @@ Your four questions:
 
 Net: simpler than the control coin (one message, one volatile value, no per-tx overhead, no payout serialization) at a liveness cost (payouts pause until the owner arms after each restart) and the stated residual — the owner's call, and a fair one. CONDITIONAL PASS on conditions 1–5 + the distinct-from-s.armed point. Keep the control coin on record as the zero-liveness-cost alternative as you've done. When it's coded I'll IMPL-PASS with the completeness enumeration (condition 4) and the RDRAND source (condition 1) as the blocking checks.
 
+## Question 5 (sent after the verdict): the build-time opt-out `AUTO_ARM` — PASS on the shape, with hardening
+
+Q5: the shape is RIGHT — don't refuse the opt-out; offer it exactly this way, with a little hardening. My reasoning, then the conditions.
+
+Why allow, not refuse: refusing in-repo doesn't stop a determined operator — they fork and build their own auto-arm, and that fork loses the self-label, the ceremony-exclusion, the --accept-auto-arm gate, and your visibility into which posture is running. A sanctioned, labeled, ceremony-excluded opt-out is strictly SAFER than the unguarded fork it would otherwise become. That's harm reduction, and it's the right call. (The final allow/refuse is the owner's policy, and he's already leaning allow — I'm concurring with conditions, not overriding.)
+
+Why the shape is sound — each element is load-bearing and correct:
+- Build-time cargo feature, never a runtime switch: this is THE key property. A config/env/signerd flag is root's to flip, so it would be no boundary at all. Compiled-in means it's in the MRENCLAVE — root cannot turn a pause-build into an auto-arm-build without rebuilding and re-signing, which attestation catches. Right.
+- Different MRENCLAVE + ceremony-key refuses to co-build with AUTO_ARM: this is the clean part. The owner's real backstop is the MRENCLAVE PIN — they pin the pause build's measurement, so ANY other build (auto-arm included) fails the pin regardless of its self-label or signer. The ceremony-exclusion is strong defense-in-depth on top: the production trust root never signs an auto-arm enclave, so an auto-arm build is dev-signed by construction and can't pass a ceremony-rooted production attestation. Two independent reasons it can't masquerade as the blessed build.
+- Self-label + fused init --accept-auto-arm + claims scoped to the pause build: honest, and the label is corroborated by the MRENCLAVE (the truth), not trusted on its own.
+
+Hardening conditions:
+1. Surface auto_arm through ATTESTATION every time, not only at init. owner-cli attest/status must loudly flag an auto-arm MRENCLAVE (and the dev-vs-ceremony signer) on every check, so a production operator can't drift into trusting one. Init's --accept-auto-arm is good; make runtime attest equally loud.
+2. Compile-time mutual exclusion, not a shared runtime branch: the cargo feature must compile OUT the arm-pause in the auto-arm build and compile OUT auto-arm in the pause build, with no runtime code path keyed on anything root can reach. Confirm there's no env/config read that even partially enables auto-arm behavior.
+3. The honest label must travel WITH the claim: wherever the docs state the rollback bound, annotate "pause build only; AUTO_ARM forfeits this — loss bound against root reverts to the hot-wallet float." Don't state the bound without the asterisk.
+4. Make the degraded mode loudly visible, not a quiet boolean: a persistent warning in STATUS and owner-cli ("AUTO_ARM: rollback protection OFF; loss bound against root = hot float"), so it can't erode into a casual default clicked for convenience. Recommend (not require — operator autonomy) that an auto-arm operator keep a small float / sweep to cold, since they've chosen the no-bound path.
+
+The one risk to name for the owner, since it's a policy risk not a mechanism one: an "at your own risk" switch tends to become the common path when the safe path is mildly annoying (arming after each reboot). The build-time + ceremony-exclusion + loud-label shape is the right mitigation — it keeps the opt-out a deliberate, visible, differently-attested act rather than a quiet toggle. With conditions 1–4 I'm a PASS on the shape. Keep all project claims and evidence on the pause build, as you've done.
+
 ---
 
-**Dev's reading:** DESIGN-PASS with conditions C-R7-1 … C-R7-6 (`CONDITIONS.md`); implementation
+**Dev's reading:** DESIGN-PASS with conditions C-R7-0 … C-R7-10 (`CONDITIONS.md`; 7–10 are the opt-out's hardening); implementation
 may start on a branch; IMPL-PASS gates on C-R7-1 (in-enclave RDRAND) and C-R7-4 (completeness).
