@@ -58,7 +58,16 @@ not on `agent-signer`. The feature pulls in `yubikey 0.9.0-rc.0` (iqlusion, PC/S
   Attestation Intermediate B 1 ← Yubico Attestation Root 1`, firmware 5.8.0, PIN ALWAYS / touch
   ALWAYS — the same chain the owner verified with `openssl` on 2026-11-02 for that key.
 
-`cargo test` 13/13, `cargo clippy --all-targets -- -D warnings` clean.
+- **Attestation bound into the owner-key-SET path (the auditor's hardening after their spot-check
+  of §2):** `init --owner <locator>`, `rotate-owner --new-owner <locator>` and `recover --new-owner
+  <locator>` take the new owner as a **locator, never a raw hex key** — the raw-hex form is removed,
+  so there is no path that sets a PIV key as owner without `owner_slot_policy_ok` **and**
+  `piv_attest::verify` succeeding on it (`owner_pk_of_locator()`; the attested key is the one sent
+  to the enclave). `tpm:` reads the persistent key, a path reads the keyfile's public key; the
+  recovery key stays `--recovery-pk <hex>` (a keyfile by design). `scripts/e2e-local.sh` (keyfile
+  owner through the locator, T0) passes.
+
+`cargo test` 13/13, `cargo clippy --all-targets -- -D warnings` clean, `scripts/e2e-local.sh` OK.
 
 ## 3. Owner-surface caveat (the auditor's point, recorded)
 
@@ -82,13 +91,14 @@ Every signature needs the owner's PIN and a touch, so the owner runs these in th
    empty slot `9d`: `pubkey --key piv:9d` and `policy-sign --key piv:9d` must be `REFUSED`,
    `piv-attest --key piv:9d` must be `REFUSED` (policy `02 03`); the key is then deleted (`ykman piv keys delete 9d`).
 4. T0 (laptop `signerd --features nosgx`, regtest; mechanics only — the verifying code is the same
-   rcore as T1/T2): `init` with the `9a` key as owner → `policy-sign --key piv:9a` (PIN + touch)
-   accepted; tighten accepted (second PIN + touch); a keyfile owner refused; one wrong PIN refused
-   with "2 tries left", then a correct PIN.
+   rcore as T1/T2): `init --owner piv:9a` (attested in-line, or refused) → `policy-sign --key piv:9a`
+   (PIN + touch) accepted; tighten accepted (second PIN + touch); a keyfile owner refused; one
+   wrong PIN refused with "2 tries left", then a correct PIN.
 5. T2 (live Azure enclave): after the pending TPM rotation activates at signet block 329441,
-   `rotate-owner --key tpm:0x81000100 --new-owner <9a pk>` → a second timelocked loosening; after
-   it activates: `unfreeze`/`policy-sign` with `--key tpm:…` refused (`POLICY_SIG`), with
-   `--key piv:9a` accepted — the enclave verifies the YubiKey's signature exactly as the TPM's.
+   `rotate-owner --key tpm:0x81000100 --new-owner piv:9a` (the slot is attested in-line before the
+   message is built) → a second timelocked loosening; after it activates: `unfreeze`/`policy-sign`
+   with `--key tpm:…` refused (`POLICY_SIG`), with `--key piv:9a` accepted — the enclave verifies
+   the YubiKey's signature exactly as the TPM's.
 
 Evidence is appended to this REQ as it is produced.
 

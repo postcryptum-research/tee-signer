@@ -260,6 +260,45 @@ fn hw_pk(s: &impl hw_signer::HardwareSigner, what: &str) -> Result<[u8; 65]> {
     Ok(pk)
 }
 
+/// The slot's attestation certificate and the device's f9 certificate, both DER. No PIN.
+fn piv_certs(y: &hw_signer::yubikey_piv::YubiKeyPivSigner) -> Result<(Vec<u8>, Vec<u8>)> {
+    use der::Encode as _;
+    let slot_der = y.attestation().map_err(|e| anyhow!("slot attestation: {e}"))?;
+    let mut yk = yubikey::YubiKey::open_by_serial(yubikey::Serial(y.serial())).map_err(|e| anyhow!("YubiKey {}: {e}", y.serial()))?;
+    let c = yubikey::certificate::Certificate::read(&mut yk, hw_signer::yubikey_piv::PivSlot::Attestation).map_err(|e| anyhow!("read f9 certificate: {e}"))?;
+    Ok((slot_der, c.cert.to_der()?))
+}
+
+/// The public key a locator names, for SETTING the owner (`init`, `rotate-owner`, `recover`).
+/// This is the one place a raw hex key is NOT accepted, so that a PIV slot cannot become the
+/// owner without its attestation (the auditor's hardening on C-R6-3): slot metadata can say
+/// ALWAYS/ALWAYS for an imported key too; only a verified attestation proves the key was
+/// generated on the device. `piv:` runs `owner_slot_policy_ok` and `piv_attest::verify` and
+/// refuses on any failure; `tpm:` reads the persistent key; a path reads the keyfile's public key.
+fn owner_pk_of_locator(locator: &str) -> Result<([u8; 65], String)> {
+    if let Some(h) = tpm_handle(locator) {
+        let t = hw_signer::tpm::TpmSigner::open_persistent(h?).map_err(|e| anyhow!("TPM open {locator}: {e}"))?;
+        return Ok((tpm_pk(&t)?, locator.to_string()));
+    }
+    if let Some(p) = piv_locator(locator) {
+        let (slot, serial) = p?;
+        let y = open_piv(slot, serial, false)?;
+        let pk = hw_pk(&y, "YubiKey")?;
+        let (slot_der, f9_der) = piv_certs(&y)?;
+        let a = piv_attest::verify(&slot_der, &f9_der, y.serial(), &pk).map_err(|e| anyhow!("{locator} cannot become the owner: {e}"))?;
+        eprintln!(
+            "ATTESTED: {locator} generated on YubiKey {} (firmware {}), PIN {} / touch {}, chain to {}",
+            a.serial,
+            a.firmware,
+            a.pin_policy,
+            a.touch_policy,
+            a.chain.last().cloned().unwrap_or_default()
+        );
+        return Ok((pk, format!("piv:{}@{} (attested, firmware {})", hw_signer::yubikey_piv::slot_name(slot), a.serial, a.firmware)));
+    }
+    Ok((pubkey_of(Path::new(locator))?, locator.to_string()))
+}
+
 /// Is `handle` already a persistent object in this TPM? (C-R6-2: `keygen` never evicts another
 /// project's key — the same co-tenancy rule as on the SGX nodes.)
 fn tpm_handle_in_use(handle: u32) -> Result<bool> {
@@ -831,8 +870,11 @@ enum Cmd {
     Init {
         #[arg(long)]
         network: String,
+        /// Owner key LOCATOR, never a raw key: keyfile path, `tpm:<handle>` or `piv:<slot>[@<serial>]`
+        /// (a PIV slot is attested to Yubico's pinned root first and refused unless it verifies; C-R6-3).
         #[arg(long)]
-        owner_pk: String,
+        owner: String,
+        /// Recovery public key, hex (a keyfile, kept offline; see `keygen --role recovery`).
         #[arg(long)]
         recovery_pk: String,
         #[arg(long)]
@@ -899,17 +941,21 @@ enum Cmd {
         #[arg(long)]
         seq: u64,
     },
+    /// Hand the owner role to another key (a timelocked loosening, signed by the current owner).
     RotateOwner {
         #[arg(long)]
         key: String,
+        /// New owner key LOCATOR, never a raw key (`piv:` is attested first; C-R6-3).
         #[arg(long)]
-        new_owner_pk: String,
+        new_owner: String,
     },
+    /// Replace a lost owner key with the recovery key's signature.
     Recover {
         #[arg(long)]
         recovery_key: PathBuf,
+        /// New owner key LOCATOR, never a raw key (`piv:` is attested first; C-R6-3).
         #[arg(long)]
-        new_owner_pk: String,
+        new_owner: String,
     },
     /// Freeze signing (no signature needed).
     Freeze,
@@ -1088,10 +1134,6 @@ fn client(cli: &Cli) -> Result<Signerd> {
     Ok(Signerd { url: cli.signerd.trim_end_matches('/').to_string(), token })
 }
 
-fn pk65(s: &str) -> Result<[u8; 65]> {
-    <[u8; 65]>::try_from(hex::decode(s)?.as_slice()).map_err(|_| anyhow!("public key is 65 bytes SEC1 hex"))
-}
-
 fn submit_message(sd: &Signerd, msg: &Message) -> Result<()> {
     let r = sd.post("/v1/message", serde_json::json!({"message_hex": hex::encode(msg.encode())}))?;
     println!("{r}");
@@ -1146,13 +1188,7 @@ fn main() -> Result<()> {
             let (slot, serial) = piv_locator(key).ok_or_else(|| anyhow!("--key must be piv:<slot>[@<serial>]"))??;
             let y = open_piv(slot, serial, false)?;
             let pk = hw_pk(&y, "YubiKey")?;
-            let slot_der = y.attestation().map_err(|e| anyhow!("slot attestation: {e}"))?;
-            let f9_der = {
-                let mut yk = yubikey::YubiKey::open_by_serial(yubikey::Serial(y.serial())).map_err(|e| anyhow!("YubiKey {}: {e}", y.serial()))?;
-                let c = yubikey::certificate::Certificate::read(&mut yk, hw_signer::yubikey_piv::PivSlot::Attestation).map_err(|e| anyhow!("read f9 certificate: {e}"))?;
-                use der::Encode as _;
-                c.cert.to_der()?
-            };
+            let (slot_der, f9_der) = piv_certs(&y)?;
             let a = piv_attest::verify(&slot_der, &f9_der, y.serial(), &pk)?;
             if let Some(dir) = out {
                 std::fs::create_dir_all(dir)?;
@@ -1165,8 +1201,11 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&a)?);
             eprintln!("ATTESTED: generated on YubiKey {} (firmware {}), PIN {} / touch {}, chain {}", a.serial, a.firmware, a.pin_policy, a.touch_policy, a.chain.join(" <- "));
         }
-        Cmd::Init { network, owner_pk, recovery_pk, out, expect_mrenclave, signing_key_label, accept, pccs } => {
+        Cmd::Init { network, owner, recovery_pk, out, expect_mrenclave, signing_key_label, accept, pccs } => {
             let sd = client(&cli)?;
+            let (opk, owner_label) = owner_pk_of_locator(owner)?;
+            let owner_pk = &hex::encode(opk);
+            eprintln!("owner key: {owner_label}");
             if owner_pk == recovery_pk {
                 bail!("owner and recovery keys must differ (and live on different media and machines)");
             }
@@ -1364,17 +1403,21 @@ fn main() -> Result<()> {
             sign_message(&okey, &mut msg)?;
             submit_message(&sd, &msg)?;
         }
-        Cmd::RotateOwner { key, new_owner_pk } => {
+        Cmd::RotateOwner { key, new_owner } => {
             let sd = client(&cli)?;
+            let (new_owner_pk, label) = owner_pk_of_locator(new_owner)?;
+            eprintln!("new owner: {label}");
             let okey = open_locator(key)?;
-            let mut msg = Message::RotateOwner { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, new_owner_pk: pk65(new_owner_pk)?, sig: [0; 64] };
+            let mut msg = Message::RotateOwner { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, new_owner_pk, sig: [0; 64] };
             sign_message(&okey, &mut msg)?;
             submit_message(&sd, &msg)?;
         }
-        Cmd::Recover { recovery_key, new_owner_pk } => {
+        Cmd::Recover { recovery_key, new_owner } => {
             let sd = client(&cli)?;
+            let (new_owner_pk, label) = owner_pk_of_locator(new_owner)?;
+            eprintln!("new owner: {label}");
             let rkey = open_key(recovery_key)?;
-            let mut msg = Message::Recover { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, new_owner_pk: pk65(new_owner_pk)?, sig: [0; 64] };
+            let mut msg = Message::Recover { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, new_owner_pk, sig: [0; 64] };
             sign_message(&rkey, &mut msg)?;
             submit_message(&sd, &msg)?;
         }

@@ -40,7 +40,8 @@ case "${1:-help}" in
     [ -f "$S/recovery.key" ] || "$OC" keygen --out "$S/recovery.key" --role recovery >/dev/null
     [ -f "$S/file-owner.key" ] || "$OC" keygen --out "$S/file-owner.key" --role owner >/dev/null
     RPK=$("$OC" pubkey --key "$S/recovery.key")
-    run "$OC" init --network regtest --owner-pk "$OPK" --recovery-pk "$RPK" --out "$S/wallet.json" | grep -E "tier|xpub|fingerprint|TOFU" || true
+    # init takes the owner as a LOCATOR: the PIV slot is attested to Yubico's pinned root here, or refused
+    run "$OC" init --network regtest --owner "$PIV" --recovery-pk "$RPK" --out "$S/wallet.json" | grep -E "tier|xpub|fingerprint|TOFU|ATTESTED|owner key" || true
     FP=$(python3 -c "import json;print(json.load(open('$S/wallet.json'))['fingerprint'])")
     cat > "$S/mandate.json" <<JSON
 { "version": 1, "network": "regtest",
