@@ -132,6 +132,8 @@ the auditor accepted the code-level matrix with the gate called unconditionally 
 | `unfreeze --key tpm:0x81000100` (signed inside the TPM) | `applied: true`, `frozen: false`, nonce 10 |
 | `rotate-owner --key tpm:0x81000100 --new-owner piv:9a` (TPM-signed; the new owner given as a locator) | in-line `ATTESTED: piv:9a generated on YubiKey 39252737 (firmware 5.8.0), PIN ALWAYS / touch ALWAYS, chain to CN=Yubico Attestation Root 1` · `new owner: piv:9a@39252737 (attested, firmware 5.8.0)` · `applied: true`, nonce 11, **`pending_owner: 329586`** (= 329442 + 144) |
 
+| **Negative (owner-run, unplanned, signet 329443):** `unfreeze --key piv:9a` — PIN + touch on the YubiKey, submitted while the rotation is still pending | `message refused ["POLICY_SIG"]`; nonce stays 11, `frozen: false` untouched — the *pending* owner cannot act before its activation height; the TPM key still rules (the timelock on a loosening, DESIGN §7) |
+
 Until block 329586 the TPM key rules the live T2 wallet; then the YubiKey key does. Part 2 (after
 329586): `unfreeze --key tpm:0x81000100` must be `POLICY_SIG`-refused and `unfreeze --key piv:9a`
 (the owner, PIN + touch) accepted — that is the T2 proof of a YubiKey signature verified in the
