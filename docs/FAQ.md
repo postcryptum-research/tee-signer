@@ -184,7 +184,8 @@ scp ~/tee-owner/exchange/policy-install.msg you@your-server:tee-signer-exchange/
 ```
 
 `policy-build` reads the signet tip from a public Esplora (for value: your own node, `--node-rpc
-URL --node-cookie FILE`) and fills `chain.checkpoint`; `policy-sign` shows every field, signs the
+URL --node-cookie FILE` — the one connection the laptop opens is to *your* node or a public
+explorer, never to the signer's server) and fills `chain.checkpoint`; `policy-sign` shows every field, signs the
 canonical bytes with the owner key (nonce 0 = the install) and writes the message. On the
 server, the file goes to the enclave and its answer comes back as a file:
 

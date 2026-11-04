@@ -186,7 +186,9 @@ scp ~/tee-owner/exchange/policy-install.msg you@your-server:tee-signer-exchange/
 ```
 
 `policy-build` читает вершину signet с публичного Esplora (для ценности — собственная нода,
-`--node-rpc URL --node-cookie FILE`) и заполняет `chain.checkpoint`; `policy-sign` показывает
+`--node-rpc URL --node-cookie FILE`; это единственное соединение, которое открывает ноутбук, и оно
+идёт к *вашей* ноде или публичному обозревателю, никогда к серверу подписанта) и заполняет
+`chain.checkpoint`; `policy-sign` показывает
 все поля, подписывает канонические байты ключом владельца (nonce 0 = установка) и пишет
 сообщение. На сервере файл уходит в анклав, а его ответ возвращается файлом:
 
