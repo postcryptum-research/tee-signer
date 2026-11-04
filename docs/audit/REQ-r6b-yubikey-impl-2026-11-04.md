@@ -102,6 +102,31 @@ Every signature needs the owner's PIN and a touch, so the owner runs these in th
 
 Evidence is appended to this REQ as it is produced.
 
+### 4.1 Evidence produced 2026-11-04 (laptop; `.local/t0-piv/evidence.log`, not in the repo)
+
+| Step | Who | Result |
+|---|---|---|
+| `ykman piv keys generate -a ECCP256 --pin-policy ALWAYS --touch-policy ALWAYS 9a` | owner (PIN + touch) | slot `9a`: ECCP256, origin GENERATED, PIN ALWAYS, touch ALWAYS (`ykman piv keys info 9a`) |
+| `pubkey --key piv:9a` (no PIN) | dev | `04c10247ff30…19d855`; equals the PEM `ykman` wrote |
+| `piv-attest --key piv:9a --out .local/piv-9a-attest` (no PIN) | dev | **ATTESTED**: chain `YubiKey PIV Attestation 9a ← Yubico PIV Attestation ← Yubico PIV Attestation B2 1 ← Yubico Attestation Intermediate B 1 ← Yubico Attestation Root 1` (pinned `9271d914…5887`), firmware 5.8.0, PIN ALWAYS / touch ALWAYS, serial 39252737 = device, attested key = slot key |
+| T0 `init --network regtest --owner piv:9a --recovery-pk <throwaway keyfile>` | dev | in-line `ATTESTED: piv:9a generated on YubiKey 39252737 … chain to CN=Yubico Attestation Root 1`; owner key `piv:9a@39252737 (attested, firmware 5.8.0)`; record written, labeled `T0-nosgx` TOFU; `owner_pk` = the attested key |
+| **Negative:** `policy-sign --key <throwaway keyfile owner>` (INSTALL, nonce 0) | dev | `install refused, ["POLICY_SIG"]` — the enclave holds the YubiKey key as owner, the keyfile's signature is refused; nonce stays 0 |
+| `policy-sign --key piv:9a` INSTALL (nonce 0) | owner (PIN + touch #1) | `installed: true` |
+| `policy-sign --key piv:9a` tighten (nonce 1) | owner (PIN + touch #2) | `applied: true`, nonce 1 |
+| **Negative:** wrong PIN, once | owner | `YubiKey sign: key unavailable: wrong PIN; 2 tries left before only the PUK can unblock it`; `ykman piv info` → `PIN tries remaining: 2/3`; nothing sent to the enclave (nonce unchanged) |
+| `policy-sign --key piv:9a` (the original mandate again, nonce 2) | owner (correct PIN + touch) | `applied: true` — and because it is a *loosening* relative to the tightened mandate, **pending** (`[e3ac11f9…1211, 144]`); `PIN tries remaining: 3/3` (the counter reset) |
+| **Bonus negative:** a further tighten while the loosening is pending (nonce 3) | owner (PIN + touch) | `message refused, ["POLICY_PENDING"]` — one pending update at a time (DESIGN §7), signed by the right key and still refused |
+| `scripts/piv-scenario.sh stop` | dev | T0 signerd stopped; state kept under `.local/t0-piv/` |
+
+Ship-condition (3) negative test: the `owner_slot_policy_ok` matrix (code) — the owner declined the
+optional on-device ONCE/CACHED key in `9d` (one PIN + touch for a key that would be deleted again);
+the auditor accepted the code-level matrix with the gate called unconditionally in `open_piv`.
+
+Tier label of this evidence: T0 (in-process rcore, no SGX, regtest) — it proves the owner-cli
+mechanics (locator, attestation gate, PIN per signature, touch per signature, the refusal of
+another key) and the enclave-side verification code path, which is the same `rcore` that runs
+at T1/T2. The T2 evidence is §4.5, after block 329441.
+
 ## 5. Honest label after this round
 
 Owner key backends: encrypted keyfile (D3 floor), TPM 2.0 (`tpm:`), YubiKey 5 PIV (`piv:`), all
