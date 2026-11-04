@@ -53,6 +53,19 @@ an enclave that is up and silent; the owner looks in the morning.
    seq and the time since the owner last looked, signs with the owner device (PIN + touch on a
    YubiKey) and submits. The enclave's check (d) is the second line behind owner-cli's.
 
+6. **The opt-out, at build time only (owner's rule 2026-11-05: "на свой страх и риск").** An
+   operator for whom unattended reboots matter more than the rollback bound may build the enclave
+   with `AUTO_ARM=1` (`enclave/Makefile` → a cargo feature of `rcore`): that enclave arms itself on
+   every load. It is **never** a runtime switch — a flag in a config file, an environment variable
+   or a `signerd` option would be root's to flip — so it changes the measurement: a different
+   MRENCLAVE from the project's pinned one. The enclave says what it is: `STATUS` and the identity
+   card carry `auto_arm: true`, `owner-cli attest` and `init` print it in capitals, and the fused
+   `init` refuses to write a record for such an enclave unless `--accept-auto-arm` is given. The
+   project's build evidence, the pinned MRENCLAVE and every claim in the docs are for the build
+   **with** the pause; the auto-arm build is the operator's own build, with their own MRENCLAVE,
+   their own attestation record and the §1 exposure restored in full — written in the operator
+   guide in exactly those words.
+
 ## 3. Attacker scenarios against the rule
 
 | Who, what | Outcome |
@@ -92,6 +105,7 @@ an enclave that is up and silent; the owner looks in the morning.
 | `host/signerd` | status fields passed through; nothing else (the daemon cannot arm) |
 | `owner/owner-cli` | `arm` command (§2.5); `last_seen_seq` in `wallet.json` updated on every `seq`-returning call; `status` prints `armed` and the challenge |
 | vectors | `NOT_ARMED` on sign after reload; replayed `Arm` → `ARM_CHALLENGE`; `seq_seen > seq` → `ARM_SEQ_BEHIND`; wrong key → `POLICY_SIG`; wrong nonce → `POLICY_NONCE`; T0 e2e: sign → reload → sign refused → arm → sign accepted; rollback drill on T0: spend, snapshot, spend, restore, reload → unarmed; owner-cli refuses to arm (`seq < last_seen_seq`) |
+| `enclave/rcore` feature `auto-arm`, `enclave/Makefile` `AUTO_ARM=1` | `session::ensure` arms at load; the card/status flag `auto_arm`; gate: the release build script refuses `AUTO_ARM=1` with `CEREMONY=1` (the ceremony key never signs an auto-arm enclave), so the opt-out build is dev-key-signed by construction |
 | docs | `HOW_IT_WORKS`/`FAQ` (both languages): the one new sentence for the operator — "after any restart of the signer, approve the start with your key; until then it signs nothing"; scenario 3 rewritten; `THREAT-MODEL.md §5` rollback row; `CONTINUITY.md` (a reboot is a pause, not a loss) |
 
 TCB: no new crate; one message type, three reasons, one 32-byte volatile value. Enclave builds
@@ -117,3 +131,5 @@ after every restart, in their own time; payouts wait until then.
    reading, or do you want the challenge comparison in `rcore` only?
 4. Anything that lets root obtain a signature from a freshly loaded, rolled-back state without
    the owner's `Arm` over this boot's challenge?
+5. The build-time opt-out (§2.6): is "different MRENCLAVE + flag in the card + ceremony key never
+   signs it" the right shape, or should the opt-out be refused altogether in this repository?
