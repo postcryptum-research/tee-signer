@@ -32,10 +32,10 @@ The words used below:
   never on the box;
 - **recovery key** — a cold encrypted keyfile that can cancel a pending change, replace a lost
   owner key, and decrypt the **recovery blob** (the seed, encrypted at init to this key);
-- **receipt** — the enclave's record of every signature (sequence number, txid, amounts), signed
-  with its stamp;
-- **monitor** — `owner-cli monitor`, run off the box: verifies receipts and watches the chain
-  from the merchant's own node;
+- **receipt** *(expert mode)* — the enclave's record of every signature (sequence number, txid,
+  amounts), signed with its stamp;
+- **monitor** *(expert mode)* — `owner-cli monitor`, run off the server: verifies receipts and
+  watches the chain from the merchant's own node;
 - **tiers** — T1: SGX1 without Flexible Launch Control (debug launch, no attestation); T2: FLC +
   DCAP (non-debug, attested); T0: software, tests only ([`HOW_IT_WORKS.md`](HOW_IT_WORKS.md)).
 
@@ -161,10 +161,12 @@ $B status                                                             # installe
 (the sidecar's name in the stack), the token, minimum confirmations, a fallback fee rate. Enable
 the **TEE signer** payout processor for the store's on-chain payouts; use **Send through the
 enclave** for manual sends. Create a small pull payment and a payout: the processor builds the
-PSBT, the enclave signs it, the receipt sequence at `status` advances by one.
+PSBT, the enclave signs it, and `seq` at `status` — the enclave's count of signatures — advances by one.
 
-**9. Run the monitor** on your laptop (or any machine that is not the server). It needs a view
-of the chain that does *not* come from the server: for a first run on signet a public Esplora
+**Optional, expert mode: the monitor.** The main path ends at step 8. If you want the limit
+("whoever controls the disk can replay one window") *watched* rather than accepted, run the
+monitor on your laptop (or any machine that is not the server). It needs a view of the chain
+that does *not* come from the server: for a first run on signet a public Esplora
 is enough; for anything of value, your own node (`--node-rpc URL --node-cookie FILE` in place of
 `--esplora`). It reaches the sidecar through the tunnel of step 3:
 
@@ -178,8 +180,8 @@ ALARM sends an unsigned **freeze** before telling you.
 
 **What you get:** the seed is never a file; a stolen admin login, a bad plugin or a hacked BTCPay
 container can at most spend the current window's unlisted budget, to destinations capped per
-transaction — and the monitor tells you. You unfreeze, cancel or tighten from your laptop with
-the owner key; nobody has to be present for routine payouts.
+transaction — that window cap is the ceiling on the damage. You unfreeze, cancel or tighten from
+your laptop with the owner key; nobody has to be present for routine payouts.
 
 **What to know:** T1 protects against the attack that happened — anyone acting as BTCPay — but
 not against root on the server; today's BTCPay seed is readable by root too, so nothing gets
@@ -247,9 +249,9 @@ $B attest --wallet wallet.json            # the same seven checks, any time late
 A failure at any step refuses and names the step; no record is written, and you do not fund the
 wallet.
 
-**5. Then as in setup 1:** cold import into BTCPay, the mandate, the plugin settings, the monitor
-against your own node. Consider `freshness.required = true` in the mandate: the monitor then
-issues short-lived witness tokens, and a rolled-back enclave *pauses* instead of overspending.
+**5. Then as in setup 1:** cold import into BTCPay, the mandate, the plugin settings. In expert
+mode, the monitor against your own node and `freshness.required = true` in the mandate: a
+rolled-back enclave then *pauses* instead of re-spending a window.
 
 **What you get on T2:** everything from T1, plus host root is outside the enclave (up to the SGX
 threat model: side channels and Intel's microcode TCB are excluded), and a cryptographic answer
@@ -282,17 +284,32 @@ the BTCPay container) and talking to `signerd` with the token. Then they can:
   enclave; without that enclave on that CPU it does not open. (If they also get **root** on a T1
   server, they can read the enclave's memory — exactly as root can read today's BTCPay seed; see
   "What does root see?");
-- **break things** — stop the feed, delete the receipt log, restart `signerd` with an older sealed
-  state. None of that loosens the mandate. A withheld feed stops the windows from rolling (the
-  current window's remaining budget is all there is); an older state is a **rollback** — one
-  extra window's budget at most, and the monitor sees the sequence go backwards
-  (`SEQ_REGRESSION`) and freezes. With `freshness.required`, a rolled-back enclave refuses to sign
-  at all until you re-arm it.
+- **break things** — stop the feed, delete files, restart `signerd` with an older sealed state.
+  None of that loosens the mandate. A withheld feed stops the windows from rolling (the current
+  window's remaining budget is all there is); an older state is a **rollback** — the current
+  window's budget replayed once, nothing more. That is the limit the system states rather than
+  closes ("What does it NOT protect against?"); expert mode turns it into an alarm and, with the
+  freshness witness, into a pause.
 
 What they cannot do: change the mandate (it needs your owner key's signature with the next
-nonce), unfreeze, rotate the owner, or get the seed out of a T2 enclave. What you do: the monitor
-has probably already sent a **freeze**; review the receipts and the chain, clean the box, then
-`unfreeze` with the owner key — or tighten the mandate first (a tightening applies at once).
+nonce), unfreeze, rotate the owner, or get the seed out of a T2 enclave. What you do: **freeze** (anyone
+can, no signature needed), look at the chain, clean the server, then `unfreeze` with the owner
+key — or tighten the mandate first (a tightening applies at once).
+
+### What does it NOT protect against?
+
+Five things, stated rather than closed:
+
+- **root on a T1 server** can read the enclave — see "What does root see?";
+- **whoever controls the server's disk** (root, the hosting provider) can hand the enclave an
+  older copy of its sealed state and replay the current window's budget, once per rollback. The
+  window cap is the ceiling; no SGX generation has a monotonic counter, so this is the system's
+  limit, not a bug to fix. Expert mode turns it into an alarm (receipts + monitor) or a pause
+  (freshness witness) if you want it watched;
+- **physical and Intel-level attackers** (side channels, microcode), on every tier;
+- **the laptop you sign on**: what the owner device signs is what `owner-cli` on that laptop
+  shows; a device with its own display is a later round;
+- **the recovery key and the recovery blob stolen together** — that is the seed.
 
 ### What exactly does the enclave refuse?
 
@@ -307,7 +324,7 @@ every one of them has a refusal vector in the test suite. The classes:
 | caps | `CAP_TX`, `CAP_WINDOW`, `CAP_UNLISTED_TX`, `CAP_UNLISTED_WINDOW`, `CAP_TRUSTED_TX(label)`, `CAP_TRUSTED_WINDOW(label)` | the payout, or the window's running total, is above the mandate |
 | fees | `FEE_ABS`, `FEE_RATE` | BTCPay's fee estimate is above the bounds (the rate is checked against a lower-bound size, so a fair fee on a large transaction can be over-refused — `maxFeeAbs` is the hard backstop) |
 | state | `FROZEN`, `MANDATE_EXPIRED`, `CHAIN_STALE`, `CHAIN_REORG`, `STATE_UNSEALABLE` | someone froze the signer; `validity.notAfterHeight` passed; the header feed stopped or a reorg deeper than `maxReorg` happened; the sealed state does not open |
-| freshness | `FRESHNESS_MISSING`, `FRESHNESS_SIG`, `FRESHNESS_TIP`, `FRESHNESS_SEQ_BEHIND` | the monitor's witness token is absent, stale, or says the enclave is behind what the monitor has seen (a rollback) — needs the owner's `rearm` |
+| freshness *(expert mode only)* | `FRESHNESS_MISSING`, `FRESHNESS_SIG`, `FRESHNESS_TIP`, `FRESHNESS_SEQ_BEHIND` | only with `freshness.required` on: the monitor's witness token is absent, stale, or says the enclave is behind what the monitor has seen (a rollback) — needs the owner's `rearm` |
 | owner messages | `POLICY_SIG`, `POLICY_NONCE`, `POLICY_NETWORK`, `POLICY_WALLET`, `POLICY_PENDING` | signed by a key that is not the owner (a retired key, a pending one), a wrong nonce, a mandate for another wallet, or a second change while one is pending |
 
 A refusal charges nothing to the budget. The reasons come back to the plugin (BTCPay logs them
@@ -355,7 +372,11 @@ The file is intent; the sealed state is law. Editing a JSON file changes nothing
 signed with the next nonce and accepted. Keep the installed mandate's JSON next to `wallet.json`:
 the monitor reads the caps from it.
 
-### What is a receipt, and why run a monitor at all?
+### Expert mode: receipts, the monitor and the freshness witness — what do they add?
+
+Nothing on the main path needs them. The limit stands on its own: whoever controls the server's
+disk can replay the current window's budget once per rollback, and the window cap bounds it.
+Expert mode is for an operator who wants that limit *watched* rather than accepted.
 
 Every signature returns a receipt `{seq, txid, net outflow, amounts per class, fee, height,
 mandate hash}` signed by the enclave's stamp (bound at init). The sequence number is

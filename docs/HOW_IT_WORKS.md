@@ -38,12 +38,8 @@ enclave does.
    caps, the window budget, the fee bounds and the structural rules of the installed mandate.
 4. **It refuses, or it commits and signs.** On refusal, a machine-readable reason list comes back
    (`CAP_UNLISTED_TX`, `FEE_RATE`, `INPUT_NOT_OWN`, …) and nothing is charged. On success the
-   enclave first records the spend in its sealed state, *then* signs, and returns the signed PSBT
-   with a **receipt** — sequence number, txid, amounts per class, fee, height — signed by the
-   enclave's own **stamp** (a second key, created at init, that signs the enclave's statements —
-   never transactions; those are signed by the wallet key, which never leaves the enclave).
-5. **BTCPay** finalises and broadcasts, as for any externally signed PSBT. The merchant's
-   **monitor**, off the box, verifies receipts and watches the chain from an independent node.
+   enclave first records the spend in its sealed state, *then* signs, and returns the signed PSBT.
+5. **BTCPay** finalises and broadcasts, as for any externally signed PSBT.
 
 Budget windows are counted in **blocks** (144 ≈ a day), not in host-clock hours: the enclave
 follows the block-header chain from an owner-pinned checkpoint, so a compromised host cannot reset
@@ -61,6 +57,23 @@ the budget by moving the clock.
 | The merchant's owner device is stolen | — | the thief can only submit a *loosening*, which waits a **timelock** (one day by default) during which the merchant cancels with the recovery key; a tightening would only hurt the thief |
 | The server dies, the disk is lost | the seed is in the database backup — or gone | the seed also exists in the **recovery blob**, encrypted to the merchant's offline recovery key: restore into any BIP84 wallet ([`CONTINUITY.md`](CONTINUITY.md)) |
 
+## The limits, in plain words
+
+- **Root on a T1 server** can read the enclave (the tiers below). Today's BTCPay seed is readable
+  by root too; T1 changes nothing there, T2 does.
+- **Whoever controls the server's disk** — root, or the hosting provider — can hand the enclave an
+  older copy of its sealed state and so replay the current window's budget, **once per rollback**.
+  Nothing more: the window cap you chose is the ceiling. This holds on every SGX generation (none
+  has a monotonic counter), and the system does not close it; it states it.
+- **Physical and Intel-level attackers** (side channels, microcode) are out of scope on every tier.
+- **The laptop you sign on** shows you what you sign; a compromised laptop can show one thing and
+  have the device sign another. A device with its own display is a later round.
+- **The recovery key and the recovery blob stolen together** are the seed.
+
+Everything else an attacker on the server can do — ask for signatures, delete files, stop the
+daemon, withhold block headers, set the clock — ends in a refusal, a pause, or at most the current
+window's budget.
+
 ## The owner stays in charge
 
 Two keys, kept apart, neither ever on the BTCPay box:
@@ -77,6 +90,18 @@ A mandate **tightening** applies at once. A **loosening** — a higher cap, a ne
 destination, a new owner — waits the mandate's timelock, visible at `status`, cancellable by
 either key. One change in flight at a time. Anyone may **freeze** (no signature needed); only the
 owner unfreezes.
+
+## Expert mode, optional
+
+The main path is two keys, one mandate, three commands and the plugin page; nothing in this
+section is needed for it. For an operator who wants the limit above *watched* rather than
+accepted: the enclave signs a **receipt** for every signature (sequence number, txid, amounts,
+height) with a second key, its **stamp**; `owner-cli monitor`, run off the server, verifies those
+receipts, watches your addresses on the chain from your own node for spends without a receipt,
+notices a sequence that went backwards (a rollback) or a feed that stopped, and sends a freeze.
+With `freshness.required` in the mandate the monitor also issues short-lived witness tokens, and a
+rolled-back enclave pauses instead of re-spending a window. All of it is off unless you run it;
+[`FAQ.md`](FAQ.md) describes it.
 
 ## Honest tiers
 
