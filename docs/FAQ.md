@@ -8,8 +8,12 @@ Russian version: [`FAQ_ru.md`](FAQ_ru.md). The one-page picture: [`HOW_IT_WORKS.
 
 The words used below:
 
-- **enclave** — the SGX program that holds the seed and judges every transaction; the only
-  trusted code on the merchant's box;
+- **enclave** — a protected region of the CPU's memory, walled off from the operating system
+  (Intel SGX; AMD has an equivalent), in which a special program runs. Here that program holds
+  the seed phrase and the private key derived from it: a transaction goes in, a signed
+  transaction — or a refusal — comes out, and the key never leaves. The nearest familiar thing
+  is a hardware wallet like a Ledger Nano, except built into the server's CPU and signing
+  without a button, by the rules you set;
 - **`signerd`** — the untrusted daemon next to BTCPay that loads the enclave, stores its sealed
   state on disk, feeds it block headers and exposes a small HTTP API; it cannot authorise anything;
 - **the plugin** — `BTCPayServer.Plugins.TeeSigner`: a payout processor and a "send through the
@@ -39,8 +43,8 @@ encrypted keyfile on two USB drives in two places.
 **1. Check the hardware.** `cpuid` must show SGX; the legacy driver gives `/dev/isgx`; `aesmd`
 runs. On this class of hardware the enclave launches only in **debug** mode (Intel's launch
 whitelist was retired with SDK 2.28; FLC hardware does not need it). That is the T1 label: the
-November 2026 attack is closed, but **root on the box can read the enclave** — see "What does
-root see?" below.
+November 2026 attack is closed; what T1 does **not** add is protection from root on the server —
+see "What does root see?" below for what that means in practice.
 
 **2. Build and run the sidecar** (the dev stack's own scripts; an operator guide is a carried
 item):
@@ -130,10 +134,12 @@ container can at most spend the current window's unlisted budget, to destination
 transaction — and the monitor tells you. You unfreeze, cancel or tighten from your laptop with
 the owner key; nobody has to be present for routine payouts.
 
-**What to know:** on T1 the enclave runs in debug mode, so **root on the box** can read its
-memory (the seed included) — the tier protects against the application-level attack, not against
-a root compromise. The enclave's identity is trust-on-first-use (pinned in `wallet.json`); there
-is no remote attestation on this hardware. Signet only, today.
+**What to know:** T1 protects against the attack that happened — anyone acting as BTCPay — but
+not against root on the server; today's BTCPay seed is readable by root too, so nothing gets
+worse, and nothing gets better on that one front ("What does root see?" below). If your threat
+includes the hosting provider or a root compromise, that is what T2 is for. The enclave's
+identity is trust-on-first-use (pinned in `wallet.json`); there is no remote attestation on this
+hardware. Signet only, today.
 
 ---
 
@@ -221,8 +227,9 @@ the BTCPay container) and talking to `signerd` with the token. Then they can:
   that spends a coin that is not the wallet's, pays an unlisted address beyond the cap, uses
   another sighash, or burns more fee than the window budget allows;
 - **read every file BTCPay can read** — the sealed state file included. It is sealed to the
-  enclave; without that enclave on that CPU it does not open. On **T1**, if they also get **root**,
-  the debug enclave's memory is readable and the seed with it — that is the T1 label;
+  enclave; without that enclave on that CPU it does not open. (If they also get **root** on a T1
+  server, they can read the enclave's memory — exactly as root can read today's BTCPay seed; see
+  "What does root see?");
 - **break things** — stop the feed, delete the receipt log, restart `signerd` with an older sealed
   state. None of that loosens the mandate. A withheld feed stops the windows from rolling (the
   current window's remaining budget is all there is); an older state is a **rollback** — one
@@ -352,16 +359,26 @@ and sealed only by its passphrase (not to the boot state, labeled): malware with
 that laptop could use it while plugged in — bounded, as always, by the timelock and the recovery
 key. The owner key is never a theft-capable key by itself.
 
-### What does root on the box see? What is the real difference between T1 and T2?
+### What does root on the server see? What is the real difference between T1 and T2?
 
-**T1** (SGX1 without FLC): the enclave can only be launched in debug mode, and a debug enclave's
-memory is readable through the SGX debug interface by root. So on T1 root can read the seed and
-could, in principle, sign outside the mandate. T1 protects against everything *below* root: the
-BTCPay admin, a plugin, the container, a non-root user. That is the attack that happened, and it
-is what a merchant on cheap hardware buys. **T2** (FLC + DCAP): non-debug launch, memory
-encrypted and inaccessible to root, identity attested. Root can still delete files, stop the
-daemon, withhold headers or replay an old sealed state — all of which the enclave and the monitor
-turn into refusals, pauses or alarms, never into a signature outside the mandate.
+Start from today. A BTCPay hot wallet's seed sits in NBXplorer's database; the BTCPay and
+NBXplorer processes run as an ordinary service user, **not root**, and read it freely. So today
+the seed is readable by that user, by anyone who logs in as BTCPay admin, by any plugin — and, of
+course, by root.
+
+**T1** (SGX1 without FLC) moves the seed into the enclave. The BTCPay user, the admin, the plugin,
+the container cannot read it any more — that is the attack that happened, closed. What T1 does
+**not** change is root: on this hardware the enclave can only run in debug mode, and root can
+read a debug enclave's memory through the SGX debug interface, as it could read the seed before.
+Root gains nothing new; everyone below root loses their access. If your threat is "someone got
+into my BTCPay", T1 is the answer on hardware you already rent. If your threat includes your
+hosting provider or a root compromise of the server, T1 is not enough and is not sold as such —
+that is T2.
+
+**T2** (FLC + DCAP): non-debug launch, memory encrypted and inaccessible to root, identity
+attested. Root can still delete files, stop the daemon, withhold headers or replay an old sealed
+state — all of which the enclave and the monitor turn into refusals, pauses or alarms, never into
+a signature outside the mandate.
 
 `status` says which one you have (`tier: T1-debug` / `T2-release`); nothing can mistake one for
 the other, and the identity card carries the tier too.

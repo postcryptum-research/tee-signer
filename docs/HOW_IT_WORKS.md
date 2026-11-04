@@ -11,8 +11,11 @@ November 2026 that is exactly how hot wallets were swept. The key is a file, and
 sign anything, forever.
 
 **After.** With tee-signer there is no seed file. The seed is generated **inside an SGX enclave**
-on the merchant's own box, sealed to that enclave, and never leaves it in clear. BTCPay gets a
-watch-only account xpub and keeps working as it does with any cold wallet. When BTCPay needs a
+on the merchant's own server and never leaves it in clear. An enclave is a protected region of
+the CPU's memory, walled off from the operating system (Intel SGX; AMD has an equivalent), where
+a special program runs: think of a hardware wallet like a Ledger Nano, built into the server's
+CPU. The key lives in it; a transaction goes in, a signed transaction — or a refusal — comes out.
+BTCPay gets a watch-only account xpub and keeps working as it does with any cold wallet. When BTCPay needs a
 signature — a customer payout, a sweep to cold storage — it hands the enclave a PSBT, and the
 enclave **judges the transaction itself** against a **mandate** the merchant signed on a separate
 device: which destinations are trusted, how much per transaction, how much per budget window, fee
@@ -52,7 +55,7 @@ the budget by moving the clock.
 | The admin login is stolen (the November 2026 attack) | the whole wallet is swept | at most what the mandate allows for the current window — to unlisted destinations capped per transaction and per window; the merchant freezes and the budget rolls back nothing |
 | A malicious plugin, or code execution inside the BTCPay container | same | same: the plugin can only *ask* the enclave |
 | Malware with the merchant's user rights on the host | same | same, plus the sealed state can be read but not opened |
-| **Root** on the host | same | **T1** (SGX1 without Flexible Launch Control, debug launch): root can read the enclave's memory — the seed is **not** protected from root on this tier. **T2** (FLC + DCAP, non-debug launch): protected up to the SGX threat model |
+| **Root** on the server | same — root reads everything BTCPay reads | **T1** (SGX1 without Flexible Launch Control): root can read the enclave's memory, as it can read today's seed — no worse than today, and no better on this one front. **T2** (FLC + DCAP): protected from root too, up to the SGX threat model |
 | The host's clock or block feed is manipulated | the wallet does not care | windows run on verified block headers; a withheld feed only stops windows from rolling (the current window's remaining budget is the cap) |
 | The merchant's owner device is stolen | — | the thief can only submit a *loosening*, which waits a **timelock** (one day by default) during which the merchant cancels with the recovery key; a tightening would only hurt the thief |
 | The server dies, the disk is lost | the seed is in the database backup — or gone | the seed also exists in the **recovery blob**, encrypted to the merchant's offline recovery key: restore into any BIP84 wallet ([`CONTINUITY.md`](CONTINUITY.md)) |
@@ -76,12 +79,16 @@ owner unfreezes.
 
 ## Honest tiers
 
-| Tier | Hardware | Closes the November 2026 attack | Protects from host root |
+| Tier | Hardware | Closes the November 2026 attack | Protects from root on the server |
 |---|---|---|---|
 | **T1** | SGX1 without FLC (cheap bare metal, e.g. Xeon E3 v5/v6); the enclave can only be launched in debug mode; no remote attestation | yes | **no** — labeled, by the hardware |
 | **T2** | SGX with FLC + DCAP (Azure DCsv3, Xeon E-2200+, Ice Lake+); non-debug launch; the enclave's identity is attested and verified on the owner's machine | yes | yes, up to the SGX threat model (side channels excluded) |
 | **T0** | software, no TEE | dev and CI only | no |
 
+In practice: today's BTCPay seed is readable by the BTCPay service user (not root), by the admin,
+by a plugin — and by root. T1 takes it away from everyone below root and leaves root where it
+was. T2 takes it away from root as well. Pick T1 for the attack that happened, on the hardware
+you already rent; pick T2 when your threat includes the hosting provider or a root compromise.
 Both tiers run the same enclave binary, reproducibly built and signed with an offline ceremony
 key. Today the project runs on **signet** only.
 
