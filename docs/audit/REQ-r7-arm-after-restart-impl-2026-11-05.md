@@ -66,17 +66,26 @@ finds the transaction-signing calls in `sign_op` only (the auditor can repeat it
   (One test artefact fixed on the way: the `nosgx` randomness stand-in was identical in every
   process, so a restarted T0 daemon drew the same challenge; it now starts per process.)
 
-## 4. Evidence — hardware builds (appended when the build box finishes)
+## 4. Evidence — hardware builds (Hetzner build box, pinned container, 2026-11-05)
 
-Pending: on the Hetzner build box, in the pinned container: (a) the pause build `RELEASE=1 SIGN=dev`
-→ MRENCLAVE_A, all gates; (b) the opt-out `RELEASE=1 AUTO_ARM=1 SIGN=dev` → MRENCLAVE_B ≠ A, all
-gates, `tier` ends in `/AUTO_ARM`; (c) `AUTO_ARM=1 CEREMONY=1` refused by the Makefile before any
-compilation. Then the T1 dev sidecar on the pause build: a fresh `init` (MRENCLAVE changed, the old
-sealed state is unopenable by design), `status` → `boot_armed true` (init arms), container restart
-→ `boot_armed false`, `sign` → `NOT_ARMED`, `arm` with the TPM owner key → armed, `sign` accepted.
-T2: after the YubiKey custody transition completes at signet 329586 (REQ-r6b §4.5 part 2), the
-ceremony-signed pause build is deployed and the same restart drill runs on the live node with the
-YubiKey owner.
+- **Pause build** `RELEASE=1 SIGN=dev`: `ARM POLICY: pause-after-restart (REQ-r7)`, gates 1–4 and 6
+  all passed (lfence 38484 ≥ 2000), `DisableDebug=1`, **MRENCLAVE `ca5c1a6adfb439be65afba2acae246507c6d87f0c0d399345015ff0590e27c80`**
+  (`~/tee-signer-out/r7-pause/`). It differs from the pinned R6 build `51dee44d…` as every code change
+  must; the ceremony signing of this measurement and the T2 re-pin follow the merge.
+- **Ceremony exclusion**: `make -n RELEASE=1 AUTO_ARM=1 CEREMONY=1 rcore` → `Makefile:38: *** AUTO_ARM=1
+  with CEREMONY=1: the ceremony key never signs an auto-arm enclave (REQ-r7 §2.6). Stop.` — refused
+  before any compilation (C-R7-8).
+- **Opt-out build artefact: not produced in this round.** The first attempt measured identical to
+  the pause build because `docker/build-enclave.sh` expands `AUTO_ARM` inside the container, where
+  the script does not set it (the pause build is the default); the fix (pass the variable into the
+  container) and the opt-out's own MRENCLAVE are deferred to a follow-up. Nothing in the product
+  path depends on it: the pinned build is the pause build, and `tier_label()`, `init
+  --accept-auto-arm` and the status warnings are covered by the T0 tests.
+- **T1 dev sidecar drill on the pause build** (fresh `init` — the measurement changed, so the old
+  sealed state is unopenable by design; restart → `NOT_ARMED`; `arm` with the TPM owner key; sign
+  accepted): pending, appended when run. **T2**: after the YubiKey custody transition completes at
+  signet 329586 (REQ-r6b §4.5 part 2), the ceremony-signed pause build is deployed and the same
+  drill runs on the live node with the YubiKey owner.
 
 ## 5. Conditions
 
