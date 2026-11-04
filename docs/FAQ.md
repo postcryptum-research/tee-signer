@@ -376,6 +376,28 @@ strictly increasing and lives inside the sealed state. The monitor, off the box:
 A spend you have reviewed and accept (`--acknowledge <txid>`) stops re-alarming. The monitor's key,
 if it has one, can only pause signing or hide a rollback — never loosen or sign.
 
+### Why two keys? Couldn't the wallet key sign the receipts, to say "it was me, the enclave"?
+
+It could, technically, and it must not. The wallet key holds the money, so the only thing it
+ever signs is a Bitcoin transaction the mandate has judged. Every other use of a money key is an
+extra way to get a signature out of it over bytes someone else chose — the same reason you do not
+sign chat messages with a cold-wallet key. So the enclave keeps a second, small key for its own
+statements: the identity card at init and every receipt after. Three things follow:
+
+- **a different audience, a different curve.** Receipts are checked not by the Bitcoin network
+  but by your monitor and `owner-cli`, on your laptop, with the same P-256 that the owner key and
+  every consumer secure element speak; the Bitcoin key stays secp256k1 and is never asked to do
+  anything but transactions;
+- **a name for this enclave instance.** The identity card carries the enclave's measurement,
+  the xpub, the fingerprint, the tier and the stamp's public key, signed by the stamp; on T2 the
+  Intel attestation binds the stamp to the measured code. "This xpub belongs to this enclave" is
+  a statement the stamp makes once and every receipt repeats;
+- **a grade of damage.** If the stamp leaks (root on a T1 server), someone can forge receipts and
+  so lie to your monitor — but cannot move a satoshi. With one key there would be no such grade:
+  a leaked money key is total loss, and a key used for two jobs is twice as exposed.
+
+Both keys are born inside the enclave at init, sealed together, and neither leaves it.
+
 ### The server died / the disk is gone / the provider deleted the VM. Are the coins lost?
 
 No. The seed exists in two places: inside the enclave, and in the **recovery blob** encrypted at
