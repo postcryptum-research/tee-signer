@@ -150,4 +150,7 @@ Owner key backends: encrypted keyfile (D3 floor), TPM 2.0 (`tpm:`), YubiKey 5 PI
 P-256, same 64-byte signature at the enclave. The YubiKey path adds what the TPM lacks: a per-signature
 **touch** (physical presence) and a **verified attestation** of origin and policies. Residuals:
 the device-wide PIN coupling of §3; no date/revocation checks in `piv-attest`; the T0 run is
-mechanics evidence, the T2 rotation (§4.5) is the tier-2 evidence.
+mechanics evidence, the T2 rotation (§4.5) is the tier-2 evidence; and the attestation gate is
+**client-side** (owner-cli), not an enclave transition rule — the enclave accepts any valid P-256
+owner key ≠ recovery from the current owner, by design (backend-agnostic, no X.509/RSA in the TCB);
+enclave-side attestation on rotate is labeled as a hardening for a higher tier (C-R6b-2).
