@@ -82,10 +82,26 @@ enum Cmd {
         /// mainnet | testnet4 | signet | regtest
         #[arg(long)]
         network: String,
+        /// The owner's PUBLIC key, hex — or a file holding it (`owner-cli pubkey … > owner.pub`, carried here).
+        #[arg(long, conflicts_with = "owner_pk_file")]
+        owner_pk: Option<String>,
         #[arg(long)]
-        owner_pk: String,
+        owner_pk_file: Option<PathBuf>,
+        /// The recovery PUBLIC key, hex — or a file holding it.
+        #[arg(long, conflicts_with = "recovery_pk_file")]
+        recovery_pk: Option<String>,
         #[arg(long)]
-        recovery_pk: String,
+        recovery_pk_file: Option<PathBuf>,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// R8 (no tunnel): freeze signing right here on the server (no signature needed); only the owner's
+    /// signed `unfreeze` lifts it.
+    Freeze {
+        #[arg(long, env = "SIGNERD_STATE_DIR")]
+        state_dir: PathBuf,
+        #[arg(long, default_value = "http://127.0.0.1:7390")]
+        url: String,
         #[arg(long)]
         out: PathBuf,
     },
@@ -95,9 +111,11 @@ enum Cmd {
         state_dir: PathBuf,
         #[arg(long, default_value = "http://127.0.0.1:7390")]
         url: String,
-        /// 32 bytes hex, chosen by the owner on their machine.
+        /// 32 bytes hex, chosen by the owner on their machine — or a file holding it, carried here.
+        #[arg(long, conflicts_with = "nonce_file")]
+        nonce: Option<String>,
         #[arg(long)]
-        nonce: String,
+        nonce_file: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -410,6 +428,16 @@ enum OwnerStep {
     Submit(PathBuf),
     Init { network: String, owner_pk: String, recovery_pk: String },
     Quote(String),
+    Freeze,
+}
+
+/// A value given directly, or read (trimmed) from a carried file.
+fn value_or_file(value: &Option<String>, file: &Option<PathBuf>, what: &str) -> Result<String> {
+    match (value, file) {
+        (Some(v), _) => Ok(v.trim().to_string()),
+        (None, Some(f)) => Ok(std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?.trim().to_string()),
+        (None, None) => anyhow::bail!("{what}"),
+    }
 }
 
 async fn owner_step(state_dir: &Path, url: &str, out: &Path, step: OwnerStep) -> Result<()> {
@@ -419,6 +447,7 @@ async fn owner_step(state_dir: &Path, url: &str, out: &Path, step: OwnerStep) ->
     let base = url.trim_end_matches('/');
     let resp = match step {
         OwnerStep::Status => http.get(format!("{base}/v1/status")).bearer_auth(&token).send().await?,
+        OwnerStep::Freeze => http.post(format!("{base}/v1/freeze")).bearer_auth(&token).send().await?,
         OwnerStep::Quote(nonce) => http.get(format!("{base}/v1/quote")).query(&[("nonce", nonce)]).bearer_auth(&token).send().await?,
         OwnerStep::Init { network, owner_pk, recovery_pk } => {
             let net: u8 = match network.as_str() {
@@ -978,10 +1007,16 @@ async fn main() -> Result<()> {
     match &args.cmd {
         Cmd::Status { state_dir, url, out } => return owner_step(state_dir, url, out, OwnerStep::Status).await,
         Cmd::Submit { state_dir, url, file, out } => return owner_step(state_dir, url, out, OwnerStep::Submit(file.clone())).await,
-        Cmd::Init { state_dir, url, network, owner_pk, recovery_pk, out } => {
-            return owner_step(state_dir, url, out, OwnerStep::Init { network: network.clone(), owner_pk: owner_pk.clone(), recovery_pk: recovery_pk.clone() }).await
+        Cmd::Init { state_dir, url, network, owner_pk, owner_pk_file, recovery_pk, recovery_pk_file, out } => {
+            let owner_pk = value_or_file(owner_pk, owner_pk_file, "--owner-pk or --owner-pk-file")?;
+            let recovery_pk = value_or_file(recovery_pk, recovery_pk_file, "--recovery-pk or --recovery-pk-file")?;
+            return owner_step(state_dir, url, out, OwnerStep::Init { network: network.clone(), owner_pk, recovery_pk }).await;
         }
-        Cmd::Quote { state_dir, url, nonce, out } => return owner_step(state_dir, url, out, OwnerStep::Quote(nonce.clone())).await,
+        Cmd::Quote { state_dir, url, nonce, nonce_file, out } => {
+            let nonce = value_or_file(nonce, nonce_file, "--nonce or --nonce-file")?;
+            return owner_step(state_dir, url, out, OwnerStep::Quote(nonce)).await;
+        }
+        Cmd::Freeze { state_dir, url, out } => return owner_step(state_dir, url, out, OwnerStep::Freeze).await,
         _ => {}
     }
     let mut enclave = load_enclave(&args)?;

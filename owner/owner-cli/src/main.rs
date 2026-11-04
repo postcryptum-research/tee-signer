@@ -824,6 +824,15 @@ fn note_seq(path: &Path, seq: u64) -> Result<()> {
     Ok(())
 }
 
+/// A value given directly, or read (trimmed) from a carried file.
+fn value_or_file(value: &Option<String>, file: &Option<PathBuf>, what: &str) -> Result<String> {
+    match (value, file) {
+        (Some(v), _) => Ok(v.trim().to_string()),
+        (None, Some(f)) => Ok(std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?.trim().to_string()),
+        (None, None) => bail!("{what}"),
+    }
+}
+
 /// `T2-release/AUTO_ARM` → `T2-release`: the tier the hardware gives, without the build flag.
 fn tier_base(tier: &str) -> &str {
     tier.split('/').next().unwrap_or(tier)
@@ -950,9 +959,11 @@ enum Cmd {
         /// (a PIV slot is attested to Yubico's pinned root first and refused unless it verifies; C-R6-3).
         #[arg(long)]
         owner: String,
-        /// Recovery public key, hex (a keyfile, kept offline; see `keygen --role recovery`).
+        /// Recovery public key, hex (a keyfile, kept offline; see `keygen --role recovery`) — or a file holding it.
+        #[arg(long, conflicts_with = "recovery_pk_file")]
+        recovery_pk: Option<String>,
         #[arg(long)]
-        recovery_pk: String,
+        recovery_pk_file: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
         /// T2 (C-R5-6): `init` runs the DCAP verifier BEFORE writing the record and refuses to write it on any
@@ -976,9 +987,11 @@ enum Cmd {
         /// R8 (no tunnel, T2): the file `signerd quote --nonce <your nonce> --out …` wrote; verified here with `--nonce`.
         #[arg(long)]
         quote: Option<PathBuf>,
-        /// The 32-byte hex nonce YOU chose for that quote (so a saved quote for another nonce is refused).
-        #[arg(long)]
+        /// The 32-byte hex nonce YOU chose for that quote (so a saved quote for another nonce is refused) — or the file you wrote it to.
+        #[arg(long, conflicts_with = "nonce_file")]
         nonce: Option<String>,
+        #[arg(long)]
+        nonce_file: Option<PathBuf>,
     },
     /// Fill a mandate JSON's chain.checkpoint from a node (read-only RPC) or an Esplora API, and print the canonical hex + hash.
     PolicyBuild {
@@ -1146,8 +1159,11 @@ enum Cmd {
         replay: Option<PathBuf>,
         /// R8 (no tunnel): with `--replay <quote file>`, the 32-byte hex nonce YOU chose for it — then the
         /// file is the carried quote and must verify; without `--nonce`, `--replay` is the negative vector.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "nonce_file")]
         nonce: Option<String>,
+        /// The file you wrote that nonce to (`openssl rand -hex 32 > nonce.txt`).
+        #[arg(long)]
+        nonce_file: Option<PathBuf>,
     },
     /// Verify the recovery blob offline: decrypt with the recovery key, derive the xpub, compare.
     RecoveryVerify {
@@ -1326,7 +1342,12 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&a)?);
             eprintln!("ATTESTED: generated on YubiKey {} (firmware {}), PIN {} / touch {}, chain {}", a.serial, a.firmware, a.pin_policy, a.touch_policy, a.chain.join(" <- "));
         }
-        Cmd::Init { network, owner, recovery_pk, out, expect_mrenclave, signing_key_label, accept, pccs, accept_auto_arm, response, quote, nonce } => {
+        Cmd::Init { network, owner, recovery_pk, recovery_pk_file, out, expect_mrenclave, signing_key_label, accept, pccs, accept_auto_arm, response, quote, nonce, nonce_file } => {
+            let recovery_pk = &value_or_file(recovery_pk, recovery_pk_file, "--recovery-pk or --recovery-pk-file")?;
+            let nonce = &match (nonce, nonce_file) {
+                (None, Some(f)) => Some(std::fs::read_to_string(f)?.trim().to_string()),
+                (n, _) => n.clone(),
+            };
             // no tunnel: with a carried response nothing is sent from this machine at all
             let sd = match response {
                 Some(_) => Signerd { url: String::new(), token: String::new(), record: cli.wallet_record.clone(), offline: Some(serde_json::Value::Null), out: cli.out.clone() },
@@ -1575,8 +1596,17 @@ fn main() -> Result<()> {
             let sd = client(&cli)?;
             println!("{}", sd.post("/v1/freeze", serde_json::json!({}))?);
         }
-        Cmd::Attest { wallet, expect_mrenclave, expect_mrsigner, signing_key_label, accept, pccs, pin, save, replay, nonce } => {
-            let sd = client(&cli)?;
+        Cmd::Attest { wallet, expect_mrenclave, expect_mrsigner, signing_key_label, accept, pccs, pin, save, replay, nonce, nonce_file } => {
+            let nonce = &match (nonce, nonce_file) {
+                (None, Some(f)) => Some(std::fs::read_to_string(f)?.trim().to_string()),
+                (n, _) => n.clone(),
+            };
+            // a carried quote needs no server; a live attest does
+            let sd = if replay.is_some() && nonce.is_some() && cli.token.is_none() && cli.token_file.is_none() && cli.status_file.is_none() {
+                Signerd { url: String::new(), token: String::new(), record: cli.wallet_record.clone(), offline: Some(serde_json::Value::Null), out: cli.out.clone() }
+            } else {
+                client(&cli)?
+            };
             attest(&sd, wallet, expect_mrenclave.clone(), expect_mrsigner.clone(), signing_key_label.clone(), accept, pccs, *pin, save.clone(), replay.clone(), nonce.clone())?;
         }
         Cmd::Monitor { wallet, mandate, esplora, interval, esplora_delay_ms, full_every, journal, once, no_freeze, witness_key, stall_after, max_tip_lag, max_addresses, node_rpc, node_cookie, acknowledge } => {

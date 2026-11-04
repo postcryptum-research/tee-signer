@@ -24,12 +24,12 @@ carry "$LAPTOP/owner.pub" "$SERVER/owner.pub"; carry "$LAPTOP/recovery.pub" "$SE
 
 echo "== server: init with the two PUBLIC keys; the answer is a file =="
 "$SD" init --state-dir "$SERVER/state" --url http://127.0.0.1:7391 --network regtest \
-  --owner-pk "$(cat "$SERVER/owner.pub")" --recovery-pk "$(cat "$SERVER/recovery.pub")" --out "$SERVER/init-response.json"
+  --owner-pk-file "$SERVER/owner.pub" --recovery-pk-file "$SERVER/recovery.pub" --out "$SERVER/init-response.json"
 carry "$SERVER/init-response.json" "$LAPTOP/init-response.json"
 
 echo "== laptop: verify the answer and write the wallet record; check the recovery blob offline =="
 "$OC" init --response "$LAPTOP/init-response.json" --network regtest --owner "$LAPTOP/owner.key" \
-  --recovery-pk "$(cat "$LAPTOP/recovery.pub")" --out "$LAPTOP/wallet.json" | grep -E "tier|xpub|fingerprint"
+  --recovery-pk-file "$LAPTOP/recovery.pub" --out "$LAPTOP/wallet.json" | grep -E "tier|xpub|fingerprint"
 "$OC" recovery-verify --wallet "$LAPTOP/wallet.json" --recovery-key "$LAPTOP/recovery.key"
 
 echo "== server: status to a file; laptop: sign the mandate against that file =="
@@ -82,4 +82,18 @@ kill $SDPID; wait $SDPID 2>/dev/null || true
 SDPID=$!; trap 'kill $SDPID 2>/dev/null || true' EXIT; sleep 1.5
 if "$SD" submit --state-dir "$SERVER/state" --url http://127.0.0.1:7391 --file "$SERVER/arm.msg" --out "$SERVER/arm-old.result.json" >/dev/null 2>&1; then echo "UNEXPECTED: old arm accepted"; exit 1; fi
 python3 -c "import json;d=json.load(open('$SERVER/arm-old.result.json'));assert not d['ok'];print('  refused:', d['response'])"
+echo "== server: freeze right here (no signature); laptop: the signed unfreeze as a file =="
+"$SD" freeze --state-dir "$SERVER/state" --url http://127.0.0.1:7391 --out "$SERVER/freeze.result.json"
+"$SD" status --state-dir "$SERVER/state" --url http://127.0.0.1:7391 --out "$SERVER/status.json"
+python3 -c "import json;d=json.load(open('$SERVER/status.json'))['response'];assert d['frozen'] is True;print('  frozen', d['frozen'])"
+carry "$SERVER/status.json" "$LAPTOP/status.json"
+"$OC" --status-file "$LAPTOP/status.json" --wallet-record "$LAPTOP/wallet.json" --out "$LAPTOP/arm2.msg" arm --key "$LAPTOP/owner.key" >/dev/null
+carry "$LAPTOP/arm2.msg" "$SERVER/arm2.msg"
+"$SD" submit --state-dir "$SERVER/state" --url http://127.0.0.1:7391 --file "$SERVER/arm2.msg" --out "$SERVER/arm2.result.json"
+"$SD" status --state-dir "$SERVER/state" --url http://127.0.0.1:7391 --out "$SERVER/status.json"; carry "$SERVER/status.json" "$LAPTOP/status.json"
+"$OC" --status-file "$LAPTOP/status.json" --out "$LAPTOP/unfreeze.msg" unfreeze --key "$LAPTOP/owner.key"
+carry "$LAPTOP/unfreeze.msg" "$SERVER/unfreeze.msg"
+"$SD" submit --state-dir "$SERVER/state" --url http://127.0.0.1:7391 --file "$SERVER/unfreeze.msg" --out "$SERVER/unfreeze.result.json"
+"$SD" status --state-dir "$SERVER/state" --url http://127.0.0.1:7391 --out "$SERVER/status.json"
+python3 -c "import json;d=json.load(open('$SERVER/status.json'))['response'];assert d['frozen'] is False and d['boot_armed'] is True;print('  frozen', d['frozen'], 'boot_armed', d['boot_armed'], 'nonce', d['nonce'])"
 echo "e2e-no-tunnel: OK"
