@@ -118,6 +118,29 @@ no-monotonic-counter limit of Q3 in its sharpest form.
   it does not prevent it. Prevention needs a monotonic counter SGX1 does not have; a counter
   service or an external anchor on T2 is a later REQ.
 
+## 4b. The boot-arm — no signature after a restart until the owner arms this load (R7)
+
+§4a's session mark stops a fork **within** one enclave lifetime; a restart resets it, and a restart
+is exactly what a rollback needs (`DESIGN.md §3`, re-read 2026-11-05: repeatable, no loss bound
+by itself). R7 makes the restart itself the gate:
+
+- `session.rs` draws, with the session id, a 32-byte **boot challenge** from in-enclave
+  `sgx_read_rand` (C-R7-1; never an OCALL) and keeps a volatile **armed** flag, false at every
+  load, never sealed (C-R7-0, C-R7-2; the witness's sealed `s.armed` is a different field).
+- `JUDGE` and `SIGN` refuse `NOT_ARMED` until armed (C-R7-4 — the only two ecalls that charge or
+  sign; every PSBT path, payout, fee-bump, consolidation, sweep or recovery spend included, is a
+  `JUDGE`+`SIGN` pair; `INIT`/`INSTALL` sign the identity card with the stamp, which moves no value).
+- `APPLY_MESSAGE` with `Message::Arm`: `State::apply_arm(msg, session::challenge())` — the pure core
+  gets the challenge as data and checks signature, next nonce (consumed), challenge equality
+  (`ARM_CHALLENGE`) and `seq_seen ≤ seq` (`ARM_SEQ_BEHIND`); on success the shell ratchets the
+  session mark to the armed blob's sequence and sets armed (C-R7-3: an armed process is never
+  handed a blob older than the one it armed on). `INIT` arms the process it runs in.
+- `STATUS` carries `boot_armed`, `boot_challenge`, `auto_arm`; the tier string carries
+  `/AUTO_ARM` when the build compiled the pause out (`AUTO_ARM=1`, rcore feature `auto-arm`: own
+  MRENCLAVE, refused with `CEREMONY=1`, C-R7-8). No runtime switch exists.
+- `nosgx` stand-in: the deterministic randomness stream starts from a per-process value so a
+  restarted T0 daemon draws a fresh challenge, as hardware does.
+
 ## 5. Randomness and the recovery blob
 
 `sgx_read_rand` (RDRAND inside the enclave) is the only source: the seed, the identity key, the

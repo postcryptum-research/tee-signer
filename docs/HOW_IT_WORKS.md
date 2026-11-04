@@ -52,7 +52,7 @@ the budget by moving the clock.
 | The admin login is stolen (the November 2026 attack) | the whole wallet is swept | at most what the mandate allows for the current window — to unlisted destinations capped per transaction and per window; the merchant freezes and the budget rolls back nothing |
 | A malicious plugin, or code execution inside the BTCPay container | same | same: the plugin can only *ask* the enclave |
 | Malware with the merchant's user rights on the server | same | same, plus the sealed state can be read but not opened |
-| **Root** on the server | same — root reads everything BTCPay reads | **T1** (SGX1 without Flexible Launch Control): root can read the enclave's memory, as it can read today's seed — no worse than today, and no better on this one front. **T2** (FLC + DCAP): the seed stays out of root's reach; the balance does not (scenario 3 below) |
+| **Root** on the server | same — root reads everything BTCPay reads | **T1** (SGX1 without Flexible Launch Control): root can read the enclave's memory, as it can read today's seed — no worse than today, and no better on this one front. **T2** (FLC + DCAP): the seed stays out of root's reach, and from R7 so does the balance while you are away: a restart needs your key (scenario 3 below; pause build only) |
 | The host's clock or block feed is manipulated | the wallet does not care | windows run on verified block headers; a withheld feed only stops windows from rolling (the current window's remaining budget is the cap) |
 | The merchant's owner device is stolen | — | the thief can only submit a *loosening*, which waits a **timelock** (one day by default) during which the merchant cancels with the recovery key; a tightening would only hurt the thief |
 | The server dies, the disk is lost | the seed is in the database backup — or gone | the seed also exists in the **recovery blob**, encrypted to the merchant's offline recovery key: restore into any BIP84 wallet ([`CONTINUITY.md`](CONTINUITY.md)) |
@@ -66,7 +66,10 @@ transaction and 0.05 BTC per window of 144 blocks.
 1. **Logged in as your BTCPay admin, or running a plugin they planted** (the November 2026
    attack). They make the enclave pay to their own addresses: 0.01 BTC per transaction, 0.05 BTC
    per window, then nothing until the next window — whether or not you are awake. They cannot take the rest
-   and cannot take the seed. *Closed down to the window budget, on both tiers.*
+   and cannot take the seed. *Closed down to the window budget, on both tiers.* What no enclave
+   closes: a BTCPay admin can also swap the store's wallet for an xpub of their own, and customers
+   then pay them — future revenue, not the balance; that is BTCPay's admin access, the same as
+   today, and the plugin's status page shows the mismatch.
 2. **Root on your T1 server** (the hosting provider, a full compromise). They read the seed out
    of the enclave's memory and own the whole hot wallet — what is in it now and what arrives
    later — exactly as with today's BTCPay. *Not closed on T1* — which is why T1 is the project's
@@ -75,12 +78,14 @@ transaction and 0.05 BTC per window of 144 blocks.
    transaction outside the mandate's shape. What they can do: let the enclave pay a window's
    budget to them, restore an older copy of the enclave's state file, restart it, and collect the
    same window again — a restart takes seconds. Assume root drains the hot wallet's balance, a
-   window at a time. *Not closed by the mandate.* What bounds it is what sits in the hot wallet:
-   keep a day or two of payouts there and move the rest to cold storage — a trusted
-   destination, so the sweep is a payout you or a script create in BTCPay and the enclave signs
-   with nobody at a device. Once root is in, it stops your sweeps too, so what customers pay
-   after that moment is exposed as well. No mandate holds the balance against root; the system
-   says so instead of building machinery around it.
+   window at a time — *that was the gap R7 closes.* Restoring an old state file needs a restart,
+   and a restarted enclave judges and signs nothing until you approve that start with your key
+   (`arm`): root gets a silent enclave, not a drain, while you are away. What remains: one
+   window's budget per start you approve after a rollback you did not notice — `arm` refuses when
+   the enclave remembers fewer operations than you last saw, unless you override it in writing.
+   *Pause build only: an `AUTO_ARM` build forfeits this, and the loss bound against root reverts
+   to the hot-wallet float.* Keep the float small anyway: move what you do not need to cold storage
+   (a trusted destination; the sweep is a payout you or a script create in BTCPay).
 4. **Your laptop stolen or controlled.** Routine payouts need no laptop, so nothing changes
    there. With your owner key in hand — the keyfile and its passphrase, or the YubiKey and its PIN
    while you are not there — they can submit a *loosening* (a bigger budget, their address as
@@ -102,9 +107,9 @@ BTCPay — the attack that happened — the mandate is the hard bound: the encla
 beyond it, at 3 a.m. or at noon, and by the time you look in the morning the loss is one
 window's budget, not the wallet. A thief with your *owner* key can change nothing before the
 mandate's timelock runs out; the timelock is yours to set (`timelockBlocks`: a day, a week —
-longer than your longest absence), and the recovery key cancels. Against root on the server no
-mandate holds the balance (scenario 3); the system says so instead of building machinery for
-it.
+longer than your longest absence), and the recovery key cancels. Against root on the server: a
+rollback needs a restart, and a restarted enclave signs nothing until you approve that start with
+your key — at 3 a.m. it simply waits (scenario 3; pause build only, `AUTO_ARM` forfeits it).
 
 ## The owner stays in charge
 
@@ -128,7 +133,7 @@ owner unfreezes.
 | Tier | Hardware | Closes the November 2026 attack | Protects from root on the server |
 |---|---|---|---|
 | **T1** | SGX1 without FLC (cheap bare metal, e.g. Xeon E3 v5/v6); the enclave can only be launched in debug mode; no remote attestation. **The project's build-and-test tier: it runs, but not for money** | yes | **no** — root reads a debug enclave |
-| **T2** | SGX with FLC + DCAP (Azure DCsv3, Xeon E-2200+, Ice Lake+); non-debug launch; the enclave's identity is attested and verified on the owner's machine | yes | the seed: yes; the balance: no — root can repeat a window's payouts by restoring an old state file (scenario 3), so what you keep in the hot wallet is the exposure |
+| **T2** | SGX with FLC + DCAP (Azure DCsv3, Xeon E-2200+, Ice Lake+); non-debug launch; the enclave's identity is attested and verified on the owner's machine | yes | the seed: yes; the balance: yes in the pause build — a rollback needs a restart and a restart needs your key (scenario 3); an `AUTO_ARM` build forfeits that and the exposure is the hot-wallet float again |
 | **T0** | software, no TEE | dev and CI only | no |
 
 In practice: today's BTCPay seed is readable by the BTCPay service user (not root), by the admin,

@@ -19,6 +19,7 @@ mix the two.)
 | the laptop (operator machine) altogether | safe if the recovery key is backed up elsewhere | owner operations stop until a new operator machine is set up | restore the recovery key from its backup, then as above; the TPM owner key died with the laptop → `recover` |
 | the ceremony enclave-signing key | safe | new enclave builds cannot be signed with the pinned MRSIGNER | a new ceremony key + a new pin; the running enclave keeps working (sealing is MRENCLAVE-bound) |
 | the host's receipt log | safe | the monitor alarms (`SEQ_REGRESSION`) | the enclave's state still carries `seq`; the owner acknowledges after review |
+| the server reboots, the signer restarts, the daemon is updated (R7) | safe | **payouts pause**: a restarted enclave judges and signs nothing until the owner approves that load | `owner-cli arm --key <owner> --wallet-record <wallet.json>` in the owner's own time; a reboot at night is a pause until the morning, never a loss. An unexpected restart with a lower sequence than the owner last saw is the signature of a rollback — investigate before arming |
 
 The one sentence: **the seed exists in two places — inside the enclave and in the recovery blob
 encrypted to the offline recovery key — and nowhere else; lose both and the funds are gone.**

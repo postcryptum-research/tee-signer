@@ -189,5 +189,8 @@ Nonce, owner rotation and recovery: `DESIGN.md §6–7`.
 `FEE_ABS`, `FEE_RATE`, `TOO_MANY_INPUTS`, `TOO_MANY_OUTPUTS`, `OVERFLOW`, `MANDATE_EXPIRED`,
 `FROZEN`, `CHAIN_STALE`, `CHAIN_REORG`, `FRESHNESS_MISSING`, `FRESHNESS_SIG`, `FRESHNESS_TIP`,
 `FRESHNESS_SEQ_BEHIND` (rollback suspected — needs owner re-arm), `POLICY_SIG`, `POLICY_NONCE`, `POLICY_NETWORK`,
-`POLICY_WALLET`, `POLICY_PENDING`, `STATE_UNSEALABLE`. Every one of them has at least one
+`POLICY_WALLET`, `POLICY_PENDING`, `STATE_UNSEALABLE`, `SEQ_BEHIND_SESSION`, and from R7 `NOT_ARMED` (this enclave
+load has not been approved by the owner: no judging or signing until `Arm`), `ARM_CHALLENGE` (an `Arm` over
+another load's challenge — a replay), `ARM_SEQ_BEHIND` (the owner saw a higher sequence than the enclave
+remembers: the state was rolled back). Every one of them has at least one
 refusal vector in `vectors/`.
