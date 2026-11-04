@@ -1,11 +1,17 @@
 # tee-signer — a policy-enforcing TEE signer for BTCPay Server hot wallets
 
 **Working name.** Product name to be chosen by the owner.
-**Status (2026-11-03):** DESIGN-PASS; R1 `signer-core` and R2 (enclave shell, header verifier,
-daemon, owner tool) both IMPL-PASS and merged (`docs/audit/`). The enclave runs on SGX1 hardware
-in **debug launch** (tier T1-debug) and has signed its first signet transaction under a mandate.
-Not yet: the owner's monitor (R4, the gate for any use on real value), reproducible builds and a
-release launch on FLC/DCAP hardware (R5), the BTCPay plugin (R3). Testnet/signet only.
+**Status (2026-11-04):** every round so far has an IMPL-PASS from the auditor and is merged
+(`docs/audit/`): R1 `signer-core`, R2 enclave shell + daemon + owner tool, R3 BTCPay plugin with
+the four executable gates, R5 **T2 on Azure DCsv3** (reproducible pinned build, non-debug launch,
+DCAP-attested identity card verified on the owner's machine), R6 the owner key inside the
+operator's **TPM 2.0** and the enclave signed with an offline **ceremony key** (two-step signing,
+gate 7), R4 the owner's **monitor** (receipt authenticity, seq-fork, chain observation first,
+feed stall, freeze reflex). The T1 box (SGX1, no FLC) runs the same enclave in debug launch for
+development; the T2 node runs it non-debug. Signet only. The production code gate is met; what
+remains is the operator's key custody (where the ceremony and TPM keys live) and the carried
+items in `docs/audit/CONDITIONS.md`. Two models, kept apart: `THREAT-MODEL.md` (compromise) and
+`docs/CONTINUITY.md` (accidents).
 
 ## The problem
 

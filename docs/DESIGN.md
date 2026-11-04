@@ -367,7 +367,8 @@ proposal to bring upstream once v1 runs, since the four sites are the entire sur
 | R0 | this design + `POLICY.md` + `THREAT-MODEL.md`; lab result; seam study | DESIGN-PASS on `REQ-design` |
 | R1 | `signer-core`: PSBT parse, derivation, classification, policy engine, canonical encodings, receipts; host tests; refusal vectors from signet | **IMPL-PASS 2026-11-03** |
 | R2 | `signer-enclave` + `signerd`: init, seal, sign, recovery blob; `owner-cli` with the encrypted keyfile (D3; hardware backends follow); the header verifier (pulled from R4); build gates; first live signet signature | **IMPL-PASS 2026-11-03** (reproducible build → R5) |
-| R3 | BTCPay plugin + docker fragment; e2e on signet with a BTCPay instance, including the vector that asserts `IsHotWallet=false` end to end and zero key material in `nbxv1_metadata` (C-R11c) | IMPL-PASS |
-| R4 | block clock, timelocked updates, freeze/cancel, receipts + owner monitor + freshness witness | IMPL-PASS |
-| R5 | T2: DCAP-attested init and receipts on Azure DCsv3; `DisableDebug=1` build | IMPL-PASS |
+| R3 | BTCPay plugin + docker fragment; e2e on signet with a BTCPay instance, including the vector that asserts `IsHotWallet=false` end to end and zero key material in `nbxv1_metadata` (C-R11c) | **IMPL-PASS 2026-11-03** |
+| R4 | the owner's monitor: receipt authenticity, `(session, seq)` fork detection, chain observation primary, feed stall, witness tokens, freeze reflex (block clock, timelocked updates, freeze/cancel, receipts landed in R1/R2) | **IMPL-PASS 2026-11-03** |
+| R5 | T2: reproducible pinned build, `DisableDebug=1` launched non-debug on Azure DCsv3, DCAP-attested identity card (`REPORT` op), `owner-cli attest` with the ledgered TCB policy | **IMPL-PASS 2026-11-03** |
+| R6 | owner key in the operator's TPM 2.0 (`tpm:` locator, YubiKey PIV next after the auditor's review), ceremony enclave-signing key with two-step signing and gate 7, fused `init` (verifier before the record) | **IMPL-PASS 2026-11-03** |
 | later | P2TR (`m/86'`), PSBTv2, RBF-aware accounting, phone owner app (TPM_sign mobile owner), hardware-wallet owner key with display, PayJoin via the upstream `IOnChainSigner` path | — |
