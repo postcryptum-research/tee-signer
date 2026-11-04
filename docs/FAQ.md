@@ -163,8 +163,8 @@ the **TEE signer** payout processor for the store's on-chain payouts; use **Send
 enclave** for manual sends. Create a small pull payment and a payout: the processor builds the
 PSBT, the enclave signs it, and `seq` at `status` — the enclave's count of signatures — advances by one.
 
-**Optional, expert mode: the monitor.** The main path ends at step 8. If you want the limit
-("whoever controls the disk can replay one window") *watched* rather than accepted, run the
+**Optional, expert mode: the monitor.** The main path ends at step 8. If you want scenario 3 of
+"What can an attacker still steal?" *watched* rather than accepted, run the
 monitor on your laptop (or any machine that is not the server). It needs a view of the chain
 that does *not* come from the server: for a first run on signet a public Esplora
 is enough; for anything of value, your own node (`--node-rpc URL --node-cookie FILE` in place of
@@ -253,9 +253,11 @@ wallet.
 mode, the monitor against your own node and `freshness.required = true` in the mandate: a
 rolled-back enclave then *pauses* instead of re-spending a window.
 
-**What you get on T2:** everything from T1, plus host root is outside the enclave (up to the SGX
+**What you get on T2:** everything from T1, plus the seed out of root's reach (up to the SGX
 threat model: side channels and Intel's microcode TCB are excluded), and a cryptographic answer
-to "is the enclave I am talking to the code that was audited?".
+to "is the enclave I am talking to the code that was audited?". What you do not get: the
+balance out of root's reach — scenario 3 of "What can an attacker still steal?"; keep the hot
+wallet small.
 
 **What is not done yet, honestly:** mainnet needs explicit owner sign-off and has not been
 touched by anything in this repo; the auditor's *own* reproduction of the pinned MRENCLAVE is a
@@ -286,30 +288,50 @@ the BTCPay container) and talking to `signerd` with the token. Then they can:
   "What does root see?");
 - **break things** — stop the feed, delete files, restart `signerd` with an older sealed state.
   None of that loosens the mandate. A withheld feed stops the windows from rolling (the current
-  window's remaining budget is all there is); an older state is a **rollback** — the current
-  window's budget replayed once, nothing more. That is the limit the system states rather than
-  closes ("What does it NOT protect against?"); expert mode turns it into an alarm and, with the
-  freshness witness, into a pause.
+  window's remaining budget is all there is); an older state is a **rollback**, which repeats a
+  window's payouts — but restoring the sidecar's state file needs root on the server, not a
+  BTCPay login (scenario 3 of "What can an attacker still steal?").
 
 What they cannot do: change the mandate (it needs your owner key's signature with the next
 nonce), unfreeze, rotate the owner, or get the seed out of a T2 enclave. What you do: **freeze** (anyone
 can, no signature needed), look at the chain, clean the server, then `unfreeze` with the owner
 key — or tighten the mandate first (a tightening applies at once).
 
-### What does it NOT protect against?
+### What can an attacker still steal?
 
-Five things, stated rather than closed:
+Written the way an attacker thinks: who they are, what they do, what they get. The amounts use
+the example mandate in [`POLICY.md`](POLICY.md): unlisted payouts capped at 0.01 BTC per
+transaction and 0.05 BTC per window of 144 blocks.
 
-- **root on a T1 server** can read the enclave — see "What does root see?";
-- **whoever controls the server's disk** (root, the hosting provider) can hand the enclave an
-  older copy of its sealed state and replay the current window's budget, once per rollback. The
-  window cap is the ceiling; no SGX generation has a monotonic counter, so this is the system's
-  limit, not a bug to fix. Expert mode turns it into an alarm (receipts + monitor) or a pause
-  (freshness witness) if you want it watched;
-- **physical and Intel-level attackers** (side channels, microcode), on every tier;
-- **the laptop you sign on**: what the owner device signs is what `owner-cli` on that laptop
-  shows; a device with its own display is a later round;
-- **the recovery key and the recovery blob stolen together** — that is the seed.
+1. **Logged in as your BTCPay admin, or running a plugin they planted** (the November 2026
+   attack). They make the enclave pay to their own addresses: 0.01 BTC per transaction, 0.05 BTC
+   per window, then nothing until the next window or until you freeze. They cannot take the rest
+   and cannot take the seed. *Closed down to the window budget, on both tiers.*
+2. **Root on your T1 server** (the hosting provider, a full compromise). They read the seed out
+   of the enclave's memory and own the whole hot wallet — what is in it now and what arrives
+   later — exactly as with today's BTCPay. *Not closed on T1.* On T2 the seed is unreadable.
+3. **Root on your T2 server.** They cannot read the seed and cannot make the enclave sign a
+   transaction outside the mandate's shape. What they can do: let the enclave pay a window's
+   budget to them, restore an older copy of the enclave's state file, restart it, and collect the
+   same window again — a restart takes seconds. Assume root drains the hot wallet's balance, a
+   window at a time. *Not closed by the mandate.* What bounds it is what sits in the hot wallet:
+   keep a day or two of payouts there and let the rest go to cold storage — a trusted
+   destination the enclave pays on schedule with nobody present — and root gets the float, not
+   the business. The freshness witness (expert mode) narrows the trick to about one token's
+   lifetime (`maxTipLag` blocks) and the monitor raises an alarm; neither stops a fast attacker.
+4. **Your laptop stolen or controlled.** Routine payouts need no laptop, so nothing changes
+   there. With your owner key in hand — the keyfile and its passphrase, or the YubiKey and its PIN
+   while you are not there — they can submit a *loosening* (a bigger budget, their address as
+   trusted), which waits the timelock and which you cancel with the recovery key. A controlled
+   laptop can also show you one mandate and have the device sign another; a device with its own
+   display is a later round.
+5. **The recovery key and the recovery blob, stolen together.** That is the seed: the whole hot
+   wallet. Keep them on different media in different places.
+6. **Physical access to the CPU, Intel-level attacks** (side channels, microcode). Out of scope on
+   every tier.
+
+Everything else an attacker on the server can do — ask for signatures, delete files, stop the
+daemon, withhold block headers, set the clock — ends in a refusal or a pause.
 
 ### What exactly does the enclave refuse?
 
@@ -374,8 +396,8 @@ the monitor reads the caps from it.
 
 ### Expert mode: receipts, the monitor and the freshness witness — what do they add?
 
-Nothing on the main path needs them. The limit stands on its own: whoever controls the server's
-disk can replay the current window's budget once per rollback, and the window cap bounds it.
+Nothing on the main path needs them. Scenario 3 of "What can an attacker still steal?" stands as stated: a root attacker repeats a
+window's payouts, and the hot wallet's float bounds it.
 Expert mode is for an operator who wants that limit *watched* rather than accepted.
 
 Every signature returns a receipt `{seq, txid, net outflow, amounts per class, fee, height,
@@ -471,9 +493,10 @@ hosting provider or a root compromise of the server, T1 is not enough and is not
 that is T2.
 
 **T2** (FLC + DCAP): non-debug launch, memory encrypted and inaccessible to root, identity
-attested. Root can still delete files, stop the daemon, withhold headers or replay an old sealed
-state — all of which the enclave and the monitor turn into refusals, pauses or alarms, never into
-a signature outside the mandate.
+attested. Root can still delete files, stop the daemon, withhold headers — refusals and pauses —
+and replay an old sealed state, which repeats a window's payouts (scenario 3 of "What can an
+attacker still steal?"). Never a signature outside the mandate's shape; the hot wallet's balance
+is the exposure.
 
 `status` says which one you have (`tier: T1-debug` / `T2-release`); nothing can mistake one for
 the other, and the identity card carries the tier too.

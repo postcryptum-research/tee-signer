@@ -52,27 +52,46 @@ the budget by moving the clock.
 | The admin login is stolen (the November 2026 attack) | the whole wallet is swept | at most what the mandate allows for the current window — to unlisted destinations capped per transaction and per window; the merchant freezes and the budget rolls back nothing |
 | A malicious plugin, or code execution inside the BTCPay container | same | same: the plugin can only *ask* the enclave |
 | Malware with the merchant's user rights on the server | same | same, plus the sealed state can be read but not opened |
-| **Root** on the server | same — root reads everything BTCPay reads | **T1** (SGX1 without Flexible Launch Control): root can read the enclave's memory, as it can read today's seed — no worse than today, and no better on this one front. **T2** (FLC + DCAP): protected from root too, up to the SGX threat model |
+| **Root** on the server | same — root reads everything BTCPay reads | **T1** (SGX1 without Flexible Launch Control): root can read the enclave's memory, as it can read today's seed — no worse than today, and no better on this one front. **T2** (FLC + DCAP): the seed stays out of root's reach; the balance does not (scenario 3 below) |
 | The host's clock or block feed is manipulated | the wallet does not care | windows run on verified block headers; a withheld feed only stops windows from rolling (the current window's remaining budget is the cap) |
 | The merchant's owner device is stolen | — | the thief can only submit a *loosening*, which waits a **timelock** (one day by default) during which the merchant cancels with the recovery key; a tightening would only hurt the thief |
 | The server dies, the disk is lost | the seed is in the database backup — or gone | the seed also exists in the **recovery blob**, encrypted to the merchant's offline recovery key: restore into any BIP84 wallet ([`CONTINUITY.md`](CONTINUITY.md)) |
 
-## The limits, in plain words
+## What an attacker can still steal
 
-- **Root on a T1 server** can read the enclave (the tiers below). Today's BTCPay seed is readable
-  by root too; T1 changes nothing there, T2 does.
-- **Whoever controls the server's disk** — root, or the hosting provider — can hand the enclave an
-  older copy of its sealed state and so replay the current window's budget, **once per rollback**.
-  Nothing more: the window cap you chose is the ceiling. This holds on every SGX generation (none
-  has a monotonic counter), and the system does not close it; it states it.
-- **Physical and Intel-level attackers** (side channels, microcode) are out of scope on every tier.
-- **The laptop you sign on** shows you what you sign; a compromised laptop can show one thing and
-  have the device sign another. A device with its own display is a later round.
-- **The recovery key and the recovery blob stolen together** are the seed.
+Written the way an attacker thinks: who they are, what they do, what they get. The amounts use
+the example mandate in [`POLICY.md`](POLICY.md): unlisted payouts capped at 0.01 BTC per
+transaction and 0.05 BTC per window of 144 blocks.
+
+1. **Logged in as your BTCPay admin, or running a plugin they planted** (the November 2026
+   attack). They make the enclave pay to their own addresses: 0.01 BTC per transaction, 0.05 BTC
+   per window, then nothing until the next window or until you freeze. They cannot take the rest
+   and cannot take the seed. *Closed down to the window budget, on both tiers.*
+2. **Root on your T1 server** (the hosting provider, a full compromise). They read the seed out
+   of the enclave's memory and own the whole hot wallet — what is in it now and what arrives
+   later — exactly as with today's BTCPay. *Not closed on T1.* On T2 the seed is unreadable.
+3. **Root on your T2 server.** They cannot read the seed and cannot make the enclave sign a
+   transaction outside the mandate's shape. What they can do: let the enclave pay a window's
+   budget to them, restore an older copy of the enclave's state file, restart it, and collect the
+   same window again — a restart takes seconds. Assume root drains the hot wallet's balance, a
+   window at a time. *Not closed by the mandate.* What bounds it is what sits in the hot wallet:
+   keep a day or two of payouts there and let the rest go to cold storage — a trusted
+   destination the enclave pays on schedule with nobody present — and root gets the float, not
+   the business. The freshness witness (expert mode) narrows the trick to about one token's
+   lifetime (`maxTipLag` blocks) and the monitor raises an alarm; neither stops a fast attacker.
+4. **Your laptop stolen or controlled.** Routine payouts need no laptop, so nothing changes
+   there. With your owner key in hand — the keyfile and its passphrase, or the YubiKey and its PIN
+   while you are not there — they can submit a *loosening* (a bigger budget, their address as
+   trusted), which waits the timelock and which you cancel with the recovery key. A controlled
+   laptop can also show you one mandate and have the device sign another; a device with its own
+   display is a later round.
+5. **The recovery key and the recovery blob, stolen together.** That is the seed: the whole hot
+   wallet. Keep them on different media in different places.
+6. **Physical access to the CPU, Intel-level attacks** (side channels, microcode). Out of scope on
+   every tier.
 
 Everything else an attacker on the server can do — ask for signatures, delete files, stop the
-daemon, withhold block headers, set the clock — ends in a refusal, a pause, or at most the current
-window's budget.
+daemon, withhold block headers, set the clock — ends in a refusal or a pause.
 
 ## The owner stays in charge
 
@@ -94,8 +113,7 @@ owner unfreezes.
 ## Expert mode, optional
 
 The main path is two keys, one mandate, three commands and the plugin page; nothing in this
-section is needed for it. For an operator who wants the limit above *watched* rather than
-accepted: the enclave signs a **receipt** for every signature (sequence number, txid, amounts,
+section is needed for it. For an operator who wants scenario 3 above *watched* rather than accepted: the enclave signs a **receipt** for every signature (sequence number, txid, amounts,
 height) with a second key, its **stamp**; `owner-cli monitor`, run off the server, verifies those
 receipts, watches your addresses on the chain from your own node for spends without a receipt,
 notices a sequence that went backwards (a rollback) or a feed that stopped, and sends a freeze.
@@ -108,7 +126,7 @@ rolled-back enclave pauses instead of re-spending a window. All of it is off unl
 | Tier | Hardware | Closes the November 2026 attack | Protects from root on the server |
 |---|---|---|---|
 | **T1** | SGX1 without FLC (cheap bare metal, e.g. Xeon E3 v5/v6); the enclave can only be launched in debug mode; no remote attestation | yes | **no** — labeled, by the hardware |
-| **T2** | SGX with FLC + DCAP (Azure DCsv3, Xeon E-2200+, Ice Lake+); non-debug launch; the enclave's identity is attested and verified on the owner's machine | yes | yes, up to the SGX threat model (side channels excluded) |
+| **T2** | SGX with FLC + DCAP (Azure DCsv3, Xeon E-2200+, Ice Lake+); non-debug launch; the enclave's identity is attested and verified on the owner's machine | yes | the seed: yes; the balance: no — root can repeat a window's payouts by restoring an old state file (scenario 3), so what you keep in the hot wallet is the exposure |
 | **T0** | software, no TEE | dev and CI only | no |
 
 In practice: today's BTCPay seed is readable by the BTCPay service user (not root), by the admin,
