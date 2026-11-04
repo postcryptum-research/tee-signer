@@ -43,142 +43,210 @@ The words used below:
 The product runs on tier **T2**: SGX with Flexible Launch Control and DCAP attestation — Azure
 DCsv3 (what the project runs), or Xeon E-2200+/Ice Lake+ bare metal with FLC enabled in the
 firmware. (Cheap SGX1 servers without FLC are the project's **build-and-test tier T1**: the
-enclave runs there, but not for money — root reads a debug enclave.) Plan: the project's signed
-enclave and `signerd` as a sidecar of your btcpayserver-docker stack; the owner key in your
-laptop's TPM 2.0 (a YubiKey is setup 2; an encrypted keyfile on a USB drive is the permitted
-floor); the recovery key as an encrypted keyfile on two USB drives in two places.
+enclave runs there, but not for money — root reads a debug enclave.)
 
-**1. Check the hardware.** The in-kernel SGX driver gives `/dev/sgx_enclave` and
-`/dev/sgx_provision`; `aesmd` runs with a DCAP quote provider (on Azure, `az-dcap-client`);
-`cpuid` leaf 7 reports FLC. On this hardware the enclave launches **non-debug** and its identity
-can be attested — that is what makes the seed unreadable to root.
+Three things, kept apart, and nothing passes between them but files:
 
-**2. Run the sidecar.** The enclave is built reproducibly and signed with the project's offline
-ceremony key on a build box, never on the node (setup 2, step 1, says how to reproduce it
-yourself); what reaches the node is the sidecar image. On the node, with the T2 fragment and —
-on a small disk — the stack's pruned-node fragment:
+- **your laptop** holds the owner key and the recovery key and runs `owner-cli`;
+- **the server** runs BTCPay, the enclave sidecar and `signerd`;
+- **a directory on each side** holds what is carried: `~/tee-owner/exchange/` on the laptop,
+  `~/tee-signer-exchange/` on the server (the sidecar sees it as `/exchange`).
+
+Every block below says where it runs. There is no tunnel: `owner-cli` never talks to the server,
+the server never talks to the laptop, and a file moves with `scp` in either direction. Each
+side finishes its step and hands over a file; that is where one party's work ends and the
+other's begins.
+
+**1. The server: hardware and the sidecar.** The in-kernel SGX driver gives `/dev/sgx_enclave`
+and `/dev/sgx_provision`; `aesmd` runs with a DCAP quote provider (on Azure, `az-dcap-client`);
+`cpuid` leaf 7 reports FLC. On this hardware the enclave launches **non-debug** and its
+identity can be attested — that is what makes the seed unreadable to root. The enclave is built
+reproducibly and signed with the project's offline ceremony key on a build box, never on the
+server (setup 2 says how to reproduce it yourself); what reaches the server is the sidecar image.
 
 ```sh
-docker load -i signerd-t2-image.tar.gz      # the sidecar image from the build box (enclave + signerd)
-TEE_FRAGMENT=opt-add-tee-signer-t2.custom TEE_EXTRA_FRAGMENTS=opt-save-storage-xxs btcpay/docker/stack.sh gen && btcpay/docker/stack.sh up
-btcpay/docker/stack.sh install-plugin       # the plugin DLL, built in a dotnet SDK container
+mkdir -p ~/tee-signer-exchange
+docker load -i signerd-t2-image.tar.gz
+TEE_FRAGMENT=opt-add-tee-signer-t2.custom TEE_EXTRA_FRAGMENTS=opt-save-storage-xxs btcpay/docker/stack.sh gen
+btcpay/docker/stack.sh up
+btcpay/docker/stack.sh install-plugin
 ```
 
-**3. Open the door from your laptop.** The sidecar listens on the server's loopback only
-(`127.0.0.1:7390`); nothing is published on a network interface, nothing goes through nginx.
-Every owner operation below runs `owner-cli` **on your laptop** and has to reach that port, so
-you forward it over the SSH access you already use to administer the server:
+**2. The laptop: the keys.** The private keys are born here and never leave; only public keys
+travel. Linux needs `libtss2-dev` for the TPM backend, `pcscd` and `libpcsclite-dev` for a
+YubiKey; the tool is built with `cd owner/owner-cli && cargo build`.
 
 ```sh
-ssh -N -L 7390:127.0.0.1:7390 you@your-server        # keep this terminal open; Ctrl-C closes the tunnel
+mkdir -p ~/tee-owner/exchange
+cd owner/owner-cli/target/debug
+./owner-cli keygen --role recovery --out /media/USB1/recovery.key
+./owner-cli keygen --role owner --backend tpm --handle 0x81000100
+./owner-cli pubkey --key tpm:0x81000100 > ~/tee-owner/exchange/owner.pub
+./owner-cli pubkey --key /media/USB1/recovery.key > ~/tee-owner/exchange/recovery.pub
 ```
 
-While it runs, `http://127.0.0.1:7390` *on the laptop* is the sidecar on the server. That is the
-only way in, and it is deliberate: the owner key never travels to the server, only the messages
-it signed do. `signerd` also wants a bearer token on every request; it generated one at first
-start, in its state volume. Copy it to the laptop once:
+The recovery key asks a passphrase and goes on two USB drives in two places; the owner key lives
+inside the laptop's TPM (a YubiKey is setup 2; an encrypted keyfile on a third drive is the
+permitted floor). Write the passphrases down somewhere safe: nothing can recover them.
+
+Carry the two public keys to the server:
 
 ```sh
-ssh you@your-server 'docker exec tee-btcpay-tee-signer-1 cat /var/lib/signerd/token' > ./token && chmod 600 ./token
+scp ~/tee-owner/exchange/owner.pub ~/tee-owner/exchange/recovery.pub you@your-server:tee-signer-exchange/
 ```
 
-The token rate-limits and keeps stray containers out; it is not a secret in the threat model (an
-attacker who has it is still bound by the mandate).
-
-**4. Create the keys — on your laptop, never on the server.** `owner-cli` is built with
-`cd owner/owner-cli && cargo build` (Linux needs `libtss2-dev` for the TPM backend and `pcscd` +
-`libpcsclite-dev` for the YubiKey one).
+**3. The server: `init`.** What happens physically: the two public keys go into the enclave.
+Inside it, 256 bits of hardware randomness become a 24-word BIP39 mnemonic and a BIP32 master
+key; the account `m/84'/1'/0'` is derived; a second, small key is created — the enclave's
+**stamp**, which signs the identity card and the receipts and never a transaction; the mnemonic
+is encrypted to the recovery public key (the **recovery blob**); and all of it is sealed to this
+enclave and written to the sidecar's state volume. The answer — the account xpub, the master
+fingerprint, the stamp's public key, the signed identity card and the recovery blob — is a file.
+The seed is in none of it, and nothing on the server can sign without the enclave.
 
 ```sh
-B=owner/owner-cli/target/debug/owner-cli
-$B keygen --role recovery --out /media/$USER/USB1/recovery.key     # asks a passphrase; copy the file to USB2 too
-# the owner key, one of:
-$B keygen --role owner --backend tpm --handle 0x81000100            # inside the laptop's TPM; refuses an occupied handle
-ykman piv keys generate -a ECCP256 --pin-policy ALWAYS --touch-policy ALWAYS 9a 9a.pub.pem   # on a YubiKey 5
-$B keygen --role owner --out /media/$USER/USB3/owner.key            # the floor: an encrypted keyfile, off the box
-$B pubkey --key tpm:0x81000100        # or piv:9a, or the keyfile path — prints the public key
+docker exec tee-btcpay-tee-signer-1 signerd init --state-dir /var/lib/signerd --network signet --owner-pk-file /exchange/owner.pub --recovery-pk-file /exchange/recovery.pub --out /exchange/init-response.json
 ```
 
-Write the passphrases down somewhere safe: nothing can recover them. The owner key and the
-recovery key go on **different media**; that separation is what makes an owner-key theft bounded.
-
-**5. Initialise the wallet** — once. What happens physically: `owner-cli` on the laptop reads
-the owner's *public* key from the TPM (no passphrase, nothing is signed) and the recovery
-*public* key from the keyfile, and sends the two public keys through the tunnel to the sidecar.
-The sidecar passes them into the enclave. Inside the enclave: 256 bits of hardware randomness
-become a 24-word BIP39 mnemonic and a BIP32 master key; the account `m/84'/1'/0'` is derived; a
-second, small key is created — the enclave's **stamp**, which signs the identity card and the
-receipts and never a transaction; the mnemonic is encrypted to the recovery public
-key (the **recovery blob**); and all of it is sealed to this enclave and written, through the
-sidecar, to its state volume. Back through the tunnel come public things only: the account xpub,
-the master fingerprint, the stamp's public key, a signed **identity card** and the recovery
-blob. The seed never crosses the tunnel in clear, and nothing on the laptop can sign. The enclave
-has no mandate yet, so it will sign nothing until step 7.
+On T2 you also want the enclave's proof of identity. The nonce for it is yours, chosen on the
+laptop, so that a quote made for anyone else is refused:
 
 ```sh
-export SIGNERD_URL=http://127.0.0.1:7390 SIGNERD_TOKEN_FILE=./token      # the tunnel and the token from step 3
-$B init --network signet --owner tpm:0x81000100 --recovery-pk $($B pubkey --key /media/$USER/USB1/recovery.key) --out wallet.json \
-   --expect-mrenclave <the release's MRENCLAVE> --accept-advisory INTEL-SA-00615:2026-11-03:reviewed
+openssl rand -hex 32 > ~/tee-owner/exchange/nonce.txt
+scp ~/tee-owner/exchange/nonce.txt you@your-server:tee-signer-exchange/
+```
+
+and on the server:
+
+```sh
+docker exec tee-btcpay-tee-signer-1 signerd quote --state-dir /var/lib/signerd --nonce-file /exchange/nonce.txt --out /exchange/quote.json
+```
+
+Carry both answers back to the laptop:
+
+```sh
+scp you@your-server:tee-signer-exchange/init-response.json ~/tee-owner/exchange/
+scp you@your-server:tee-signer-exchange/quote.json ~/tee-owner/exchange/
+```
+
+**4. The laptop: verify the answer, write the wallet record, check the recovery blob.** Nothing
+is sent anywhere in this step. `init --response` checks the identity card's signature and that
+the card names the returned xpub, and — with the quote — runs the attestation verifier
+**before** writing anything: the certificate chain to the Intel SGX Root CA compiled into
+`owner-cli`, the DEBUG bit clear, MRENCLAVE equal to the release's (printed by the build),
+MRSIGNER equal to the ceremony key, the identity card's signature, **your** nonce, and Intel's
+TCB status (a platform advisory you have reviewed is accepted by name, with a date and a reason,
+and that acceptance is part of the record). A failure at any step refuses and names the step;
+no record is written, and you do not fund the wallet.
+
+```sh
+cd owner/owner-cli/target/debug
+./owner-cli init --response ~/tee-owner/exchange/init-response.json --network signet --owner tpm:0x81000100 --recovery-pk-file ~/tee-owner/exchange/recovery.pub --out ~/tee-owner/wallet.json --expect-mrenclave <the release's MRENCLAVE> --quote ~/tee-owner/exchange/quote.json --nonce-file ~/tee-owner/exchange/nonce.txt --accept-advisory INTEL-SA-00615:2026-11-03:reviewed
+./owner-cli recovery-verify --wallet ~/tee-owner/wallet.json --recovery-key /media/USB1/recovery.key
 ```
 
 `--owner` is a *locator*, never a raw key: `tpm:<handle>`, `piv:<slot>` (a YubiKey slot is
-attested to Yubico's root first and refused unless that verifies) or a keyfile path. On T2,
-`init` runs the attestation verifier **before** writing anything: the certificate chain to the
-Intel SGX Root CA compiled into `owner-cli`, the DEBUG bit clear, MRENCLAVE equal to the value
-you pass (the release's, printed by the build), MRSIGNER equal to the ceremony key, the identity
-card's signature, the nonce, and Intel's TCB status (a platform advisory you have reviewed is
-accepted by name, with a date and a reason, and that acceptance is part of the record). A failure
-at any step refuses and names the step; no record is written, and you do not fund the wallet.
-On success it prints the tier (`T2-release`), the xpub, the fingerprint and the stamp's public
-key, and writes `wallet.json` on the laptop — the identity card plus the recovery blob. Keep it;
-every later command reads it.
+attested to Yubico's root first and refused unless that verifies) or a keyfile path. `init`
+prints the tier (`T2-release`), the xpub, the fingerprint and the stamp's public key, and writes
+`~/tee-owner/wallet.json` — the identity card plus the recovery blob. Keep it; every later
+command reads it. `recovery-verify` decrypts the blob with the recovery key, derives the xpub
+from the mnemonic, compares it with the xpub the enclave reported, and prints only whether they
+match — never the words. Do it before any money arrives.
 
-Then prove the recovery blob is good **before** any money arrives:
+**5. Import the wallet into BTCPay as cold.** In the store's wallet setup, import
+`[<fingerprint>/84'/1'/0']<xpub>` (signet; both values are in `wallet.json`) as a watch-only
+wallet. The plugin's settings page shows whether the signer's xpub matches the store wallet;
+both signing paths refuse by name if it does not. "View seed", PayJoin and the stock payout
+processor switch themselves off on a cold wallet — that is gate (a) of the e2e suite, and gate
+(b) checks that NBXplorer's database holds no key material.
 
-```sh
-$B recovery-verify --wallet wallet.json --recovery-key /media/$USER/USB1/recovery.key
-```
+**6. The mandate: written and signed on the laptop, handed to the server.** Start from the
+example in [`POLICY.md`](POLICY.md) §2: your cold-storage descriptor as a *trusted*
+destination with its own caps, `unlisted` caps for customer payouts (e.g. `maxPerTx` 1 000 000
+sat, `maxPerWindow` 5 000 000 sat), `limits.window` of 144 blocks, fee bounds,
+`validity.notAfterHeight` about a year ahead, `timelockBlocks` 144. The signed message names
+the enclave and the next nonce, so the laptop needs the server's status file first.
 
-This runs entirely on the laptop (no tunnel needed; ideally on a machine without network): it
-decrypts the blob from `wallet.json` with the recovery key, derives the xpub from the mnemonic,
-compares it with the xpub the enclave reported, and prints only whether they match — never the
-words.
-
-**6. Import the wallet into BTCPay as cold.** In the store's wallet setup, import
-`[<fingerprint>/84'/1'/0']<xpub>` (signet) as a watch-only wallet. The plugin's settings page
-shows whether the signer's xpub matches the store wallet; both signing paths refuse by name if it
-does not. "View seed", PayJoin and the stock payout processor switch themselves off on a cold
-wallet — that is gate (a) of the e2e suite, and gate (b) checks that NBXplorer's database holds
-no key material.
-
-**7. Write and install the mandate.** Start from the example in [`POLICY.md`](POLICY.md) §2:
-your cold-storage descriptor as a *trusted* destination with its own caps, `unlisted` caps for
-customer payouts (e.g. `maxPerTx` 1 000 000 sat, `maxPerWindow` 5 000 000 sat), `limits.window`
-of 144 blocks, fee bounds, `validity.notAfterHeight` about a year ahead, `timelockBlocks` 144.
+On the server:
 
 ```sh
-$B policy-build --json mandate.json --esplora https://mempool.space/signet/api --write   # reads the signet tip, fills chain.checkpoint, prints the hash
-$B policy-show  --json mandate.json                                   # the diff against what is installed (nothing yet)
-$B policy-sign  --json mandate.json --key tpm:0x81000100              # nonce 0 = install; shows every field, then signs
-$B status                                                             # installed: true, nonce 0, best_height follows the chain
+docker exec tee-btcpay-tee-signer-1 signerd status --state-dir /var/lib/signerd --out /exchange/status.json
 ```
 
-**8. Point BTCPay at the signer.** Plugin settings page: signerd URL `http://tee-signer:7390`
-(the sidecar's name in the stack), the token, minimum confirmations, a fallback fee rate. Enable
-the **TEE signer** payout processor for the store's on-chain payouts; use **Send through the
-enclave** for manual sends. Create a small pull payment and a payout: the processor builds the
-PSBT, the enclave signs it, and `seq` at `status` — the enclave's count of signatures — advances by one.
+Carry it, sign, carry the message back:
+
+```sh
+scp you@your-server:tee-signer-exchange/status.json ~/tee-owner/exchange/
+cd owner/owner-cli/target/debug
+./owner-cli policy-build --json ~/tee-owner/mandate.json --esplora https://mempool.space/signet/api --write
+./owner-cli --status-file ~/tee-owner/exchange/status.json --wallet-record ~/tee-owner/wallet.json --out ~/tee-owner/exchange/policy-install.msg policy-sign --json ~/tee-owner/mandate.json --key tpm:0x81000100
+scp ~/tee-owner/exchange/policy-install.msg you@your-server:tee-signer-exchange/
+```
+
+`policy-build` reads the signet tip from a public Esplora (for value: your own node, `--node-rpc
+URL --node-cookie FILE` — the one connection the laptop opens is to *your* node or a public
+explorer, never to the signer's server) and fills `chain.checkpoint`; `policy-sign` shows every field, signs the
+canonical bytes with the owner key (nonce 0 = the install) and writes the message. On the
+server, the file goes to the enclave and its answer comes back as a file:
+
+```sh
+docker exec tee-btcpay-tee-signer-1 signerd submit --state-dir /var/lib/signerd --file /exchange/policy-install.msg --out /exchange/policy-install.result.json
+docker exec tee-btcpay-tee-signer-1 signerd status --state-dir /var/lib/signerd --out /exchange/status.json
+```
+
+`policy-install.result.json` says `ok` or `REFUSED` with the enclave's reasons; `status.json`
+shows `installed: true`. Carry `status.json` back whenever you want the laptop's copy current.
+
+**7. Point BTCPay at the signer.** Plugin settings page: signerd URL `http://tee-signer:7390`
+(the sidecar's name in the stack), the token (in the sidecar's state volume: `docker exec
+tee-btcpay-tee-signer-1 cat /var/lib/signerd/token`), minimum confirmations, a fallback fee
+rate. Enable the **TEE signer** payout processor for the store's on-chain payouts; use **Send
+through the enclave** for manual sends. Create a small pull payment and a payout: the processor
+builds the PSBT, the enclave signs it, and `seq` in the status — the enclave's count of
+signatures — advances by one. The token rate-limits and keeps stray containers out; it is not a
+secret in the threat model (an attacker who has it is still bound by the mandate).
+
+**8. After any restart of the signer** — a reboot, an update, a crash — the enclave signs nothing
+until you approve that start (R7). The status file says `boot_armed: false` and carries the
+start's challenge; the plugin's status page shows the same. Approve it the same way as any
+owner step: status file to the laptop, a signed message back.
+
+On the server:
+
+```sh
+docker exec tee-btcpay-tee-signer-1 signerd status --state-dir /var/lib/signerd --out /exchange/status.json
+```
+
+On the laptop:
+
+```sh
+scp you@your-server:tee-signer-exchange/status.json ~/tee-owner/exchange/
+cd owner/owner-cli/target/debug
+./owner-cli --status-file ~/tee-owner/exchange/status.json --wallet-record ~/tee-owner/wallet.json --out ~/tee-owner/exchange/arm.msg arm --key tpm:0x81000100
+scp ~/tee-owner/exchange/arm.msg you@your-server:tee-signer-exchange/
+```
+
+`arm` compares the enclave's sequence with the highest one your laptop has seen (kept in
+`wallet.json`) and refuses if the enclave remembers less — the signature of a restored older
+state; you can override that only in writing, and it is logged in the record. On the server:
+
+```sh
+docker exec tee-btcpay-tee-signer-1 signerd submit --state-dir /var/lib/signerd --file /exchange/arm.msg --out /exchange/arm.result.json
+```
+
+Payouts resume. A reboot at night is a pause until your morning, never a loss.
 
 **What you get:** the seed is never a file; a stolen admin login, a bad plugin or a hacked BTCPay
 container can at most spend the current window's unlisted budget, to destinations capped per
-transaction — that window cap is the ceiling on the damage. You unfreeze, cancel or tighten from
-your laptop with the owner key; nobody has to be present for routine payouts.
+transaction — that window cap is the ceiling on the damage. Root on the server cannot read the
+seed, and cannot replay a window's payouts while you are away: that needs a restart, and a
+restarted enclave waits for your key. You change the mandate, unfreeze or cancel by handing the
+server a signed file; nobody has to be present for routine payouts.
 
-**What to know:** root on the server cannot read the seed, and cannot replay a window's payouts
-while you are away: that needs a restart, and a restarted enclave signs nothing until you approve
-the start with your key (R7; `owner-cli status` says `NOT ARMED`, `owner-cli arm` approves). After
-any reboot of the server, payouts wait for that approval — in your own time. The project's own T2
-node is a shared Azure VM; a production deployment wants a node of its own. Signet only, today.
+**What to know:** the project's own T2 node is a shared Azure VM; a production deployment wants
+a node of its own. The plugin's status page is the natural place for the status file and the
+pasted answer — that is the next step, so that owner operations need no shell on the server at
+all. Signet only, today.
 
 ---
 
@@ -187,50 +255,59 @@ node is a shared Azure VM; a production deployment wants a node of its own. Sign
 Everything in setup 1, plus the three things below. The parts that are not done yet are named
 at the end.
 
-**1. The enclave is built reproducibly and signed offline, never on the node.** The build runs
-in a pinned container on a build box (`docker/build-enclave.sh` with `RELEASE=1`); two
-independent builds give the same MRENCLAVE, which the script prints at the end of every build
-(`MRENCLAVE: …`; it is `enclave_css.body.enclave_hash.m` in the output's `sigstruct.dump`) —
-that value is what `init` and `attest` pin below. Signing is a two-step ceremony: the build produces
-the enclave hash, the ceremony key (RSA-3072, offline, passphrase-protected) signs it on the
-owner's machine (`scripts/ceremony-sign.sh`), and the build box assembles the signed enclave. The
-Makefile refuses a build whose MRSIGNER is not the pinned ceremony key (gate 7), whose code
-contains a runtime CPU probe, or whose LVI mitigation count is below the floor.
+**1. Reproduce the build yourself.** The build runs in a pinned container on a build box
+(`docker/build-enclave.sh` with `RELEASE=1`); two independent builds give the same MRENCLAVE,
+which the script prints at the end of every build (`MRENCLAVE: …`; it is
+`enclave_css.body.enclave_hash.m` in the output's `sigstruct.dump`) — that value is what `init`
+and `attest` pin. Signing is a two-step ceremony: the build produces the enclave hash, the
+ceremony key (RSA-3072, offline, passphrase-protected) signs it on the owner's machine
+(`scripts/ceremony-sign.sh`), and the build box assembles the signed enclave. The Makefile
+refuses a build whose MRSIGNER is not the pinned ceremony key (gate 7), whose code contains a
+runtime CPU probe, or whose LVI mitigation count is below the floor.
 
-**2. The sidecar on the node** — as in setup 1, step 2, with the image you built in step 1. The
-door is the same as in setup 1, step 3.
-
-**3. The owner key on a YubiKey 5.** Generate it on the device with PIN ALWAYS and touch ALWAYS
+**2. The owner key on a YubiKey 5.** Generate it on the device with PIN ALWAYS and touch ALWAYS
 (the only policies `owner-cli` accepts for the owner role), then verify the slot's attestation:
 
 ```sh
-ykman piv access change-pin; ykman piv access change-puk; ykman piv access change-management-key --protect --touch
-ykman piv keys generate -a ECCP256 --pin-policy ALWAYS --touch-policy ALWAYS 9a 9a.pub.pem
-$B piv-attest --key piv:9a --out ./9a-attest     # chain to Yubico Attestation Root 1 (pinned), policy ALWAYS/ALWAYS, serial, key == slot
+ykman piv access change-pin
+ykman piv access change-puk
+ykman piv access change-management-key --protect --touch
+ykman piv keys generate -a ECCP256 --pin-policy ALWAYS --touch-policy ALWAYS 9a ~/tee-owner/9a.pub.pem
+cd owner/owner-cli/target/debug
+./owner-cli piv-attest --key piv:9a --out ~/tee-owner/9a-attest
+./owner-cli pubkey --key piv:9a > ~/tee-owner/exchange/owner.pub
 ```
 
-Every owner signature then asks the PIN and waits for a touch. `init` and `rotate-owner` take the
-owner as `piv:9a` and refuse the slot unless its attestation verifies — an imported key, or one
-with a weaker policy, cannot become the owner.
+Every owner signature then asks the PIN and waits for a touch. In setup 1 use `--owner piv:9a`
+and `--key piv:9a`; `init` and `rotate-owner` refuse the slot unless its attestation verifies
+(an imported key, or one with a weaker policy, cannot become the owner).
 
-**4. `init` and `attest`.** `init` as in setup 1, step 5, with `--owner piv:9a` and the MRENCLAVE
-you reproduced in step 1. `attest --wallet wallet.json` repeats the same seven checks any time
-later; `--pin` re-records.
+**3. Check the enclave again, any time.** The same nonce-and-quote round trip as at `init`,
+verified on the laptop with nothing sent:
 
-**5. Then as in setup 1:** cold import into BTCPay, the mandate, the plugin settings.
+```sh
+openssl rand -hex 32 > ~/tee-owner/exchange/nonce.txt
+scp ~/tee-owner/exchange/nonce.txt you@your-server:tee-signer-exchange/
+```
 
-**What you get on T2:** everything from T1, plus the seed out of root's reach (up to the SGX
-threat model: side channels and Intel's microcode TCB are excluded), and a cryptographic answer
-to "is the enclave I am talking to the code that was audited?". What you do not get: the
-balance out of root's reach — scenario 3 of "What can an attacker still steal?"; keep the hot
-wallet small.
+on the server `docker exec tee-btcpay-tee-signer-1 signerd quote --state-dir /var/lib/signerd --nonce-file /exchange/nonce.txt --out /exchange/quote.json`, then on the laptop:
+
+```sh
+scp you@your-server:tee-signer-exchange/quote.json ~/tee-owner/exchange/
+cd owner/owner-cli/target/debug
+./owner-cli attest --wallet ~/tee-owner/wallet.json --replay ~/tee-owner/exchange/quote.json --nonce-file ~/tee-owner/exchange/nonce.txt --expect-mrenclave <the release's MRENCLAVE>
+```
+
+**What you get on T2:** everything from setup 1, plus the owner key behind a physical touch, and
+your own answer to "is the enclave I am talking to the code that was audited?".
 
 **What is not done yet, honestly:** mainnet needs explicit owner sign-off and has not been
 touched by anything in this repo; the auditor's *own* reproduction of the pinned MRENCLAVE is a
-carried item (deployment trust rests on it); the operator deployment guide is a carried item; and
-the project's dev T2 node is a shared Azure VM — a production deployment wants a node of its own.
-If the YubiKey is shared with other uses, its PIN is device-wide: three wrong PINs block every
-slot (the PUK unblocks), and the PIN typed for one key is typed into the same applet as the others.
+carried item (deployment trust rests on it); the operator deployment guide is a carried item;
+and the project's dev T2 node is a shared Azure VM — a production deployment wants a node of its
+own. If the YubiKey is shared with other uses, its PIN is device-wide: three wrong PINs block
+every slot (the PUK unblocks), and the PIN typed for one key is typed into the same applet as
+the others.
 
 ---
 
@@ -260,9 +337,11 @@ the BTCPay container) and talking to `signerd` with the token. Then they can:
   still steal?").
 
 What they cannot do: change the mandate (it needs your owner key's signature with the next
-nonce), unfreeze, rotate the owner, or get the seed out of a T2 enclave. What you do: **freeze** (anyone
-can, no signature needed), look at the chain, clean the server, then `unfreeze` with the owner
-key — or tighten the mandate first (a tightening applies at once).
+nonce), unfreeze, rotate the owner, or get the seed out of a T2 enclave. What you do: on the server,
+**freeze** — `docker exec tee-btcpay-tee-signer-1 signerd freeze --state-dir /var/lib/signerd
+--out /exchange/freeze.result.json`, no signature needed — look at the chain, clean the server,
+then hand it a signed `unfreeze` file from the laptop (status file over, `--out unfreeze.msg
+unfreeze --key …` back) — or a tightening first, which applies at once.
 
 ### What can an attacker still steal?
 
@@ -369,15 +448,33 @@ and height; so does every receipt.
 
 ### How do I change the mandate, day to day?
 
+The same three places as in setup 1. On the server, the installed mandate and the status to files:
+
 ```sh
-$B policy-show --json mandate-v2.json                          # field by field, DIFF marked; the hash you will sign
-$B policy-sign --json mandate-v2.json --key piv:9a              # nonce = installed + 1; PIN + touch on a YubiKey
-$B status                                                        # applied (tightening) or pending with its activation height
+docker exec tee-btcpay-tee-signer-1 signerd policy --state-dir /var/lib/signerd --out /exchange/policy.json
+docker exec tee-btcpay-tee-signer-1 signerd status --state-dir /var/lib/signerd --out /exchange/status.json
 ```
 
-The file is intent; the sealed state is law. Editing a JSON file changes nothing until it is
-signed with the next nonce and accepted. Keep the installed mandate's JSON next to `wallet.json`:
-the monitor reads the caps from it.
+On the laptop: see the difference field by field, sign, carry the message back:
+
+```sh
+scp you@your-server:tee-signer-exchange/policy.json you@your-server:tee-signer-exchange/status.json ~/tee-owner/exchange/
+cd owner/owner-cli/target/debug
+./owner-cli policy-show --installed-file ~/tee-owner/exchange/policy.json --json ~/tee-owner/mandate-v2.json
+./owner-cli --status-file ~/tee-owner/exchange/status.json --wallet-record ~/tee-owner/wallet.json --out ~/tee-owner/exchange/policy-v2.msg policy-sign --json ~/tee-owner/mandate-v2.json --key tpm:0x81000100
+scp ~/tee-owner/exchange/policy-v2.msg you@your-server:tee-signer-exchange/
+```
+
+On the server:
+
+```sh
+docker exec tee-btcpay-tee-signer-1 signerd submit --state-dir /var/lib/signerd --file /exchange/policy-v2.msg --out /exchange/policy-v2.result.json
+```
+
+The result file says applied (a tightening) or pending with its activation height (a
+loosening). The file is intent; the sealed state is law: editing a JSON file changes nothing
+until it is signed with the next nonce and accepted. Keep the mandate JSON you signed next to
+`wallet.json`.
 
 ### Why does the enclave have two keys?
 

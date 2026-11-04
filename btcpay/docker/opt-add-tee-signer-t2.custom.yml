@@ -19,6 +19,8 @@ services:
       SGX_AESM_ADDR: "1"
     volumes:
       - "tee_signer_datadir:/var/lib/signerd"
+      # R8 (no tunnel): the owner's files land here on the server (scp), the daemon's answers are written here
+      - "${TEE_EXCHANGE_DIR:-${HOME}/tee-signer-exchange}:/exchange"
       - "bitcoin_datadir:/bitcoin:ro"
       - "/var/run/aesmd:/var/run/aesmd"
   btcpayserver:
