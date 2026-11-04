@@ -34,4 +34,30 @@ PY
 echo "--- tighten ---"; "$OC" policy-show --json "$S/mandate2.json" | grep -E "DIFF|classification"; "$OC" policy-sign --json "$S/mandate2.json" --key "$S/owner.key" | tail -1; st
 echo "--- loosen (pending) then cancel with the RECOVERY key ---"; "$OC" policy-sign --json "$S/mandate3.json" --key "$S/owner.key" | tail -1; st; "$OC" cancel --key "$S/recovery.key"; st
 echo "--- freeze (unauthenticated) / unfreeze (owner) ---"; "$OC" freeze; st; "$OC" unfreeze --key "$S/owner.key"; st
+echo "--- REQ-r7: a loosening pending, the signer frozen, then a RESTART = a pause until the owner arms this load ---"
+"$OC" policy-sign --json "$S/mandate3.json" --key "$S/owner.key" | tail -1; st
+PENDING_BEFORE=$("$OC" status 2>/dev/null | python3 -c "import json,sys;print(json.dumps(json.load(sys.stdin)['pending']))")
+"$OC" freeze >/dev/null
+kill $SDPID; wait $SDPID 2>/dev/null || true
+"$SD" run --state-dir "$S/state" --listen 127.0.0.1:7391 >> "$S/signerd.log" 2>&1 &
+SDPID=$!; trap 'kill $SDPID 2>/dev/null || true' EXIT; sleep 1.5
+"$OC" status 2>/dev/null | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+assert d['boot_armed'] is False, 'a restarted enclave must be unarmed'
+assert d['frozen'] is True, 'a freeze taken before the restart persists'
+assert json.dumps(d['pending']) == '$PENDING_BEFORE', 'a pending loosening keeps its activation height across the restart'
+assert d['auto_arm'] is False
+print('  after restart:', {k:d[k] for k in ['boot_armed','frozen','pending','seq','nonce']})"
+echo "--- the owner arms this load (the record on this machine: last_seen_seq $(python3 -c "import json;print(json.load(open('$S/wallet.json')).get('last_seen_seq'))")) ---"
+"$OC" --wallet-record "$S/wallet.json" arm --key "$S/owner.key"
+"$OC" status | python3 -c "
+import json,sys;d=json.load(sys.stdin)
+assert d['boot_armed'] is True
+assert d['frozen'] is True, 'arming does not unfreeze'
+assert json.dumps(d['pending']) == '$PENDING_BEFORE', 'arming does not accelerate a pending loosening'
+print('  after arm:', {k:d[k] for k in ['boot_armed','frozen','pending','seq','nonce']})"
+echo "--- a second arm for the same load is refused (the nonce was spent; nothing to do) ---"
+if out=$("$OC" --wallet-record "$S/wallet.json" arm --key "$S/owner.key" 2>&1); then echo "UNEXPECTED: second arm accepted: $out"; exit 1; fi
+case "$out" in *"already armed"*) echo "  refused: already armed";; *) echo "UNEXPECTED: $out"; exit 1;; esac
+"$OC" unfreeze --key "$S/owner.key"; "$OC" cancel --key "$S/recovery.key"; st
 echo "e2e-local: OK"

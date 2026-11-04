@@ -97,8 +97,13 @@ sign → return signature + receipt**. The host may crash between seal and sign;
 charged and no signature exists — the conservative failure. The opposite order would let a crash
 produce a signature the state does not remember.
 
-Rollback (host presents an older blob): not preventable on SGX1 (no monotonic counters). Two
-layers, both ruled acceptable (RESP-prequestions Q3):
+Rollback (host presents an older blob): not preventable by the enclave alone on any SGX (no
+monotonic counter, no clock; the sealed state proves authorship, never recency). Re-read on
+2026-11-05 with the auditor: without the third layer below the rollback is **repeatable** — root
+restores the file, restarts, and re-pays the window; the header feed can be pinned, freeze rolls
+back with the state, and a captured witness token keeps passing — so there is no loss bound, only
+the hot wallet's balance (`THREAT-MODEL.md §5`). Three layers; the third is what the product
+relies on, the first two are developer and audit tooling:
 
 - **Detection** (always on): the receipt sequence inside the blob; the owner's monitor sees `seq`
   go backwards. Bound without the next layer: one window's budget per rollback.
@@ -113,6 +118,28 @@ layers, both ruled acceptable (RESP-prequestions Q3):
   replayed after a rollback fails the first check once the chain has moved; **within `maxTipLag`
   blocks of the rollback point it passes once** — `maxTipLag` is the residual, chosen small. The witness key can pause signing or
   hide a rollback; it can never loosen the mandate or sign — so a hosted "watchtower" can hold it.
+- **No signature after a restart until the owner arms this load (R7, `audit/REQ-r7-arm-after-restart-design-2026-11-05.md`).**
+  Every rollback is a restart: within a process the session high-water mark (§4a of `ENCLAVE.md`)
+  refuses an older blob, so an older blob can only be loaded by a new process — and a new process
+  is **unarmed**: `JUDGE` and `SIGN` refuse `NOT_ARMED` until the owner's `Arm { enclave_id, nonce,
+  boot_challenge, seq_seen }` arrives, signed by the owner key over the 32-byte challenge the enclave
+  drew from in-enclave RDRAND at that load and keeps in enclave memory only — never sealed (a
+  sealed flag would roll back with the blob; the witness's sealed `s.armed` is a different field
+  and never aliases it). A replayed `Arm` carries another load's challenge (`ARM_CHALLENGE`); an
+  `Arm` whose `seq_seen` exceeds the enclave's sequence names a rollback (`ARM_SEQ_BEHIND`); the
+  nonce is consumed; a successful `Arm` ratchets the session mark to the armed blob's sequence, so
+  an armed process can never be handed a blob older than the one it was armed on. Nobody has to be
+  awake: a rollback at night yields an enclave that is up and silent. Owner messages other than
+  `Arm` are accepted while unarmed (a cancel or a tightening must not need an extra signature in
+  an emergency; a loosening still waits its timelock, a freeze persists into the armed state).
+  `owner-cli arm` keeps the highest sequence the owner has seen in the wallet record **on the
+  owner's machine** and refuses to arm an enclave that remembers less, with a loud, logged,
+  explicit override. Residual: one window's budget per start the owner approves over a rollback
+  they did not notice. Opt-out only at build time (`AUTO_ARM=1`: the pause compiled out, its own
+  MRENCLAVE, `auto_arm` in the card and status, never ceremony-signed); never a runtime switch.
+  The chain-anchored budget (a control coin every signed transaction spends and recreates, so a
+  rolled-back enclave can only sign double-spends) is on record as the zero-liveness-cost
+  alternative, with serialized payouts as its price.
 
 ## 4. Signing flow
 
@@ -203,6 +230,8 @@ secp256k1). Both are later rounds; v1 is P-256 through `hw-signer`.
    tightening over it (auditor, RESP-r1 D-7).
 6. When `best_height ≥ activation_height`, the pending mandate becomes installed on the next ecall.
 
+The same family carries `Arm { boot_challenge, seq_seen }` (owner; §3, R7: approves one enclave
+load, verified against the challenge the enclave shell hands the pure core as data).
 The same message family carries `RotateOwner { new_owner_pk }` (signed by the owner — tightening?
 no: treated as **loosening**, timelocked) and `Recover { new_owner_pk }` (signed by the **recovery
 key** — immediate, because the recovery key is the stronger factor and a thief with it already has

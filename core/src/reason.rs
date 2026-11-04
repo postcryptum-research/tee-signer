@@ -92,6 +92,12 @@ pub enum Reason {
     /// The input state's sequence is below what this enclave session already produced
     /// (two judges from one base, or an older blob presented after a newer one).
     SeqBehindSession,
+    /// This enclave load has not been approved by the owner (REQ-r7): no signature until `Arm`.
+    NotArmed,
+    /// `Arm` carries a challenge that is not this load's (a replayed or mis-copied Arm).
+    ArmChallenge,
+    /// `Arm` says the owner saw a sequence higher than the enclave's: the state was rolled back.
+    ArmSeqBehind,
 }
 
 impl Reason {
@@ -140,6 +146,9 @@ impl Reason {
             Reason::StateUnsealable => "STATE_UNSEALABLE",
             Reason::HeaderInvalid => "HEADER_INVALID",
             Reason::SeqBehindSession => "SEQ_BEHIND_SESSION",
+            Reason::NotArmed => "NOT_ARMED",
+            Reason::ArmChallenge => "ARM_CHALLENGE",
+            Reason::ArmSeqBehind => "ARM_SEQ_BEHIND",
         }
     }
 }

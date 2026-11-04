@@ -27,6 +27,8 @@ pub mod domain {
     pub const RECOVER: &str = "tee-signer/recover/v1";
     /// `WitnessToken`.
     pub const WITNESS: &str = "tee-signer/witness/v1";
+    /// `Arm` (REQ-r7).
+    pub const ARM: &str = "tee-signer/arm/v1";
 }
 
 /// Parse a SEC1 uncompressed P-256 public key. `None` if not a valid point.
@@ -92,6 +94,21 @@ pub enum Message {
         /// Signature.
         sig: [u8; 64],
     },
+    /// Approve THIS enclave load (owner; REQ-r7). After every load the enclave signs nothing
+    /// until it sees this message over the 32-byte challenge it drew at that load; `seq_seen` is
+    /// the highest receipt sequence the owner has seen, which a rolled-back enclave cannot match.
+    Arm {
+        /// Target enclave.
+        enclave_id: [u8; 32],
+        /// Next nonce.
+        nonce: u64,
+        /// The challenge the enclave reported for this load (in-enclave randomness).
+        boot_challenge: [u8; 32],
+        /// The highest sequence the owner has seen; must be ≤ the enclave's.
+        seq_seen: u64,
+        /// Signature.
+        sig: [u8; 64],
+    },
     /// Rotate the owner key (owner; loosening, timelocked).
     RotateOwner {
         /// Target enclave.
@@ -138,6 +155,7 @@ const TAG_REARM: u8 = 4;
 const TAG_ROTATE_OWNER: u8 = 5;
 const TAG_RECOVER: u8 = 6;
 const TAG_WITNESS: u8 = 7;
+const TAG_ARM: u8 = 8;
 
 impl Message {
     /// The bytes that are signed (everything but the signature), and the domain.
@@ -159,6 +177,10 @@ impl Message {
             Message::Rearm { enclave_id, nonce, seq, .. } => {
                 e.fixed(enclave_id).u64(*nonce).u64(*seq);
                 (domain::REARM, e.finish())
+            }
+            Message::Arm { enclave_id, nonce, boot_challenge, seq_seen, .. } => {
+                e.fixed(enclave_id).u64(*nonce).fixed(boot_challenge).u64(*seq_seen);
+                (domain::ARM, e.finish())
             }
             Message::RotateOwner { enclave_id, nonce, new_owner_pk, .. } => {
                 e.fixed(enclave_id).u64(*nonce).fixed(new_owner_pk);
@@ -190,6 +212,7 @@ impl Message {
             | Message::Rearm { sig, .. }
             | Message::RotateOwner { sig, .. }
             | Message::Recover { sig, .. }
+            | Message::Arm { sig, .. }
             | Message::WitnessToken { sig, .. } => sig,
         }
     }
@@ -203,6 +226,7 @@ impl Message {
             | Message::Rearm { enclave_id, .. }
             | Message::RotateOwner { enclave_id, .. }
             | Message::Recover { enclave_id, .. }
+            | Message::Arm { enclave_id, .. }
             | Message::WitnessToken { enclave_id, .. } => enclave_id,
         }
     }
@@ -227,6 +251,9 @@ impl Message {
             }
             Message::Rearm { enclave_id, nonce, seq, sig } => {
                 e.u8(TAG_REARM).fixed(enclave_id).u64(*nonce).u64(*seq).fixed(sig);
+            }
+            Message::Arm { enclave_id, nonce, boot_challenge, seq_seen, sig } => {
+                e.u8(TAG_ARM).fixed(enclave_id).u64(*nonce).fixed(boot_challenge).u64(*seq_seen).fixed(sig);
             }
             Message::RotateOwner { enclave_id, nonce, new_owner_pk, sig } => {
                 e.u8(TAG_ROTATE_OWNER).fixed(enclave_id).u64(*nonce).fixed(new_owner_pk).fixed(sig);
@@ -265,6 +292,13 @@ impl Message {
                 enclave_id: d.fixed()?,
                 nonce: d.u64()?,
                 seq: d.u64()?,
+                sig: d.fixed()?,
+            },
+            TAG_ARM => Message::Arm {
+                enclave_id: d.fixed()?,
+                nonce: d.u64()?,
+                boot_challenge: d.fixed()?,
+                seq_seen: d.u64()?,
                 sig: d.fixed()?,
             },
             TAG_ROTATE_OWNER => Message::RotateOwner {

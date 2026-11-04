@@ -174,11 +174,11 @@ container can at most spend the current window's unlisted budget, to destination
 transaction — that window cap is the ceiling on the damage. You unfreeze, cancel or tighten from
 your laptop with the owner key; nobody has to be present for routine payouts.
 
-**What to know:** root on the server cannot read the seed. What root can still do today is
-scenario 3 of "What can an attacker still steal?" — repeat a window's payouts by restoring an old
-copy of the enclave's state file; the fix (the enclave signs nothing after a restart until you
-approve that start with your key, REQ-r7) is in design. The project's own T2 node is a shared
-Azure VM; a production deployment wants a node of its own. Signet only, today.
+**What to know:** root on the server cannot read the seed, and cannot replay a window's payouts
+while you are away: that needs a restart, and a restarted enclave signs nothing until you approve
+the start with your key (R7; `owner-cli status` says `NOT ARMED`, `owner-cli arm` approves). After
+any reboot of the server, payouts wait for that approval — in your own time. The project's own T2
+node is a shared Azure VM; a production deployment wants a node of its own. Signet only, today.
 
 ---
 
@@ -254,9 +254,10 @@ the BTCPay container) and talking to `signerd` with the token. Then they can:
   "What does root see?");
 - **break things** — stop the feed, delete files, restart `signerd` with an older sealed state.
   None of that loosens the mandate. A withheld feed stops the windows from rolling (the current
-  window's remaining budget is all there is); an older state is a **rollback**, which repeats a
-  window's payouts — but restoring the sidecar's state file needs root on the server, not a
-  BTCPay login (scenario 3 of "What can an attacker still steal?").
+  window's remaining budget is all there is); an older state is a **rollback** — but restoring the
+  sidecar's state file needs root on the server, not a BTCPay login, and the restart it needs
+  leaves the enclave unarmed until your key says otherwise (scenario 3 of "What can an attacker
+  still steal?").
 
 What they cannot do: change the mandate (it needs your owner key's signature with the next
 nonce), unfreeze, rotate the owner, or get the seed out of a T2 enclave. What you do: **freeze** (anyone
@@ -272,7 +273,10 @@ transaction and 0.05 BTC per window of 144 blocks.
 1. **Logged in as your BTCPay admin, or running a plugin they planted** (the November 2026
    attack). They make the enclave pay to their own addresses: 0.01 BTC per transaction, 0.05 BTC
    per window, then nothing until the next window — whether or not you are awake. They cannot take the rest
-   and cannot take the seed. *Closed down to the window budget, on both tiers.*
+   and cannot take the seed. *Closed down to the window budget, on both tiers.* What no enclave
+   closes: a BTCPay admin can also swap the store's wallet for an xpub of their own, and customers
+   then pay them — future revenue, not the balance; that is BTCPay's admin access, the same as
+   today, and the plugin's status page shows the mismatch.
 2. **Root on your T1 server** (the hosting provider, a full compromise). They read the seed out
    of the enclave's memory and own the whole hot wallet — what is in it now and what arrives
    later — exactly as with today's BTCPay. *Not closed on T1* — which is why T1 is the project's
@@ -281,12 +285,14 @@ transaction and 0.05 BTC per window of 144 blocks.
    transaction outside the mandate's shape. What they can do: let the enclave pay a window's
    budget to them, restore an older copy of the enclave's state file, restart it, and collect the
    same window again — a restart takes seconds. Assume root drains the hot wallet's balance, a
-   window at a time. *Not closed by the mandate.* What bounds it is what sits in the hot wallet:
-   keep a day or two of payouts there and move the rest to cold storage — a trusted
-   destination, so the sweep is a payout you or a script create in BTCPay and the enclave signs
-   with nobody at a device. Once root is in, it stops your sweeps too, so what customers pay
-   after that moment is exposed as well. No mandate holds the balance against root; the system
-   says so instead of building machinery around it.
+   window at a time — *that was the gap R7 closes.* Restoring an old state file needs a restart,
+   and a restarted enclave judges and signs nothing until you approve that start with your key
+   (`arm`): root gets a silent enclave, not a drain, while you are away. What remains: one
+   window's budget per start you approve after a rollback you did not notice — `arm` refuses when
+   the enclave remembers fewer operations than you last saw, unless you override it in writing.
+   *Pause build only: an `AUTO_ARM` build forfeits this, and the loss bound against root reverts
+   to the hot-wallet float.* Keep the float small anyway: move what you do not need to cold storage
+   (a trusted destination; the sweep is a payout you or a script create in BTCPay).
 4. **Your laptop stolen or controlled.** Routine payouts need no laptop, so nothing changes
    there. With your owner key in hand — the keyfile and its passphrase, or the YubiKey and its PIN
    while you are not there — they can submit a *loosening* (a bigger budget, their address as
@@ -308,9 +314,9 @@ BTCPay — the attack that happened — the mandate is the hard bound: the encla
 beyond it, at 3 a.m. or at noon, and by the time you look in the morning the loss is one
 window's budget, not the wallet. A thief with your *owner* key can change nothing before the
 mandate's timelock runs out; the timelock is yours to set (`timelockBlocks`: a day, a week —
-longer than your longest absence), and the recovery key cancels. Against root on the server no
-mandate holds the balance (scenario 3); the system says so instead of building machinery for
-it.
+longer than your longest absence), and the recovery key cancels. Against root on the server: a
+rollback needs a restart, and a restarted enclave signs nothing until you approve that start with
+your key — at 3 a.m. it simply waits (scenario 3; pause build only, `AUTO_ARM` forfeits it).
 
 ### What exactly does the enclave refuse?
 
@@ -324,9 +330,9 @@ every one of them has a refusal vector in the test suite. The classes:
 | outputs | `OUTPUT_SCRIPT_TYPE`, `CHANGE_INDEX_BEYOND_GAP`, `OPRETURN_FORBIDDEN` | change to an index far beyond the sealed bound; an `OP_RETURN` the mandate does not allow |
 | caps | `CAP_TX`, `CAP_WINDOW`, `CAP_UNLISTED_TX`, `CAP_UNLISTED_WINDOW`, `CAP_TRUSTED_TX(label)`, `CAP_TRUSTED_WINDOW(label)` | the payout, or the window's running total, is above the mandate |
 | fees | `FEE_ABS`, `FEE_RATE` | BTCPay's fee estimate is above the bounds (the rate is checked against a lower-bound size, so a fair fee on a large transaction can be over-refused — `maxFeeAbs` is the hard backstop) |
-| state | `FROZEN`, `MANDATE_EXPIRED`, `CHAIN_STALE`, `CHAIN_REORG`, `STATE_UNSEALABLE` | someone froze the signer; `validity.notAfterHeight` passed; the header feed stopped or a reorg deeper than `maxReorg` happened; the sealed state does not open |
+| state | `NOT_ARMED`, `FROZEN`, `MANDATE_EXPIRED`, `CHAIN_STALE`, `CHAIN_REORG`, `STATE_UNSEALABLE` | the signer was restarted and you have not approved the start yet (`owner-cli arm`); someone froze the signer; `validity.notAfterHeight` passed; the header feed stopped or a reorg deeper than `maxReorg` happened; the sealed state does not open |
 | freshness | `FRESHNESS_MISSING`, `FRESHNESS_SIG`, `FRESHNESS_TIP`, `FRESHNESS_SEQ_BEHIND` | only if `freshness.required` is set in the mandate — a developer option, off and not part of the product (`DESIGN.md` §3) |
-| owner messages | `POLICY_SIG`, `POLICY_NONCE`, `POLICY_NETWORK`, `POLICY_WALLET`, `POLICY_PENDING` | signed by a key that is not the owner (a retired key, a pending one), a wrong nonce, a mandate for another wallet, or a second change while one is pending |
+| owner messages | `POLICY_SIG`, `POLICY_NONCE`, `POLICY_NETWORK`, `POLICY_WALLET`, `POLICY_PENDING`, `ARM_CHALLENGE`, `ARM_SEQ_BEHIND` | signed by a key that is not the owner (a retired key, a pending one), a wrong nonce, a mandate for another wallet, a second change while one is pending; an `arm` for another start (a replay), or an `arm` that says you saw more operations than the enclave remembers (a rollback) |
 
 A refusal charges nothing to the budget. The reasons come back to the plugin (BTCPay logs them
 as `tee-signer: enclave refused …`), to `owner-cli sign`, and to `signerd`'s log.

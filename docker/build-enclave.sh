@@ -7,6 +7,8 @@ TAG=${TAG:-tee-signer-build:2.28}
 # RELEASE=0 builds the DEBUG variant (DisableDebug=0, test features) of the same sources — only to prove the
 # verifier refuses its quote (REQ-r5 §4 negative vector); never deployed.
 RELEASE=${RELEASE:-1}
+# REQ-r7 §2.6: AUTO_ARM=1 builds the operator's opt-out (pause after restart compiled OUT); refused with SIGN=ceremony
+AUTO_ARM=${AUTO_ARM:-0}
 # SIGN=dev (default): one-step signing with the mounted dev key. SIGN=ceremony: two steps —
 # PHASE=gendata leaves enclave_hash.hex in $OUT for the operator (scripts/ceremony-sign.sh);
 # PHASE=catsig takes $OUT/signature.hex back and finishes with the gates, incl. gate 7 (MRSIGNER pin).
@@ -21,7 +23,7 @@ if [ ! -f "$KEY" ]; then
 fi
 DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile.enclave-build -t "$TAG" . > "${OUT%/}.image.log" 2>&1 || { tail -40 "${OUT%/}.image.log"; exit 1; }
 mkdir -p "$OUT"
-MK='make RELEASE=$RELEASE MITIGATION-CVE-2020-0551=LOAD SDK_CPUID_LIST=sdk-cpuid-baseline-2.28.txt CARGO=/opt/cargo/bin/cargo CARGO_FLAGS=--offline'
+MK='make RELEASE=$RELEASE AUTO_ARM=$AUTO_ARM MITIGATION-CVE-2020-0551=LOAD SDK_CPUID_LIST=sdk-cpuid-baseline-2.28.txt CARGO=/opt/cargo/bin/cargo CARGO_FLAGS=--offline'
 DUMP='/opt/intel/sgxsdk/bin/x64/sgx_sign dump -enclave enclave.signed.so -dumpfile build/sigstruct.dump >/dev/null 2>&1'
 case "$SIGN:$PHASE" in
   ceremony:gendata)
