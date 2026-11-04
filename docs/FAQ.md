@@ -32,10 +32,6 @@ The words used below:
   never on the box;
 - **recovery key** — a cold encrypted keyfile that can cancel a pending change, replace a lost
   owner key, and decrypt the **recovery blob** (the seed, encrypted at init to this key);
-- **receipt** *(expert mode)* — the enclave's record of every signature (sequence number, txid,
-  amounts), signed with its stamp;
-- **monitor** *(expert mode)* — `owner-cli monitor`, run off the server: verifies receipts and
-  watches the chain from the merchant's own node;
 - **tiers** — T1: SGX1 without Flexible Launch Control (debug launch, no attestation); T2: FLC +
   DCAP (non-debug, attested); T0: software, tests only ([`HOW_IT_WORKS.md`](HOW_IT_WORKS.md)).
 
@@ -163,21 +159,6 @@ the **TEE signer** payout processor for the store's on-chain payouts; use **Send
 enclave** for manual sends. Create a small pull payment and a payout: the processor builds the
 PSBT, the enclave signs it, and `seq` at `status` — the enclave's count of signatures — advances by one.
 
-**Optional, expert mode: the monitor.** The main path ends at step 8. If you want scenario 3 of
-"What can an attacker still steal?" *watched* rather than accepted, run the
-monitor on your laptop (or any machine that is not the server). It needs a view of the chain
-that does *not* come from the server: for a first run on signet a public Esplora
-is enough; for anything of value, your own node (`--node-rpc URL --node-cookie FILE` in place of
-`--esplora`). It reaches the sidecar through the tunnel of step 3:
-
-```sh
-$B monitor --wallet wallet.json --mandate mandate.json --esplora https://mempool.space/signet/api --interval 300
-```
-
-It verifies every receipt under the enclave's stamp, scans your addresses on the chain for
-spends that have no receipt, cross-checks the window cap, watches the header feed, and on an
-ALARM sends an unsigned **freeze** before telling you.
-
 **What you get:** the seed is never a file; a stolen admin login, a bad plugin or a hacked BTCPay
 container can at most spend the current window's unlisted budget, to destinations capped per
 transaction — that window cap is the ceiling on the damage. You unfreeze, cancel or tighten from
@@ -249,9 +230,7 @@ $B attest --wallet wallet.json            # the same seven checks, any time late
 A failure at any step refuses and names the step; no record is written, and you do not fund the
 wallet.
 
-**5. Then as in setup 1:** cold import into BTCPay, the mandate, the plugin settings. In expert
-mode, the monitor against your own node and `freshness.required = true` in the mandate: a
-rolled-back enclave then *pauses* instead of re-spending a window.
+**5. Then as in setup 1:** cold import into BTCPay, the mandate, the plugin settings.
 
 **What you get on T2:** everything from T1, plus the seed out of root's reach (up to the SGX
 threat model: side channels and Intel's microcode TCB are excluded), and a cryptographic answer
@@ -305,7 +284,7 @@ transaction and 0.05 BTC per window of 144 blocks.
 
 1. **Logged in as your BTCPay admin, or running a plugin they planted** (the November 2026
    attack). They make the enclave pay to their own addresses: 0.01 BTC per transaction, 0.05 BTC
-   per window, then nothing until the next window or until you freeze. They cannot take the rest
+   per window, then nothing until the next window — whether or not you are awake. They cannot take the rest
    and cannot take the seed. *Closed down to the window budget, on both tiers.*
 2. **Root on your T1 server** (the hosting provider, a full compromise). They read the seed out
    of the enclave's memory and own the whole hot wallet — what is in it now and what arrives
@@ -315,10 +294,11 @@ transaction and 0.05 BTC per window of 144 blocks.
    budget to them, restore an older copy of the enclave's state file, restart it, and collect the
    same window again — a restart takes seconds. Assume root drains the hot wallet's balance, a
    window at a time. *Not closed by the mandate.* What bounds it is what sits in the hot wallet:
-   keep a day or two of payouts there and let the rest go to cold storage — a trusted
-   destination the enclave pays on schedule with nobody present — and root gets the float, not
-   the business. The freshness witness (expert mode) narrows the trick to about one token's
-   lifetime (`maxTipLag` blocks) and the monitor raises an alarm; neither stops a fast attacker.
+   keep a day or two of payouts there and move the rest to cold storage — a trusted
+   destination, so the sweep is a payout you or a script create in BTCPay and the enclave signs
+   with nobody at a device. Once root is in, it stops your sweeps too, so what customers pay
+   after that moment is exposed as well. No mandate holds the balance against root; the system
+   says so instead of building machinery around it.
 4. **Your laptop stolen or controlled.** Routine payouts need no laptop, so nothing changes
    there. With your owner key in hand — the keyfile and its passphrase, or the YubiKey and its PIN
    while you are not there — they can submit a *loosening* (a bigger budget, their address as
@@ -333,6 +313,17 @@ transaction and 0.05 BTC per window of 144 blocks.
 Everything else an attacker on the server can do — ask for signatures, delete files, stop the
 daemon, withhold block headers, set the clock — ends in a refusal or a pause.
 
+### What holds while I sleep?
+
+Nothing here asks you to wake up and press something. Against anyone who comes in through
+BTCPay — the attack that happened — the mandate is the hard bound: the enclave will not sign
+beyond it, at 3 a.m. or at noon, and by the time you look in the morning the loss is one
+window's budget, not the wallet. A thief with your *owner* key can change nothing before the
+mandate's timelock runs out; the timelock is yours to set (`timelockBlocks`: a day, a week —
+longer than your longest absence), and the recovery key cancels. Against root on the server no
+mandate holds the balance (scenario 3); the system says so instead of building machinery for
+it.
+
 ### What exactly does the enclave refuse?
 
 Anything it cannot prove. The reasons are stable identifiers ([`POLICY.md`](POLICY.md) §6), and
@@ -346,7 +337,7 @@ every one of them has a refusal vector in the test suite. The classes:
 | caps | `CAP_TX`, `CAP_WINDOW`, `CAP_UNLISTED_TX`, `CAP_UNLISTED_WINDOW`, `CAP_TRUSTED_TX(label)`, `CAP_TRUSTED_WINDOW(label)` | the payout, or the window's running total, is above the mandate |
 | fees | `FEE_ABS`, `FEE_RATE` | BTCPay's fee estimate is above the bounds (the rate is checked against a lower-bound size, so a fair fee on a large transaction can be over-refused — `maxFeeAbs` is the hard backstop) |
 | state | `FROZEN`, `MANDATE_EXPIRED`, `CHAIN_STALE`, `CHAIN_REORG`, `STATE_UNSEALABLE` | someone froze the signer; `validity.notAfterHeight` passed; the header feed stopped or a reorg deeper than `maxReorg` happened; the sealed state does not open |
-| freshness *(expert mode only)* | `FRESHNESS_MISSING`, `FRESHNESS_SIG`, `FRESHNESS_TIP`, `FRESHNESS_SEQ_BEHIND` | only with `freshness.required` on: the monitor's witness token is absent, stale, or says the enclave is behind what the monitor has seen (a rollback) — needs the owner's `rearm` |
+| freshness | `FRESHNESS_MISSING`, `FRESHNESS_SIG`, `FRESHNESS_TIP`, `FRESHNESS_SEQ_BEHIND` | only if `freshness.required` is set in the mandate — a developer option, off and not part of the product (`DESIGN.md` §3) |
 | owner messages | `POLICY_SIG`, `POLICY_NONCE`, `POLICY_NETWORK`, `POLICY_WALLET`, `POLICY_PENDING` | signed by a key that is not the owner (a retired key, a pending one), a wrong nonce, a mandate for another wallet, or a second change while one is pending |
 
 A refusal charges nothing to the budget. The reasons come back to the plugin (BTCPay logs them
@@ -394,52 +385,15 @@ The file is intent; the sealed state is law. Editing a JSON file changes nothing
 signed with the next nonce and accepted. Keep the installed mandate's JSON next to `wallet.json`:
 the monitor reads the caps from it.
 
-### Expert mode: receipts, the monitor and the freshness witness — what do they add?
+### Why does the enclave have two keys?
 
-Nothing on the main path needs them. Scenario 3 of "What can an attacker still steal?" stands as stated: a root attacker repeats a
-window's payouts, and the hot wallet's float bounds it.
-Expert mode is for an operator who wants that limit *watched* rather than accepted.
-
-Every signature returns a receipt `{seq, txid, net outflow, amounts per class, fee, height,
-mandate hash}` signed by the enclave's stamp (bound at init). The sequence number is
-strictly increasing and lives inside the sealed state. The monitor, off the box:
-
-- verifies every receipt under the stamp's public key from `wallet.json` (a forged or edited log line
-  is refused by name);
-- keeps a high-water mark `(session, seq)`; the same `seq` with a different txid is a **fork**
-  (two enclaves run from one sealed state), a lower `seq` is a **regression** (rollback);
-- scans your addresses on the chain from an independent source — your own node, or an Esplora
-  for signet — for **spends without a receipt** (the one thing an enclave bypass would show),
-  and cross-checks the window cap against what actually confirmed;
-- watches the enclave's `best_height` against the chain (a stalled feed becomes an ALARM after a
-  few passes) and issues witness tokens when the mandate requires freshness;
-- on any ALARM sends an unsigned **freeze** first, then reports; `--once` exits 0 / 1 / 2 for
-  OK / WARN / ALARM so a cron can page you.
-
-A spend you have reviewed and accept (`--acknowledge <txid>`) stops re-alarming. The monitor's key,
-if it has one, can only pause signing or hide a rollback — never loosen or sign.
-
-### Why two keys? Couldn't the wallet key sign the receipts, to say "it was me, the enclave"?
-
-It could, technically, and it must not. The wallet key holds the money, so the only thing it
-ever signs is a Bitcoin transaction the mandate has judged. Every other use of a money key is an
-extra way to get a signature out of it over bytes someone else chose — the same reason you do not
-sign chat messages with a cold-wallet key. So the enclave keeps a second, small key for its own
-statements: the identity card at init and every receipt after. Three things follow:
-
-- **a different audience, a different curve.** Receipts are checked not by the Bitcoin network
-  but by your monitor and `owner-cli`, on your laptop, with the same P-256 that the owner key and
-  every consumer secure element speak; the Bitcoin key stays secp256k1 and is never asked to do
-  anything but transactions;
-- **a name for this enclave instance.** The identity card carries the enclave's measurement,
-  the xpub, the fingerprint, the tier and the stamp's public key, signed by the stamp; on T2 the
-  Intel attestation binds the stamp to the measured code. "This xpub belongs to this enclave" is
-  a statement the stamp makes once and every receipt repeats;
-- **a grade of damage.** If the stamp leaks (root on a T1 server), someone can forge receipts and
-  so lie to your monitor — but cannot move a satoshi. With one key there would be no such grade:
-  a leaked money key is total loss, and a key used for two jobs is twice as exposed.
-
-Both keys are born inside the enclave at init, sealed together, and neither leaves it.
+The wallet key holds the money, so the only thing it ever signs is a Bitcoin transaction the
+mandate has judged — a money key is never asked to sign anything else (the same reason you do
+not sign chat messages with a cold-wallet key). The enclave's second, small key — its stamp —
+signs the identity card at init, which is what binds "this xpub" to "this enclave" and what
+`attest` checks on T2. It also signs a receipt for every signature; receipts are an audit and
+development artifact, not a defense the product claims. Both keys are born inside the enclave
+and never leave it.
 
 ### The server died / the disk is gone / the provider deleted the VM. Are the coins lost?
 

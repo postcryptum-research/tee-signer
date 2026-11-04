@@ -58,9 +58,10 @@ tee-signer is that recommendation made automatic.
    header chain from an owner-pinned checkpoint; a budget window is 144
    blocks, not 24 host-clock hours, so a compromised host cannot reset the
    budget by moving the clock.
-5. **Every signature leaves a receipt** with a monotonic sequence number,
-   signed by the enclave's identity key, so the owner's monitor detects a
-   host that rolled the enclave's state back.
+5. **Every signature leaves a receipt** with a sequence number, signed by the enclave's own
+   stamp key — an audit and development artifact (`owner-cli monitor` reads them), not a defense
+   the product claims: against root on the server no mandate holds the balance; the honest
+   scenarios are in `docs/HOW_IT_WORKS.md`.
 
 The idea of the mandate — allow-list, per-operation cap, budget, validity
 window, owner/agent separation, rotate / revoke / recover — is TPM_sign's

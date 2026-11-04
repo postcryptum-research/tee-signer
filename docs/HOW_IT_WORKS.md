@@ -65,7 +65,7 @@ transaction and 0.05 BTC per window of 144 blocks.
 
 1. **Logged in as your BTCPay admin, or running a plugin they planted** (the November 2026
    attack). They make the enclave pay to their own addresses: 0.01 BTC per transaction, 0.05 BTC
-   per window, then nothing until the next window or until you freeze. They cannot take the rest
+   per window, then nothing until the next window — whether or not you are awake. They cannot take the rest
    and cannot take the seed. *Closed down to the window budget, on both tiers.*
 2. **Root on your T1 server** (the hosting provider, a full compromise). They read the seed out
    of the enclave's memory and own the whole hot wallet — what is in it now and what arrives
@@ -75,10 +75,11 @@ transaction and 0.05 BTC per window of 144 blocks.
    budget to them, restore an older copy of the enclave's state file, restart it, and collect the
    same window again — a restart takes seconds. Assume root drains the hot wallet's balance, a
    window at a time. *Not closed by the mandate.* What bounds it is what sits in the hot wallet:
-   keep a day or two of payouts there and let the rest go to cold storage — a trusted
-   destination the enclave pays on schedule with nobody present — and root gets the float, not
-   the business. The freshness witness (expert mode) narrows the trick to about one token's
-   lifetime (`maxTipLag` blocks) and the monitor raises an alarm; neither stops a fast attacker.
+   keep a day or two of payouts there and move the rest to cold storage — a trusted
+   destination, so the sweep is a payout you or a script create in BTCPay and the enclave signs
+   with nobody at a device. Once root is in, it stops your sweeps too, so what customers pay
+   after that moment is exposed as well. No mandate holds the balance against root; the system
+   says so instead of building machinery around it.
 4. **Your laptop stolen or controlled.** Routine payouts need no laptop, so nothing changes
    there. With your owner key in hand — the keyfile and its passphrase, or the YubiKey and its PIN
    while you are not there — they can submit a *loosening* (a bigger budget, their address as
@@ -92,6 +93,17 @@ transaction and 0.05 BTC per window of 144 blocks.
 
 Everything else an attacker on the server can do — ask for signatures, delete files, stop the
 daemon, withhold block headers, set the clock — ends in a refusal or a pause.
+
+## What holds while you sleep
+
+Nothing here asks you to wake up and press something. Against anyone who comes in through
+BTCPay — the attack that happened — the mandate is the hard bound: the enclave will not sign
+beyond it, at 3 a.m. or at noon, and by the time you look in the morning the loss is one
+window's budget, not the wallet. A thief with your *owner* key can change nothing before the
+mandate's timelock runs out; the timelock is yours to set (`timelockBlocks`: a day, a week —
+longer than your longest absence), and the recovery key cancels. Against root on the server no
+mandate holds the balance (scenario 3); the system says so instead of building machinery for
+it.
 
 ## The owner stays in charge
 
@@ -109,17 +121,6 @@ A mandate **tightening** applies at once. A **loosening** — a higher cap, a ne
 destination, a new owner — waits the mandate's timelock, visible at `status`, cancellable by
 either key. One change in flight at a time. Anyone may **freeze** (no signature needed); only the
 owner unfreezes.
-
-## Expert mode, optional
-
-The main path is two keys, one mandate, three commands and the plugin page; nothing in this
-section is needed for it. For an operator who wants scenario 3 above *watched* rather than accepted: the enclave signs a **receipt** for every signature (sequence number, txid, amounts,
-height) with a second key, its **stamp**; `owner-cli monitor`, run off the server, verifies those
-receipts, watches your addresses on the chain from your own node for spends without a receipt,
-notices a sequence that went backwards (a rollback) or a feed that stopped, and sends a freeze.
-With `freshness.required` in the mandate the monitor also issues short-lived witness tokens, and a
-rolled-back enclave pauses instead of re-spending a window. All of it is off unless you run it;
-[`FAQ.md`](FAQ.md) describes it.
 
 ## Honest tiers
 
