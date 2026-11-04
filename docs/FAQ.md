@@ -14,6 +14,13 @@ The words used below:
   transaction — or a refusal — comes out, and the key never leaves. The nearest familiar thing
   is a hardware wallet like a Ledger Nano, except built into the server's CPU and signing
   without a button, by the rules you set;
+- **wallet key** — the Bitcoin private key derived from the seed inside the enclave; the one
+  that actually signs transactions. It is what replaces the hot-wallet key that sits on the
+  BTCPay server today, and it never leaves the enclave;
+- **the enclave's stamp** — a second, small key the enclave creates at init to sign its *own
+  statements*: the identity card and every receipt. It signs no transactions; it exists so the
+  owner's monitor can tell the enclave's word from the host's (`identity_pk` in the code and the
+  audit documents);
 - **`signerd`** — the untrusted daemon next to BTCPay that loads the enclave, stores its sealed
   state on disk, feeds it block headers and exposes a small HTTP API; it cannot authorise anything;
 - **the plugin** — `BTCPayServer.Plugins.TeeSigner`: a payout processor and a "send through the
@@ -25,7 +32,8 @@ The words used below:
   never on the box;
 - **recovery key** — a cold encrypted keyfile that can cancel a pending change, replace a lost
   owner key, and decrypt the **recovery blob** (the seed, encrypted at init to this key);
-- **receipt** — the enclave's signed record of every signature (sequence number, txid, amounts);
+- **receipt** — the enclave's record of every signature (sequence number, txid, amounts), signed
+  with its stamp;
 - **monitor** — `owner-cli monitor`, run off the box: verifies receipts and watches the chain
   from the merchant's own node;
 - **tiers** — T1: SGX1 without Flexible Launch Control (debug launch, no attestation); T2: FLC +
@@ -99,11 +107,12 @@ recovery key go on **different media**; that separation is what makes an owner-k
 the owner's *public* key from the TPM (no passphrase, nothing is signed) and the recovery
 *public* key from the keyfile, and sends the two public keys through the tunnel to the sidecar.
 The sidecar passes them into the enclave. Inside the enclave: 256 bits of hardware randomness
-become a 24-word BIP39 mnemonic and a BIP32 master key; the account `m/84'/1'/0'` is derived; an
-identity key for signing receipts is created; the mnemonic is encrypted to the recovery public
+become a 24-word BIP39 mnemonic and a BIP32 master key; the account `m/84'/1'/0'` is derived; a
+second, small key is created — the enclave's **stamp**, which signs the identity card and the
+receipts and never a transaction; the mnemonic is encrypted to the recovery public
 key (the **recovery blob**); and all of it is sealed to this enclave and written, through the
 sidecar, to its state volume. Back through the tunnel come public things only: the account xpub,
-the master fingerprint, the identity public key, a signed **identity card** and the recovery
+the master fingerprint, the stamp's public key, a signed **identity card** and the recovery
 blob. The seed never crosses the tunnel in clear, and nothing on the laptop can sign. The enclave
 has no mandate yet, so it will sign nothing until step 7.
 
@@ -115,7 +124,7 @@ $B init --network signet --owner tpm:0x81000100 --recovery-pk $($B pubkey --key 
 `--owner` is a *locator*, never a raw key: `tpm:<handle>`, `piv:<slot>` (a YubiKey slot is
 attested to Yubico's root first and refused unless that verifies) or a keyfile path. `init`
 prints the tier (`T1-debug` here, labeled TOFU: no attestation exists on this hardware), the
-xpub, the fingerprint and the enclave identity, and writes `wallet.json` on the laptop — the
+xpub, the fingerprint and the stamp's public key, and writes `wallet.json` on the laptop — the
 identity card plus the recovery blob. Keep it; the monitor and every later command read it.
 
 Then prove the recovery blob is good **before** any money arrives:
@@ -163,7 +172,7 @@ is enough; for anything of value, your own node (`--node-rpc URL --node-cookie F
 $B monitor --wallet wallet.json --mandate mandate.json --esplora https://mempool.space/signet/api --interval 300
 ```
 
-It verifies every receipt under the enclave's identity key, scans your addresses on the chain for
+It verifies every receipt under the enclave's stamp, scans your addresses on the chain for
 spends that have no receipt, cross-checks the window cap, watches the header feed, and on an
 ALARM sends an unsigned **freeze** before telling you.
 
@@ -349,10 +358,10 @@ the monitor reads the caps from it.
 ### What is a receipt, and why run a monitor at all?
 
 Every signature returns a receipt `{seq, txid, net outflow, amounts per class, fee, height,
-mandate hash}` signed by the enclave's identity key (bound at init). The sequence number is
+mandate hash}` signed by the enclave's stamp (bound at init). The sequence number is
 strictly increasing and lives inside the sealed state. The monitor, off the box:
 
-- verifies every receipt under the identity key from `wallet.json` (a forged or edited log line
+- verifies every receipt under the stamp's public key from `wallet.json` (a forged or edited log line
   is refused by name);
 - keeps a high-water mark `(session, seq)`; the same `seq` with a different txid is a **fork**
   (two enclaves run from one sealed state), a lower `seq` is a **regression** (rollback);

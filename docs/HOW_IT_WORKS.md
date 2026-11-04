@@ -40,7 +40,8 @@ enclave does.
    (`CAP_UNLISTED_TX`, `FEE_RATE`, `INPUT_NOT_OWN`, …) and nothing is charged. On success the
    enclave first records the spend in its sealed state, *then* signs, and returns the signed PSBT
    with a **receipt** — sequence number, txid, amounts per class, fee, height — signed by the
-   enclave's own identity key.
+   enclave's own **stamp** (a second key, created at init, that signs the enclave's statements —
+   never transactions; those are signed by the wallet key, which never leaves the enclave).
 5. **BTCPay** finalises and broadcasts, as for any externally signed PSBT. The merchant's
    **monitor**, off the box, verifies receipts and watches the chain from an independent node.
 
