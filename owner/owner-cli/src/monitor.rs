@@ -355,6 +355,9 @@ struct NodeCache {
     last_block: u32,
     /// spends found so far: txid → (confirmed, height, net outflow sat)
     spends: HashMap<String, (bool, Option<u32>, u64)>,
+    /// mempool txids already read for incoming outputs (C-R4-7), so a pass reads only new ones
+    #[serde(default)]
+    mempool_seen: HashSet<String>,
 }
 
 /// The owner's own node as the chain source. Completeness comes from `scantxoutset` over the
@@ -414,6 +417,22 @@ fn scan_node(node: &NodeRpc, w: &WalletRecord, gap: u32, hwm_seq: u64, max_addre
             let confirmed = tx["confirmations"].as_u64().unwrap_or(0) > 0;
             note_tx(&tx, &ours, cache, confirmed, None);
         }
+    }
+    // 2c. incoming outputs still in the mempool (C-R4-7): a third party's unconfirmed payment to
+    //     us could be spent by a thief before it confirms; every mempool transaction not read
+    //     before is read once and its outputs to our addresses noted (cheap on signet; on mainnet
+    //     this is the per-pass cost the operator pays for closing that one-pass window)
+    let mempool: Vec<String> = node.rpc("getrawmempool", serde_json::json!([]))?.as_array().cloned().unwrap_or_default().iter().filter_map(|v| v.as_str().map(String::from)).collect();
+    let current: HashSet<String> = mempool.iter().cloned().collect();
+    cache.mempool_seen.retain(|t| current.contains(t));
+    for t in &mempool {
+        if cache.mempool_seen.contains(t) {
+            continue;
+        }
+        if let Ok(tx) = node.rpc("getrawtransaction", serde_json::json!([t, true])) {
+            note_tx(&tx, &ours, cache, false, None);
+        }
+        cache.mempool_seen.insert(t.clone());
     }
     // 3. the mempool: anything spending an output of ours right now
     let outpoints: Vec<serde_json::Value> = cache.outputs.keys().filter_map(|op| {
