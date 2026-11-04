@@ -27,9 +27,17 @@ sha2 = "0.10"
 rand = "0.8"
 rpassword = "7"
 zeroize = "1"
-# The owner's hardware-signer abstraction (TPM 2.0 now, YubiKey PIV next), pinned by revision (REQ-r6 D-R6-2).
-hw-signer = { git = "https://github.com/77ph/TPM_sign", rev = "9fa47b6", default-features = false, features = ["tpm"] }
+# The owner's hardware-signer abstraction (TPM 2.0 and YubiKey PIV), pinned by revision (REQ-r6 D-R6-2).
+# d41b2c9 differs from the audited 9fa47b6 only in yubikey_piv.rs (lazy PIN provider, commit ab65e3b); the
+# TPM backend is byte-identical. `yubikey-piv` needs pcscd and libpcsclite-dev on Linux (C-R6-3).
+hw-signer = { git = "https://github.com/77ph/TPM_sign", rev = "d41b2c9", default-features = false, features = ["tpm", "yubikey-piv"] }
 tss-esapi = { version = "7", features = ["generate-bindings"] }   # only to list persistent handles (C-R6-2: never evict another key)
+# YubiKey PIV attestation (C-R6-3): the device's f9 certificate is read with the same `yubikey` crate hw-signer uses;
+# the chain to Yubico's pinned root is verified here (x509-cert/der parse it, rsa verifies PKCS#1 v1.5 / SHA-256).
+yubikey = "0.9.0-rc.0"
+x509-cert = "0.3"
+der = { version = "0.8", features = ["oid"] }
+rsa = { version = "0.9", features = ["sha2"] }
 base64 = "0.22"
 dcap-qvl = { version = "=0.7.1", features = ["report"] }
 tokio = { version = "1", features = ["rt", "macros"] }

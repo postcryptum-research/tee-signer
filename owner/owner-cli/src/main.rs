@@ -4,9 +4,10 @@
 //! init and verifies the identity card and the recovery blob offline.
 //!
 //! Key backends in this build: an encrypted keyfile (scrypt N=2^18 + AES-256-GCM; the permitted
-//! floor, owner decision D3) and `software` for tests. Hardware backends (YubiKey PIV, TPM 2.0,
-//! Secure Enclave) come through TPM_sign's `hw-signer` in the next step; the trait boundary is
-//! the same: a 32-byte digest in, `(r, s)` out.
+//! floor, owner decision D3), a TPM 2.0 persistent key (`tpm:<handle>`, REQ-r6 scenario 1) and a
+//! YubiKey 5 PIV slot (`piv:<slot>[@<serial>]`, REQ-r6 scenario 2), the last two through TPM_sign's
+//! `hw-signer`. The trait boundary is the same for all: a 32-byte digest in, low-s `(r, s)` out;
+//! the enclave never learns which backend signed.
 
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -22,6 +23,7 @@ use signer_core::update::Message;
 use zeroize::Zeroize;
 
 mod monitor;
+mod piv_attest;
 mod psbt;
 
 // ---------------------------------------------------------------- keys
@@ -112,6 +114,9 @@ enum Signer {
     File(p256::ecdsa::SigningKey),
     /// TPM 2.0 persistent key: the scalar never exists outside the TPM; `sign_digest` runs inside it.
     Tpm(hw_signer::tpm::TpmSigner),
+    /// YubiKey 5 PIV slot: the key was generated on the device (`ykman piv keys generate`, PIN
+    /// ALWAYS + touch ALWAYS); every signature is a PIN and a touch on the key (C-R6-3).
+    Piv(hw_signer::yubikey_piv::YubiKeyPivSigner),
 }
 
 struct OpenKey {
@@ -129,12 +134,8 @@ impl OpenKey {
                 let sig = sig.normalize_s().unwrap_or(sig);
                 out.copy_from_slice(&sig.to_bytes());
             }
-            Signer::Tpm(t) => {
-                use hw_signer::HardwareSigner;
-                let sig = hw_signer::normalize_low_s(t.sign_digest(d).map_err(|e| anyhow!("TPM sign: {e}"))?);
-                out[..32].copy_from_slice(&sig.r);
-                out[32..].copy_from_slice(&sig.s);
-            }
+            Signer::Tpm(t) => out = hw_sign(t, d, "TPM")?,
+            Signer::Piv(y) => out = hw_sign(y, d, "YubiKey")?,
         }
         Ok(out)
     }
@@ -146,9 +147,19 @@ impl OpenKey {
                 b.copy_from_slice(&sk.to_bytes());
                 Ok(b)
             }
-            Signer::Tpm(_) => bail!("this key lives in the TPM; the recovery key must be an (offline) keyfile because opening the recovery blob needs ECDH"),
+            Signer::Tpm(_) | Signer::Piv(_) => bail!("this key lives in hardware; the recovery key must be an (offline) keyfile because opening the recovery blob needs ECDH"),
         }
     }
+}
+
+/// One signature on a hardware backend: low-s normalised by `hw-signer` (the same function for the
+/// TPM and the YubiKey), then `r ‖ s` — the format the enclave verifies, whatever signed.
+fn hw_sign(s: &impl hw_signer::HardwareSigner, d: &[u8; 32], what: &str) -> Result<[u8; 64]> {
+    let sig = hw_signer::normalize_low_s(s.sign_digest(d).map_err(|e| anyhow!("{what} sign: {e}"))?);
+    let mut out = [0u8; 64];
+    out[..32].copy_from_slice(&sig.r);
+    out[32..].copy_from_slice(&sig.s);
+    Ok(out)
 }
 
 /// `tpm:0x81000100` → the persistent handle; anything else is a keyfile path.
@@ -157,8 +168,67 @@ fn tpm_handle(locator: &str) -> Option<Result<u32>> {
     Some(u32::from_str_radix(h.trim_start_matches("0x"), 16).map_err(|_| anyhow!("TPM handle: hex like 0x81000100")))
 }
 
-/// Open a key by locator: a keyfile path, or `tpm:<handle>` (the authValue is the passphrase
-/// typed at use, as with a keyfile; it is never stored).
+/// `piv:9a` or `piv:9a@39252737` → the PIV slot and, when given, the YubiKey's serial number.
+fn piv_locator(locator: &str) -> Option<Result<(hw_signer::yubikey_piv::PivSlot, Option<u32>)>> {
+    let rest = locator.strip_prefix("piv:")?;
+    let (slot, serial) = match rest.split_once('@') {
+        Some((s, n)) => (s, Some(n)),
+        None => (rest, None),
+    };
+    Some((|| {
+        let slot: hw_signer::yubikey_piv::PivSlot = slot.parse().map_err(|e| anyhow!("PIV slot {slot:?}: {e} (9a, 9c, 9d, 9e or 82..95)"))?;
+        let serial = serial.map(|n| n.parse::<u32>().map_err(|_| anyhow!("YubiKey serial {n:?}: decimal, as `ykman info` prints it"))).transpose()?;
+        Ok((slot, serial))
+    })())
+}
+
+/// Open an owner-role key in a YubiKey PIV slot. Refuses any slot whose metadata does not say
+/// PIN ALWAYS and touch ALWAYS: an owner signature is a PIN and a touch on the key, every time;
+/// a CACHED touch would let malware on this machine piggyback on one touch. With `for_signing`
+/// the PIN is prompted at the first signature (never stored, never taken from the environment);
+/// without, the key can show its public key and nothing else.
+fn open_piv(slot: hw_signer::yubikey_piv::PivSlot, serial: Option<u32>, for_signing: bool) -> Result<hw_signer::yubikey_piv::YubiKeyPivSigner> {
+    use hw_signer::yubikey_piv::{slot_name, YubiKeyPivSigner};
+    let y = YubiKeyPivSigner::open(serial, slot).map_err(|e| anyhow!("YubiKey open piv:{}: {e} (is pcscd running? is the key plugged in?)", slot_name(slot)))?;
+    let name = format!("piv:{}@{}", slot_name(slot), y.serial());
+    owner_slot_policy_ok(&name, y.pin_policy(), y.touch_policy())?;
+    let y = y.with_touch_notice(move || eprintln!("touch the YubiKey to sign ({name})…"));
+    if !for_signing {
+        return Ok(y);
+    }
+    let prompt = format!("PIN for the YubiKey PIV slot {} (serial {})", slot_name(slot), y.serial());
+    Ok(y.with_pin_provider(move || piv_pin(&prompt).map_err(|e| hw_signer::SignerError::Key(format!("PIN: {e}")))))
+}
+
+/// The owner role accepts exactly PIN ALWAYS + touch ALWAYS (the auditor's ship-condition on C-R6-3):
+/// `Once` would let one PIN cover a whole card session, `Cached` lets one touch cover 15 s of
+/// signatures, `Never` removes the human from the loop. `Default` is refused too: what it means
+/// depends on the slot, and an owner key is generated with explicit policies.
+fn owner_slot_policy_ok(name: &str, pin: hw_signer::yubikey_piv::PivPinPolicy, touch: hw_signer::yubikey_piv::PivTouchPolicy) -> Result<()> {
+    use hw_signer::yubikey_piv::{PivPinPolicy, PivTouchPolicy};
+    if matches!(pin, PivPinPolicy::Always) && matches!(touch, PivTouchPolicy::Always) {
+        return Ok(());
+    }
+    bail!(
+        "REFUSED: {name} has PIN policy {pin:?} and touch policy {touch:?}; an owner key must be PIN ALWAYS + touch ALWAYS \
+         (`ykman piv keys generate -a ECCP256 --pin-policy ALWAYS --touch-policy ALWAYS <slot>`; C-R6-3)"
+    )
+}
+
+/// The PIV PIN, typed at the signature. Unlike `passphrase()` it is never read from the
+/// environment and has no local length rule (the applet's is 6–8 characters); it lives only in
+/// the backend's zeroized memory for this one command (C-R6-3).
+fn piv_pin(prompt: &str) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+    let pin = zeroize::Zeroizing::new(rpassword::prompt_password(format!("{prompt}: "))?);
+    if pin.is_empty() {
+        bail!("empty PIN");
+    }
+    Ok(zeroize::Zeroizing::new(pin.as_bytes().to_vec()))
+}
+
+/// Open a key by locator: a keyfile path, `tpm:<handle>` (the authValue is the passphrase typed
+/// at use, as with a keyfile; it is never stored) or `piv:<slot>[@<serial>]` (PIN typed at the
+/// signature, touch on the key).
 fn open_locator(locator: &str) -> Result<OpenKey> {
     if let Some(h) = tpm_handle(locator) {
         let handle = h?;
@@ -167,17 +237,66 @@ fn open_locator(locator: &str) -> Result<OpenKey> {
         let pk = tpm_pk(&t)?;
         return Ok(OpenKey { signer: Signer::Tpm(t), pk });
     }
+    if let Some(p) = piv_locator(locator) {
+        let (slot, serial) = p?;
+        let y = open_piv(slot, serial, true)?;
+        let pk = hw_pk(&y, "YubiKey")?;
+        return Ok(OpenKey { signer: Signer::Piv(y), pk });
+    }
     open_key(Path::new(locator))
 }
 
 fn tpm_pk(t: &hw_signer::tpm::TpmSigner) -> Result<[u8; 65]> {
-    use hw_signer::HardwareSigner;
-    let p = t.public_key().map_err(|e| anyhow!("TPM public key: {e}"))?;
+    hw_pk(t, "TPM")
+}
+
+/// The backend's P-256 point as the uncompressed 65-byte key every owner-cli command prints and sends.
+fn hw_pk(s: &impl hw_signer::HardwareSigner, what: &str) -> Result<[u8; 65]> {
+    let p = s.public_key().map_err(|e| anyhow!("{what} public key: {e}"))?;
     let mut pk = [0u8; 65];
     pk[0] = 4;
     pk[1..33].copy_from_slice(&p.x);
     pk[33..].copy_from_slice(&p.y);
     Ok(pk)
+}
+
+/// The slot's attestation certificate and the device's f9 certificate, both DER. No PIN.
+fn piv_certs(y: &hw_signer::yubikey_piv::YubiKeyPivSigner) -> Result<(Vec<u8>, Vec<u8>)> {
+    use der::Encode as _;
+    let slot_der = y.attestation().map_err(|e| anyhow!("slot attestation: {e}"))?;
+    let mut yk = yubikey::YubiKey::open_by_serial(yubikey::Serial(y.serial())).map_err(|e| anyhow!("YubiKey {}: {e}", y.serial()))?;
+    let c = yubikey::certificate::Certificate::read(&mut yk, hw_signer::yubikey_piv::PivSlot::Attestation).map_err(|e| anyhow!("read f9 certificate: {e}"))?;
+    Ok((slot_der, c.cert.to_der()?))
+}
+
+/// The public key a locator names, for SETTING the owner (`init`, `rotate-owner`, `recover`).
+/// This is the one place a raw hex key is NOT accepted, so that a PIV slot cannot become the
+/// owner without its attestation (the auditor's hardening on C-R6-3): slot metadata can say
+/// ALWAYS/ALWAYS for an imported key too; only a verified attestation proves the key was
+/// generated on the device. `piv:` runs `owner_slot_policy_ok` and `piv_attest::verify` and
+/// refuses on any failure; `tpm:` reads the persistent key; a path reads the keyfile's public key.
+fn owner_pk_of_locator(locator: &str) -> Result<([u8; 65], String)> {
+    if let Some(h) = tpm_handle(locator) {
+        let t = hw_signer::tpm::TpmSigner::open_persistent(h?).map_err(|e| anyhow!("TPM open {locator}: {e}"))?;
+        return Ok((tpm_pk(&t)?, locator.to_string()));
+    }
+    if let Some(p) = piv_locator(locator) {
+        let (slot, serial) = p?;
+        let y = open_piv(slot, serial, false)?;
+        let pk = hw_pk(&y, "YubiKey")?;
+        let (slot_der, f9_der) = piv_certs(&y)?;
+        let a = piv_attest::verify(&slot_der, &f9_der, y.serial(), &pk).map_err(|e| anyhow!("{locator} cannot become the owner: {e}"))?;
+        eprintln!(
+            "ATTESTED: {locator} generated on YubiKey {} (firmware {}), PIN {} / touch {}, chain to {}",
+            a.serial,
+            a.firmware,
+            a.pin_policy,
+            a.touch_policy,
+            a.chain.last().cloned().unwrap_or_default()
+        );
+        return Ok((pk, format!("piv:{}@{} (attested, firmware {})", hw_signer::yubikey_piv::slot_name(slot), a.serial, a.firmware)));
+    }
+    Ok((pubkey_of(Path::new(locator))?, locator.to_string()))
 }
 
 /// Is `handle` already a persistent object in this TPM? (C-R6-2: `keygen` never evicts another
@@ -724,24 +843,38 @@ enum Cmd {
         out: Option<PathBuf>,
         #[arg(long, default_value = "owner")]
         role: String,
-        /// `file` (encrypted keyfile) or `tpm` (P-256 key created inside the TPM 2.0 and persisted; REQ-r6 §2).
+        /// `file` (encrypted keyfile), `tpm` (P-256 key created inside the TPM 2.0 and persisted; REQ-r6 §2)
+        /// or `piv` (refused: a YubiKey PIV key is generated on the device by `ykman`, which holds the
+        /// management key; owner-cli never does — it prints the recipe).
         #[arg(long, default_value = "file")]
         backend: String,
         /// TPM persistent handle for `--backend tpm` (0x81000100 is this project's; other handles belong to other keys).
         #[arg(long, default_value = "0x81000100")]
         handle: String,
     },
-    /// Print a key's public key (keyfile path or `tpm:<handle>`).
+    /// Print a key's public key (keyfile path, `tpm:<handle>` or `piv:<slot>[@<serial>]`; a YubiKey needs no PIN for this).
     Pubkey {
         #[arg(long)]
         key: String,
+    },
+    /// Verify a YubiKey slot's attestation to Yubico's pinned root: the key was GENERATED on that device, with
+    /// PIN ALWAYS + touch ALWAYS (C-R6-3). No PIN needed. Prints a JSON record; `--out DIR` also saves the certificates.
+    PivAttest {
+        /// `piv:<slot>[@<serial>]`
+        #[arg(long)]
+        key: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Initialise the enclave wallet: keys generated inside, owner and recovery bound; stores the identity card and the recovery blob.
     Init {
         #[arg(long)]
         network: String,
+        /// Owner key LOCATOR, never a raw key: keyfile path, `tpm:<handle>` or `piv:<slot>[@<serial>]`
+        /// (a PIV slot is attested to Yubico's pinned root first and refused unless it verifies; C-R6-3).
         #[arg(long)]
-        owner_pk: String,
+        owner: String,
+        /// Recovery public key, hex (a keyfile, kept offline; see `keygen --role recovery`).
         #[arg(long)]
         recovery_pk: String,
         #[arg(long)]
@@ -808,17 +941,21 @@ enum Cmd {
         #[arg(long)]
         seq: u64,
     },
+    /// Hand the owner role to another key (a timelocked loosening, signed by the current owner).
     RotateOwner {
         #[arg(long)]
         key: String,
+        /// New owner key LOCATOR, never a raw key (`piv:` is attested first; C-R6-3).
         #[arg(long)]
-        new_owner_pk: String,
+        new_owner: String,
     },
+    /// Replace a lost owner key with the recovery key's signature.
     Recover {
         #[arg(long)]
         recovery_key: PathBuf,
+        /// New owner key LOCATOR, never a raw key (`piv:` is attested first; C-R6-3).
         #[arg(long)]
-        new_owner_pk: String,
+        new_owner: String,
     },
     /// Freeze signing (no signature needed).
     Freeze,
@@ -997,10 +1134,6 @@ fn client(cli: &Cli) -> Result<Signerd> {
     Ok(Signerd { url: cli.signerd.trim_end_matches('/').to_string(), token })
 }
 
-fn pk65(s: &str) -> Result<[u8; 65]> {
-    <[u8; 65]>::try_from(hex::decode(s)?.as_slice()).map_err(|_| anyhow!("public key is 65 bytes SEC1 hex"))
-}
-
 fn submit_message(sd: &Signerd, msg: &Message) -> Result<()> {
     let r = sd.post("/v1/message", serde_json::json!({"message_hex": hex::encode(msg.encode())}))?;
     println!("{r}");
@@ -1011,6 +1144,14 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match &cli.cmd {
         Cmd::Keygen { out, role, backend, handle } => {
+            if backend == "piv" {
+                bail!(
+                    "REFUSED: owner-cli does not generate YubiKey PIV keys (it never holds the management key). Generate the {role} key \
+                     on the device, in a slot that is EMPTY (`ykman piv keys info <slot>` must say no key; another project's slot is never overwritten):\n  \
+                     ykman piv keys generate -a ECCP256 --pin-policy ALWAYS --touch-policy ALWAYS <slot> <slot>.pub.pem\n\
+                     then use the locator piv:<slot> (e.g. piv:9a); `owner-cli pubkey --key piv:<slot>` prints the key"
+                );
+            }
             if backend == "tpm" {
                 let h = tpm_handle(&format!("tpm:{handle}")).unwrap()?;
                 let pk = keygen_tpm(h, role)?;
@@ -1028,12 +1169,43 @@ fn main() -> Result<()> {
             if let Some(h) = tpm_handle(key) {
                 let t = hw_signer::tpm::TpmSigner::open_persistent(h?).map_err(|e| anyhow!("TPM open: {e}"))?;
                 println!("{}", hex::encode(tpm_pk(&t)?));
+            } else if let Some(p) = piv_locator(key) {
+                let (slot, serial) = p?;
+                let y = open_piv(slot, serial, false)?;
+                eprintln!(
+                    "YubiKey serial {} slot {}: P-256, PIN policy {:?}, touch policy {:?}",
+                    y.serial(),
+                    hw_signer::yubikey_piv::slot_name(slot),
+                    y.pin_policy(),
+                    y.touch_policy()
+                );
+                println!("{}", hex::encode(hw_pk(&y, "YubiKey")?));
             } else {
                 println!("{}", hex::encode(pubkey_of(Path::new(key))?));
             }
         }
-        Cmd::Init { network, owner_pk, recovery_pk, out, expect_mrenclave, signing_key_label, accept, pccs } => {
+        Cmd::PivAttest { key, out } => {
+            let (slot, serial) = piv_locator(key).ok_or_else(|| anyhow!("--key must be piv:<slot>[@<serial>]"))??;
+            let y = open_piv(slot, serial, false)?;
+            let pk = hw_pk(&y, "YubiKey")?;
+            let (slot_der, f9_der) = piv_certs(&y)?;
+            let a = piv_attest::verify(&slot_der, &f9_der, y.serial(), &pk)?;
+            if let Some(dir) = out {
+                std::fs::create_dir_all(dir)?;
+                let name = hw_signer::yubikey_piv::slot_name(slot);
+                std::fs::write(dir.join(format!("slot-{name}.attest.der")), &slot_der)?;
+                std::fs::write(dir.join("f9.der"), &f9_der)?;
+                std::fs::write(dir.join(format!("slot-{name}.attest.json")), serde_json::to_vec_pretty(&a)?)?;
+                eprintln!("certificates and record written to {} (they name the device's serial: keep them out of the repository)", dir.display());
+            }
+            println!("{}", serde_json::to_string_pretty(&a)?);
+            eprintln!("ATTESTED: generated on YubiKey {} (firmware {}), PIN {} / touch {}, chain {}", a.serial, a.firmware, a.pin_policy, a.touch_policy, a.chain.join(" <- "));
+        }
+        Cmd::Init { network, owner, recovery_pk, out, expect_mrenclave, signing_key_label, accept, pccs } => {
             let sd = client(&cli)?;
+            let (opk, owner_label) = owner_pk_of_locator(owner)?;
+            let owner_pk = &hex::encode(opk);
+            eprintln!("owner key: {owner_label}");
             if owner_pk == recovery_pk {
                 bail!("owner and recovery keys must differ (and live on different media and machines)");
             }
@@ -1231,17 +1403,21 @@ fn main() -> Result<()> {
             sign_message(&okey, &mut msg)?;
             submit_message(&sd, &msg)?;
         }
-        Cmd::RotateOwner { key, new_owner_pk } => {
+        Cmd::RotateOwner { key, new_owner } => {
             let sd = client(&cli)?;
+            let (new_owner_pk, label) = owner_pk_of_locator(new_owner)?;
+            eprintln!("new owner: {label}");
             let okey = open_locator(key)?;
-            let mut msg = Message::RotateOwner { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, new_owner_pk: pk65(new_owner_pk)?, sig: [0; 64] };
+            let mut msg = Message::RotateOwner { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, new_owner_pk, sig: [0; 64] };
             sign_message(&okey, &mut msg)?;
             submit_message(&sd, &msg)?;
         }
-        Cmd::Recover { recovery_key, new_owner_pk } => {
+        Cmd::Recover { recovery_key, new_owner } => {
             let sd = client(&cli)?;
+            let (new_owner_pk, label) = owner_pk_of_locator(new_owner)?;
+            eprintln!("new owner: {label}");
             let rkey = open_key(recovery_key)?;
-            let mut msg = Message::Recover { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, new_owner_pk: pk65(new_owner_pk)?, sig: [0; 64] };
+            let mut msg = Message::Recover { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, new_owner_pk, sig: [0; 64] };
             sign_message(&rkey, &mut msg)?;
             submit_message(&sd, &msg)?;
         }
@@ -1616,4 +1792,51 @@ fn attest_record(
         "attributes_flags": format!("0x{attr_flags:x}"), "verification": rec,
     });
     Ok((rec, out))
+}
+
+#[cfg(test)]
+mod piv_locator_tests {
+    use super::*;
+    use hw_signer::yubikey_piv::PivSlot;
+
+    #[test]
+    fn piv_locator_parses_slot_and_optional_serial() {
+        let (slot, serial) = piv_locator("piv:9a").unwrap().unwrap();
+        assert_eq!(slot, PivSlot::Authentication);
+        assert_eq!(serial, None);
+        let (slot, serial) = piv_locator("piv:9c@39252737").unwrap().unwrap();
+        assert_eq!(slot, PivSlot::Signature);
+        assert_eq!(serial, Some(39252737));
+        let (slot, _) = piv_locator("piv:82").unwrap().unwrap();
+        assert_eq!(hw_signer::yubikey_piv::slot_name(slot), "82");
+    }
+
+    #[test]
+    fn owner_role_accepts_only_pin_always_touch_always() {
+        use hw_signer::yubikey_piv::{PivPinPolicy as P, PivTouchPolicy as T};
+        assert!(owner_slot_policy_ok("piv:9a@1", P::Always, T::Always).is_ok());
+        for (pin, touch) in [
+            (P::Always, T::Cached),
+            (P::Always, T::Never),
+            (P::Always, T::Default),
+            (P::Once, T::Always),
+            (P::Never, T::Always),
+            (P::Default, T::Always),
+            (P::Once, T::Cached),
+            (P::Never, T::Never),
+            (P::Default, T::Default),
+        ] {
+            let e = owner_slot_policy_ok("piv:9a@1", pin, touch).unwrap_err().to_string();
+            assert!(e.starts_with("REFUSED:"), "{pin:?}/{touch:?}: {e}");
+        }
+    }
+
+    #[test]
+    fn piv_locator_refuses_garbage_and_ignores_other_locators() {
+        assert!(piv_locator("piv:zz").unwrap().is_err());
+        assert!(piv_locator("piv:9a@notanumber").unwrap().is_err());
+        assert!(piv_locator("piv:").unwrap().is_err());
+        assert!(piv_locator("tpm:0x81000100").is_none());
+        assert!(piv_locator(".local/signet/owner.key").is_none());
+    }
 }

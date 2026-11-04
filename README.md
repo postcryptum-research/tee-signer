@@ -7,7 +7,8 @@ the four executable gates, R5 **T2 on Azure DCsv3** (reproducible pinned build, 
 DCAP-attested identity card verified on the owner's machine), R6 the owner key inside the
 operator's **TPM 2.0** and the enclave signed with an offline **ceremony key** (two-step signing,
 gate 7), R4 the owner's **monitor** (receipt authenticity, seq-fork, chain observation first,
-feed stall, freeze reflex). The T1 box (SGX1, no FLC) runs the same enclave in debug launch for
+feed stall, freeze reflex), R6b the owner key on a **YubiKey 5 PIV** slot (PIN + touch per
+signature; a slot becomes owner only through its attestation verified to Yubico's pinned root). The T1 box (SGX1, no FLC) runs the same enclave in debug launch for
 development; the T2 node runs it non-debug. Signet only. The production code gate is met; what
 remains is the operator's key custody (where the ceremony and TPM keys live) and the carried
 items in `docs/audit/CONDITIONS.md`. Two models, kept apart: `THREAT-MODEL.md` (compromise) and

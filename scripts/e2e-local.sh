@@ -10,7 +10,7 @@ SDPID=$!; trap 'kill $SDPID 2>/dev/null || true' EXIT; sleep 1.5
 export SIGNERD_URL=http://127.0.0.1:7391 SIGNERD_TOKEN_FILE=$S/state/token OWNER_PASSPHRASE=test-passphrase-123
 "$OC" keygen --out "$S/owner.key" --role owner >/dev/null; "$OC" keygen --out "$S/recovery.key" --role recovery >/dev/null
 OPK=$("$OC" pubkey --key "$S/owner.key"); RPK=$("$OC" pubkey --key "$S/recovery.key")
-"$OC" init --network regtest --owner-pk "$OPK" --recovery-pk "$RPK" --out "$S/wallet.json" | grep -E "tier|xpub|fingerprint"
+"$OC" init --network regtest --owner "$S/owner.key" --recovery-pk "$RPK" --out "$S/wallet.json" | grep -E "tier|xpub|fingerprint"
 "$OC" recovery-verify --wallet "$S/wallet.json" --recovery-key "$S/recovery.key"
 FP=$(python3 -c "import json;print(json.load(open('$S/wallet.json'))['fingerprint'])")
 cat > "$S/mandate.json" <<JSON
