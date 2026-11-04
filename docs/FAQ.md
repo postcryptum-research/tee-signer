@@ -142,7 +142,7 @@ customer payouts (e.g. `maxPerTx` 1 000 000 sat, `maxPerWindow` 5 000 000 sat), 
 of 144 blocks, fee bounds, `validity.notAfterHeight` about a year ahead, `timelockBlocks` 144.
 
 ```sh
-$B policy-build --json mandate.json --node-rpc http://127.0.0.1:7398 --node-cookie node.cookie --write   # fills chain.checkpoint, prints the hash
+$B policy-build --json mandate.json --esplora https://mempool.space/signet/api --write   # reads the signet tip, fills chain.checkpoint, prints the hash
 $B policy-show  --json mandate.json                                   # the diff against what is installed (nothing yet)
 $B policy-sign  --json mandate.json --key tpm:0x81000100              # nonce 0 = install; shows every field, then signs
 $B status                                                             # installed: true, nonce 0, best_height follows the chain
@@ -154,11 +154,13 @@ the **TEE signer** payout processor for the store's on-chain payouts; use **Send
 enclave** for manual sends. Create a small pull payment and a payout: the processor builds the
 PSBT, the enclave signs it, the receipt sequence at `status` advances by one.
 
-**9. Run the monitor** on your laptop (or any machine that is not the box), against your own
-node if you have one:
+**9. Run the monitor** on your laptop (or any machine that is not the server). It needs a view
+of the chain that does *not* come from the server: for a first run on signet a public Esplora
+is enough; for anything of value, your own node (`--node-rpc URL --node-cookie FILE` in place of
+`--esplora`). It reaches the sidecar through the tunnel of step 3:
 
 ```sh
-$B monitor --wallet wallet.json --mandate mandate.json --node-rpc http://127.0.0.1:7398 --node-cookie node.cookie --interval 300
+$B monitor --wallet wallet.json --mandate mandate.json --esplora https://mempool.space/signet/api --interval 300
 ```
 
 It verifies every receipt under the enclave's identity key, scans your addresses on the chain for
@@ -188,7 +190,9 @@ your machine. Here is the sequence; the parts that are not done yet are named at
 
 **1. The enclave is built reproducibly and signed offline, never on the node.** The build runs
 in a pinned container on a build box (`docker/build-enclave.sh` with `RELEASE=1`); two
-independent builds give the same MRENCLAVE. Signing is a two-step ceremony: the build produces
+independent builds give the same MRENCLAVE, which the script prints at the end of every build
+(`MRENCLAVE: …`; it is `enclave_css.body.enclave_hash.m` in the output's `sigstruct.dump`) —
+that value is what `init` and `attest` pin below. Signing is a two-step ceremony: the build produces
 the enclave hash, the ceremony key (RSA-3072, offline, passphrase-protected) signs it on the
 owner's machine (`scripts/ceremony-sign.sh`), and the build box assembles the signed enclave. The
 Makefile refuses a build whose MRSIGNER is not the pinned ceremony key (gate 7), whose code
@@ -201,6 +205,9 @@ fragment:
 ```sh
 TEE_FRAGMENT=opt-add-tee-signer-t2.custom TEE_EXTRA_FRAGMENTS=opt-save-storage-xxs btcpay/docker/stack.sh gen && btcpay/docker/stack.sh up
 ```
+
+The door is the same as in setup 1, step 3: an SSH forward of the node's loopback port 7390 to
+your laptop, and the token copied once from the sidecar's state volume.
 
 **3. The owner key on a YubiKey 5.** Generate it on the device with PIN ALWAYS and touch ALWAYS
 (the only policies `owner-cli` accepts for the owner role), then verify the slot's attestation:

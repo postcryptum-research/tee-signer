@@ -143,7 +143,7 @@ $B recovery-verify --wallet wallet.json --recovery-key /media/$USER/USB1/recover
 `timelockBlocks` 144.
 
 ```sh
-$B policy-build --json mandate.json --node-rpc http://127.0.0.1:7398 --node-cookie node.cookie --write   # заполняет chain.checkpoint, печатает хэш
+$B policy-build --json mandate.json --esplora https://mempool.space/signet/api --write   # читает вершину signet, заполняет chain.checkpoint, печатает хэш
 $B policy-show  --json mandate.json                                   # diff с установленным (пока пусто)
 $B policy-sign  --json mandate.json --key tpm:0x81000100              # nonce 0 = установка; показывает все поля, потом подписывает
 $B status                                                             # installed: true, nonce 0, best_height идёт за цепочкой
@@ -155,11 +155,13 @@ $B status                                                             # installe
 отправок — **Send through the enclave**. Создайте небольшой pull payment и выплату: обработчик
 соберёт PSBT, анклав подпишет, номер квитанции в `status` вырастет на единицу.
 
-**9. Запустите монитор** на ноутбуке (или любой машине, кроме сервера), против собственной ноды,
-если она есть:
+**9. Запустите монитор** на ноутбуке (или любой машине, кроме сервера). Ему нужен взгляд на
+цепочку, который *не* идёт с сервера: для первого прогона на signet хватит публичного Esplora;
+для всего, что имеет ценность, — собственная нода (`--node-rpc URL --node-cookie FILE` вместо
+`--esplora`). До sidecar он добирается через туннель из шага 3:
 
 ```sh
-$B monitor --wallet wallet.json --mandate mandate.json --node-rpc http://127.0.0.1:7398 --node-cookie node.cookie --interval 300
+$B monitor --wallet wallet.json --mandate mandate.json --esplora https://mempool.space/signet/api --interval 300
 ```
 
 Он проверяет каждую квитанцию ключом идентичности анклава, ищет в цепочке траты с ваших адресов,
@@ -189,7 +191,9 @@ $B monitor --wallet wallet.json --mandate mandate.json --node-rpc http://127.0.0
 
 **1. Анклав собирается воспроизводимо и подписывается офлайн, никогда на ноде.** Сборка идёт в
 закреплённом контейнере на сборочной машине (`docker/build-enclave.sh` с `RELEASE=1`); две
-независимые сборки дают один и тот же MRENCLAVE. Подпись — церемония в два шага: сборка выдаёт
+независимые сборки дают один и тот же MRENCLAVE, который скрипт печатает в конце каждой сборки
+(`MRENCLAVE: …`; это `enclave_css.body.enclave_hash.m` в `sigstruct.dump` среди результатов) —
+именно это значение `init` и `attest` закрепляют ниже. Подпись — церемония в два шага: сборка выдаёт
 хэш анклава, церемониальный ключ (RSA-3072, офлайн, под паролем) подписывает его на машине
 владельца (`scripts/ceremony-sign.sh`), сборочная машина собирает подписанный анклав. Makefile
 отказывает сборке, чей MRSIGNER не равен закреплённому церемониальному ключу (gate 7), чей код
@@ -201,6 +205,9 @@ AESM, `SIGNERD_ENCLAVE_DEBUG=false`); на маленьком диске — ф�
 ```sh
 TEE_FRAGMENT=opt-add-tee-signer-t2.custom TEE_EXTRA_FRAGMENTS=opt-save-storage-xxs btcpay/docker/stack.sh gen && btcpay/docker/stack.sh up
 ```
+
+Дверь та же, что в сценарии 1, шаг 3: SSH-проброс loopback-порта 7390 ноды на ваш ноутбук и
+токен, один раз скопированный из тома состояния sidecar.
 
 **3. Ключ владельца на YubiKey 5.** Сгенерируйте его на устройстве с политиками PIN ALWAYS и
 touch ALWAYS (единственные, которые `owner-cli` принимает для роли владельца), затем проверьте
