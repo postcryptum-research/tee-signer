@@ -25,3 +25,7 @@ build/
 .idea/
 *.swp
 .DS_Store
+# public CA certificates compiled into owner-cli (Intel SGX root, Yubico attestation root + intermediates); not secrets
+!owner/owner-cli/src/intel_sgx_root_ca.pem
+!owner/owner-cli/src/yubico-ca-1.pem
+!owner/owner-cli/src/yubico-intermediate.pem
