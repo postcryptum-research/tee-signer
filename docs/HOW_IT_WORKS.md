@@ -54,7 +54,7 @@ the budget by moving the clock.
 |---|---|---|
 | The admin login is stolen (the November 2026 attack) | the whole wallet is swept | at most what the mandate allows for the current window — to unlisted destinations capped per transaction and per window; the merchant freezes and the budget rolls back nothing |
 | A malicious plugin, or code execution inside the BTCPay container | same | same: the plugin can only *ask* the enclave |
-| Malware with the merchant's user rights on the host | same | same, plus the sealed state can be read but not opened |
+| Malware with the merchant's user rights on the server | same | same, plus the sealed state can be read but not opened |
 | **Root** on the server | same — root reads everything BTCPay reads | **T1** (SGX1 without Flexible Launch Control): root can read the enclave's memory, as it can read today's seed — no worse than today, and no better on this one front. **T2** (FLC + DCAP): protected from root too, up to the SGX threat model |
 | The host's clock or block feed is manipulated | the wallet does not care | windows run on verified block headers; a withheld feed only stops windows from rolling (the current window's remaining budget is the cap) |
 | The merchant's owner device is stolen | — | the thief can only submit a *loosening*, which waits a **timelock** (one day by default) during which the merchant cancels with the recovery key; a tightening would only hurt the thief |
