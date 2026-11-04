@@ -99,5 +99,9 @@ deploy/          docker fragment for btcpayserver-docker, systemd, isolation tab
 
 ## Reading order
 
-`docs/THREAT-MODEL.md` → `docs/DESIGN.md` → `docs/POLICY.md` →
-`docs/audit/PROTOCOL.md`. Working rules for sessions: `CLAUDE.md`.
+Start with [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md) (one page) and
+[`docs/FAQ.md`](docs/FAQ.md) (two worked setups, what gets refused and why, what to do when
+things break; Russian: [`HOW_IT_WORKS_ru.md`](docs/HOW_IT_WORKS_ru.md),
+[`FAQ_ru.md`](docs/FAQ_ru.md)). Then `docs/THREAT-MODEL.md` → `docs/DESIGN.md` →
+`docs/POLICY.md` → `docs/CONTINUITY.md` → `docs/audit/PROTOCOL.md`. Working rules for
+sessions: `CLAUDE.md`.

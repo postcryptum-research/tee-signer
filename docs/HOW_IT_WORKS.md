@@ -1,0 +1,97 @@
+# How it works — on one page
+
+Russian version: [`HOW_IT_WORKS_ru.md`](HOW_IT_WORKS_ru.md). Questions and worked setups: [`FAQ.md`](FAQ.md).
+
+## The short version
+
+**Before.** A BTCPay Server hot wallet is a BIP39 seed that lives in NBXplorer's database and
+is used by the BTCPay process itself to sign. Whoever can act as BTCPay — an admin login, a
+malicious plugin, a bug in the web app — can read the seed *and* sign any transaction. In
+November 2026 that is exactly how hot wallets were swept. The key is a file, and the file can
+sign anything, forever.
+
+**After.** With tee-signer there is no seed file. The seed is generated **inside an SGX enclave**
+on the merchant's own box, sealed to that enclave, and never leaves it in clear. BTCPay gets a
+watch-only account xpub and keeps working as it does with any cold wallet. When BTCPay needs a
+signature — a customer payout, a sweep to cold storage — it hands the enclave a PSBT, and the
+enclave **judges the transaction itself** against a **mandate** the merchant signed on a separate
+device: which destinations are trusted, how much per transaction, how much per budget window, fee
+bounds, no foreign inputs. Inside the mandate the enclave signs without anyone present. Outside
+it, the enclave refuses — whatever BTCPay, the plugin, the daemon or the host asked for.
+
+The mandate is TPM_sign's `AgentPolicy` idea (allow-list, caps, budget, validity, owner / agent
+separation, rotate / revoke / recover). There a chain enforces it; here there is no chain, so the
+enclave does.
+
+## How one payout goes
+
+1. **BTCPay** (through the plugin) builds the payout PSBT as it would for a hardware wallet, with
+   the full previous transactions and the derivation hints the enclave needs.
+2. **`signerd`**, an untrusted daemon next to BTCPay, passes the bytes into the enclave. It cannot
+   authorise anything; it is a pipe and a disk.
+3. **The enclave** parses the PSBT, proves every input is the wallet's own by re-deriving it,
+   takes the amounts from the previous transactions (never from what the host asserts), recognises
+   change by derivation, classes every other output as *trusted* or *unlisted*, and checks the
+   caps, the window budget, the fee bounds and the structural rules of the installed mandate.
+4. **It refuses, or it commits and signs.** On refusal, a machine-readable reason list comes back
+   (`CAP_UNLISTED_TX`, `FEE_RATE`, `INPUT_NOT_OWN`, …) and nothing is charged. On success the
+   enclave first records the spend in its sealed state, *then* signs, and returns the signed PSBT
+   with a **receipt** — sequence number, txid, amounts per class, fee, height — signed by the
+   enclave's own identity key.
+5. **BTCPay** finalises and broadcasts, as for any externally signed PSBT. The merchant's
+   **monitor**, off the box, verifies receipts and watches the chain from an independent node.
+
+Budget windows are counted in **blocks** (144 ≈ a day), not in host-clock hours: the enclave
+follows the block-header chain from an owner-pinned checkpoint, so a compromised host cannot reset
+the budget by moving the clock.
+
+## If the worst happens
+
+| What happens | A BTCPay hot wallet | tee-signer |
+|---|---|---|
+| The admin login is stolen (the November 2026 attack) | the whole wallet is swept | at most what the mandate allows for the current window — to unlisted destinations capped per transaction and per window; the merchant freezes and the budget rolls back nothing |
+| A malicious plugin, or code execution inside the BTCPay container | same | same: the plugin can only *ask* the enclave |
+| Malware with the merchant's user rights on the host | same | same, plus the sealed state can be read but not opened |
+| **Root** on the host | same | **T1** (SGX1 without Flexible Launch Control, debug launch): root can read the enclave's memory — the seed is **not** protected from root on this tier. **T2** (FLC + DCAP, non-debug launch): protected up to the SGX threat model |
+| The host's clock or block feed is manipulated | the wallet does not care | windows run on verified block headers; a withheld feed only stops windows from rolling (the current window's remaining budget is the cap) |
+| The merchant's owner device is stolen | — | the thief can only submit a *loosening*, which waits a **timelock** (one day by default) during which the merchant cancels with the recovery key; a tightening would only hurt the thief |
+| The server dies, the disk is lost | the seed is in the database backup — or gone | the seed also exists in the **recovery blob**, encrypted to the merchant's offline recovery key: restore into any BIP84 wallet ([`CONTINUITY.md`](CONTINUITY.md)) |
+
+## The owner stays in charge
+
+Two keys, kept apart, neither ever on the BTCPay box:
+
+- the **owner key** signs mandate changes, freezes / unfreezes, hands the role to another key. It
+  lives in a TPM 2.0 (`tpm:`), on a YubiKey 5 PIV slot with PIN + touch per signature (`piv:`),
+  or — the permitted floor — in an encrypted keyfile on a USB drive. It is used rarely.
+  Routine signing inside the mandate needs nobody.
+- the **recovery key** is a cold encrypted keyfile on two media in two places. It can cancel a
+  pending change, replace a lost owner key at once, and decrypt the recovery blob. It is the
+  backstop that makes the owner key's compromise bounded.
+
+A mandate **tightening** applies at once. A **loosening** — a higher cap, a new trusted
+destination, a new owner — waits the mandate's timelock, visible at `status`, cancellable by
+either key. One change in flight at a time. Anyone may **freeze** (no signature needed); only the
+owner unfreezes.
+
+## Honest tiers
+
+| Tier | Hardware | Closes the November 2026 attack | Protects from host root |
+|---|---|---|---|
+| **T1** | SGX1 without FLC (cheap bare metal, e.g. Xeon E3 v5/v6); the enclave can only be launched in debug mode; no remote attestation | yes | **no** — labeled, by the hardware |
+| **T2** | SGX with FLC + DCAP (Azure DCsv3, Xeon E-2200+, Ice Lake+); non-debug launch; the enclave's identity is attested and verified on the owner's machine | yes | yes, up to the SGX threat model (side channels excluded) |
+| **T0** | software, no TEE | dev and CI only | no |
+
+Both tiers run the same enclave binary, reproducibly built and signed with an offline ceremony
+key. Today the project runs on **signet** only.
+
+## Where to go next
+
+- [`FAQ.md`](FAQ.md) — two worked setups (a cheap SGX1 box; Azure DCsv3 with a YubiKey) and the
+  questions people ask: what gets refused and why, what a day in the life looks like, what to do
+  when things break.
+- [`POLICY.md`](POLICY.md) — the mandate, field by field, and the refusal reasons.
+- [`THREAT-MODEL.md`](THREAT-MODEL.md) — adversaries, invariants, residual risks (compromise).
+- [`CONTINUITY.md`](CONTINUITY.md) — accidents: what can be lost and how it is recovered.
+- [`DESIGN.md`](DESIGN.md) — components, key lifecycle, signing flow, the block clock.
+- [`audit/`](audit/) — every round's request and the auditor's verdict; [`audit/CONDITIONS.md`](audit/CONDITIONS.md) is the worked queue of what is still open.
