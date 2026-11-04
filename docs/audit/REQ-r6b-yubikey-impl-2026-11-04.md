@@ -122,6 +122,21 @@ Ship-condition (3) negative test: the `owner_slot_policy_ok` matrix (code) — t
 optional on-device ONCE/CACHED key in `9d` (one PIN + touch for a key that would be deleted again);
 the auditor accepted the code-level matrix with the gate called unconditionally in `open_piv`.
 
+### 4.5 Live T2 custody transition, part 1 — 2026-11-04, signet block 329442 (C-R6b-1)
+
+| Step | Result |
+|---|---|
+| R6 activation: `status` at enclave `best_height` 329442 | `pending_owner: None` — the TPM key became the owner at 329441 (timelocked loosening of 2026-11-03, 144 blocks) |
+| `freeze` (unsigned) | `frozen: true` |
+| **Negative:** `unfreeze --key .local/signet/owner.key` (the keyfile owner of `init`) | `message refused ["POLICY_SIG"]`, still frozen — the retired owner cannot act |
+| `unfreeze --key tpm:0x81000100` (signed inside the TPM) | `applied: true`, `frozen: false`, nonce 10 |
+| `rotate-owner --key tpm:0x81000100 --new-owner piv:9a` (TPM-signed; the new owner given as a locator) | in-line `ATTESTED: piv:9a generated on YubiKey 39252737 (firmware 5.8.0), PIN ALWAYS / touch ALWAYS, chain to CN=Yubico Attestation Root 1` · `new owner: piv:9a@39252737 (attested, firmware 5.8.0)` · `applied: true`, nonce 11, **`pending_owner: 329586`** (= 329442 + 144) |
+
+Until block 329586 the TPM key rules the live T2 wallet; then the YubiKey key does. Part 2 (after
+329586): `unfreeze --key tpm:0x81000100` must be `POLICY_SIG`-refused and `unfreeze --key piv:9a`
+(the owner, PIN + touch) accepted — that is the T2 proof of a YubiKey signature verified in the
+release enclave and of the TPM owner's retirement.
+
 Tier label of this evidence: T0 (in-process rcore, no SGX, regtest) — it proves the owner-cli
 mechanics (locator, attestation gate, PIN per signature, touch per signature, the refusal of
 another key) and the enclave-side verification code path, which is the same `rcore` that runs
