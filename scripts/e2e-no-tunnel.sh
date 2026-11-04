@@ -55,6 +55,12 @@ echo "== server: hand the file to the enclave; the answer is a file =="
 "$SD" status --state-dir "$SERVER/state" --url http://127.0.0.1:7391 --out "$SERVER/status.json"
 python3 -c "import json;d=json.load(open('$SERVER/status.json'))['response'];assert d['installed'] and d['nonce']==0;print('  installed, nonce', d['nonce'], 'boot_armed', d['boot_armed'])"
 
+echo "== server: the installed mandate to a file; laptop: diff against a draft, nothing live =="
+"$SD" policy --state-dir "$SERVER/state" --url http://127.0.0.1:7391 --out "$SERVER/policy.json"
+carry "$SERVER/policy.json" "$LAPTOP/policy.json"
+python3 -c "import json;d=json.load(open('$LAPTOP/mandate.json'));d['destinations']['unlisted']['maxPerTx']=500000;json.dump(d,open('$LAPTOP/mandate-v2.json','w'))"
+"$OC" policy-show --installed-file "$LAPTOP/policy.json" --json "$LAPTOP/mandate-v2.json" | grep -E "DIFF|classification" | head -3
+
 echo "== server: a restart (a reboot, an update — or a rollback): the enclave is unarmed =="
 kill $SDPID; wait $SDPID 2>/dev/null || true
 "$SD" run --state-dir "$SERVER/state" --listen 127.0.0.1:7391 >> "$SERVER/signerd.log" 2>&1 &

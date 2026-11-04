@@ -95,6 +95,15 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// R8 (no tunnel): write the installed mandate (and the pending one) to a file for `owner-cli policy-show --installed-file`.
+    Policy {
+        #[arg(long, env = "SIGNERD_STATE_DIR")]
+        state_dir: PathBuf,
+        #[arg(long, default_value = "http://127.0.0.1:7390")]
+        url: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// R8 (no tunnel): freeze signing right here on the server (no signature needed); only the owner's
     /// signed `unfreeze` lifts it.
     Freeze {
@@ -429,6 +438,7 @@ enum OwnerStep {
     Init { network: String, owner_pk: String, recovery_pk: String },
     Quote(String),
     Freeze,
+    Policy,
 }
 
 /// A value given directly, or read (trimmed) from a carried file.
@@ -448,6 +458,7 @@ async fn owner_step(state_dir: &Path, url: &str, out: &Path, step: OwnerStep) ->
     let resp = match step {
         OwnerStep::Status => http.get(format!("{base}/v1/status")).bearer_auth(&token).send().await?,
         OwnerStep::Freeze => http.post(format!("{base}/v1/freeze")).bearer_auth(&token).send().await?,
+        OwnerStep::Policy => http.get(format!("{base}/v1/policy")).bearer_auth(&token).send().await?,
         OwnerStep::Quote(nonce) => http.get(format!("{base}/v1/quote")).query(&[("nonce", nonce)]).bearer_auth(&token).send().await?,
         OwnerStep::Init { network, owner_pk, recovery_pk } => {
             let net: u8 = match network.as_str() {
@@ -1017,6 +1028,7 @@ async fn main() -> Result<()> {
             return owner_step(state_dir, url, out, OwnerStep::Quote(nonce)).await;
         }
         Cmd::Freeze { state_dir, url, out } => return owner_step(state_dir, url, out, OwnerStep::Freeze).await,
+        Cmd::Policy { state_dir, url, out } => return owner_step(state_dir, url, out, OwnerStep::Policy).await,
         _ => {}
     }
     let mut enclave = load_enclave(&args)?;

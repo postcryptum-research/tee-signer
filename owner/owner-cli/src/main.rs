@@ -1014,6 +1014,9 @@ enum Cmd {
     PolicyShow {
         #[arg(long)]
         json: Option<PathBuf>,
+        /// R8 (no tunnel): the file `signerd policy --out …` wrote on the server, carried here, instead of the live daemon.
+        #[arg(long)]
+        installed_file: Option<PathBuf>,
     },
     /// Sign a mandate JSON with the owner key and submit it (nonce 0 = install; otherwise an update).
     PolicySign {
@@ -1473,9 +1476,11 @@ fn main() -> Result<()> {
             }
             println!("canonical hex: {}", hex::encode(m.encode()));
         }
-        Cmd::PolicyShow { json } => {
-            let sd = client(&cli)?;
-            let p = sd.get("/v1/policy")?;
+        Cmd::PolicyShow { json, installed_file } => {
+            let p = match installed_file {
+                Some(f) => unwrap_server_file(serde_json::from_str(&std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?)?)?,
+                None => client(&cli)?.get("/v1/policy")?,
+            };
             let installed = Mandate::decode(&hex::decode(p["mandate_hex"].as_str().unwrap_or(""))?).map_err(|_| anyhow!("installed mandate undecodable"))?;
             println!("installed (nonce {}):", p["nonce"]);
             let inst = describe(&installed);

@@ -53,3 +53,17 @@ Occupied ports on the host (2026-11-03 `ss -ltn`): 22, 80, 443, 1080-1082, 3001-
 | node disk | **29 GB, shared with the siblings' data.** Signet IBD unpruned took it to 95 % on 2026-11-03; our `bitcoind` was stopped at once and runs **pruned** (`TEE_EXTRA_FRAGMENTS=opt-save-storage-xxs`, 5 GB). Check `df -h /` before any new data on the node |
 | token / owner access | sidecar token copy at `~/tee-signer/token` on the node (0600); from the laptop: Hetzner forward `ssh -f -N -L 127.0.0.1:7395:127.0.0.1:7390 azureuser@52.236.130.102` (on the box) + laptop forward 7395 through `.local/signet/tunnel.sock`; `owner-cli --signerd http://127.0.0.1:7395 --token-file .local/signet-t2/token …` |
 | T2 wallet (signet, dev) | xpub `tpubDCSDiHr…heEPV`, fingerprint `fae69580`, enclave id `f742311c…`, MRENCLAVE `51dee44d…`, MRSIGNER `73f20c7b…` (dev key), mandate `802cee97…`; record + attestations in the laptop's `.local/signet-t2/` (gitignored) |
+
+## R8 — no tunnel: the owner's files
+
+Owner operations never cross a tunnel. The sidecar mounts an exchange directory
+(`TEE_EXCHANGE_DIR`, default `~/tee-signer-exchange` of the user who runs the stack, seen as
+`/exchange` inside the container). The owner's machine sends files there with `scp` (public keys,
+a nonce, signed messages) and takes files back the same way (`init-response.json`, `status.json`,
+`quote.json`, `policy.json`, `*.result.json`). On the server the steps are
+`docker exec tee-btcpay-tee-signer-1 signerd status|submit|init|quote|policy|freeze --state-dir /var/lib/signerd … --out /exchange/<file>`;
+each writes its answer as a file and exits 0 on `ok`, 1 on a refusal (the enclave's reasons are in
+the file). `ssh` is never used to pull a process's output; `docs/FAQ.md` setup 1 is the worked
+sequence. The dev tunnels of earlier rounds (7390/7395/7398 forwards) remain a developer
+convenience, not an operator path.
+
