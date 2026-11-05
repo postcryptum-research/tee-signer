@@ -43,12 +43,14 @@ Freshness has to come from something root cannot roll back. Three such things ex
    restart; nothing else.
 2. **The Bitcoin chain**: the one external, append-only, root-proof record the enclave already
    verifies (headers) and already writes to (its own transactions).
-3. **An external counter the host cannot decrement**: a witness device (the freshness witness,
-   developer tooling), or a TPM NV counter read through a TPM-signed certify with an enclave
-   nonce. On a cloud VM the vTPM belongs to the hypervisor — it defends against root *inside* the
-   VM, not against the provider, who is the adversary of scenario 3.
+3. **A live hardware counter the host cannot decrement**: a TPM NV counter read through a
+   TPM-signed certify with an enclave nonce. On a cloud VM the vTPM belongs to the hypervisor — it
+   defends against root *inside* the VM, not against the provider, who is the adversary of
+   scenario 3. (A *witness* that signs over the enclave's nonce — the freshness witness, developer
+   tooling — is **source 1** in another coat: an external party that must be reachable at each
+   restart, with the same liveness cost as the owner; the auditor's regrouping, §5.)
 
-We do not see a fourth. The auditor is asked to find one or to confirm there is none.
+We do not see a fourth. The auditor's answer (§5): there are exactly three, and here is why.
 
 ## 3. Bitcoin as the record of truth — the control coin, developed
 
@@ -68,8 +70,10 @@ with every PSBT; headers it verifies).
 - **Birth.** The control coin is created by the first enclave-signed transaction after `init` —
   the mandate-install transaction — from the owner's first funding: a small output at a dedicated
   derivation (branch 2, index 0) plus an `OP_RETURN` committing to the installed mandate's hash.
-  Until that transaction is **confirmed** (an SPV proof against the enclave's own header chain —
-  a Merkle branch, ~1 KB), the enclave treats no control coin as live (auditor's point (4)).
+  Until that transaction is **`maxReorg` deep** (an SPV proof against the enclave's own header
+  chain — a Merkle branch, ~1 KB — plus `maxReorg` headers on top), the enclave treats no control
+  coin as live: the birth is the one-time, attended genesis the whole scheme rests on, so it pays
+  full finality; later links may chain shallower for throughput (auditor, §5).
 - **Every signing.** A PSBT is judged only if one input is the current control coin and exactly
   one output recreates it at the next index; the enclave accepts as the next link any confirmed or
   unconfirmed transaction that spends the current coin and recreates the script (so RBF
@@ -77,11 +81,23 @@ with every PSBT; headers it verifies).
 - **Budget accounting** is charged against the lineage link that was mined, not per signed
   candidate (auditor's point (3)): two candidates for one link conflict on chain; one is charged
   when its successor's previous transaction names it.
-- **Policy transitions** (install, update activation, cancel, rotate, recover) each spend the
-  control coin in a tiny transaction carrying the message hash in `OP_RETURN`; the enclave applies
-  the transition only after the SPV proof of that transaction. A rollback to a pre-tightening or
-  pre-cancel state then holds a spent coin — equally dead. The owner, present for owner
-  operations anyway, waits for that confirmation (one block).
+- **Policy transitions** split by direction, the asymmetry the mandate already has. A
+  **tightening** (cancel, freeze, a lower cap, a rotation to a safer key) applies **at once** —
+  delaying protection to wait for a block is the wrong direction, and a rollback of a tightening
+  only returns to the looser prior state, which the anchor already covers. A **loosening** (a
+  higher cap, unfreeze, rotate-owner) spends the control coin in a tiny transaction carrying the
+  message hash in `OP_RETURN`, and its activation height is `max(timelock height, the height at
+  which that spend is SPV-proved)`: the chain proof is the anchored twin of the timelock. The
+  owner, present for owner operations anyway, waits for that confirmation (auditor, §5).
+- **Several lineages.** Throughput can be multiplied safely by `m` **fixed** lineages with the
+  window budget **partitioned** across them (shares summing to the total); the anti-rollback
+  property holds per lineage, the sum stays the bound; `m` changes only by an attended policy
+  operation; the price is `m` control coins to manage (auditor, §5). A shared pool is probably
+  safe too (the coins are the anchor, not the counter) but needs its own proof; partitioned is
+  safe by construction.
+- **Finality.** The scheme's safety equals Bitcoin's finality assumption: two *mined* branches of
+  one lineage need a reorg deeper than `maxReorg`, the boundary the mandate already names; set
+  the lineage's finality to `maxReorg` and the question answers itself (auditor, §5).
 - **Windows** stay in block heights; headers can only *delay* a window (withholding), never add
   budget (auditor's point (2)); the control coin is the backstop even if the window counter is
   gamed by re-fed headers.
@@ -112,6 +128,19 @@ owner's rule is to prefer one. The honest framing: **R7 for the merchant whose s
 they are awake; the control coin for the operator who cannot have a pause.** Both are stated; one
 is built.
 
+The auditor's synthesis (§5) puts the three options on one line, and it is the story to tell:
+
+| | attended? | the loss bound against root | cost |
+|---|---|---|---|
+| **R7** (owner arms each start) | yes, one signature per restart | kept | none |
+| **control coin** | no | kept — **moved onto the chain** | SPV in the TCB, serialized (or partitioned) payouts, a confirmation per loosening |
+| **`AUTO_ARM`** | no | **forfeited** (the hot-wallet float) | near zero |
+
+So for "the operator who cannot have a pause" the control coin is strictly better than
+`AUTO_ARM`: the same unattendedness with the bound intact. `AUTO_ARM` remains what it is — the
+labeled opt-out — and the control coin is the principled answer to the question it tries to
+answer.
+
 ## 4. Questions for the auditor
 
 1. §2: is the list of freshness sources complete? Any fourth source we are missing?
@@ -127,3 +156,26 @@ is built.
 
 Nothing here changes the shipped code; this is the map of what else exists, for the record and for
 the day an operator needs unattended restarts.
+
+## 5. The auditor's answer (2026-11-05, recorded verbatim)
+
+Read the study. §2 is correct and the three sources are complete — and I can give you the reason it's complete, not just "I don't see a fourth."
+
+WHY EXACTLY THREE. Rollback-freshness is two sub-problems: P1 — the reference must sit where root can't rewind it (off the server); P2 — the enclave must tell a current reference-value from an old one root replays. P1 forces an EXTERNAL root of trust. P2 has exactly three solution-shapes, and each is one of your sources:
+- interactive: the enclave emits a fresh nonce, an external PARTY signs over it → the answer provably post-dates the nonce. = source 1 (owner). Cost is intrinsic: the party must be online at restart (the pause).
+- self-evidencing via consensus work: the reference carries PoW the enclave can verify, so a stale value is intrinsically unusable — your control-coin trick: a rolled-back coin is provably spent in a work-backed block, so the CHAIN rejects stale state and the enclave need not detect it. = source 2. Cost: SPV in the TCB + serialization.
+- live hardware read: the enclave reads a physically-monotonic counter NOW. = source 3. Cost: trust in the hardware, i.e. the cloud provider's vTPM.
+A fourth source would need a fourth way to solve P2, and there isn't one: you either have someone fresh vouch (party), have the staleness be self-rejecting through work (consensus), or read a live tamper-proof device (hardware). Everything I could invent collapses into these — a roughtime/TSA signature or a drand/NIST beacon is source 1 (an external signer over your nonce; replay-prone exactly like the witness unless it signs your challenge); a remote attesting enclave is source 1 too, and a THRESHOLD of them is just source 1 distributed — which is, notably, the TRUST stack's own FROST model, the one escape from "one owner must be awake" that stays in the signature family. A VDF or an accumulator anchors nothing external (root rolls back the seed/the updater). So: no fourth. One regrouping for §2 item 3 — separate a witness that SIGNS over your nonce (that's source 1, with the owner's liveness cost) from a hardware COUNTER (source 3); the doc blurs them, and the difference is whether a human/box must be reachable at each restart.
+
+The five:
+
+(2) Fork into two MINED branches — no. Two spends of one coin conflict; a single chain mines one. The only way to two final branches is a reorg deeper than maxReorg, which is breaking Bitcoin's own finality, and that is exactly the boundary you should name. It ties to (4): the scheme's safety = Bitcoin's finality assumption, so set the lineage's finality to maxReorg and the "two mined branches" question answers itself.
+
+(4) Confirmed-birth — maxReorg, not one. Birth is the genesis anchor the whole scheme rests on; it is one-time and attended, so the latency is cheap, and a 1-conf birth is a foundation a shallow reorg can unmake, leaving the enclave believing in a C_0 the chain dropped. Make the genesis as final as the deepest reorg you tolerate elsewhere. (Ongoing links can chain shallower / unconfirmed for throughput, with the reorg window handled by freeze + re-anchor — but the BIRTH is the one place to pay full finality.)
+
+(3) Policy transitions — don't make it one global rule; split by direction, same asymmetry the mandate already uses (Tightening applies now, Loosening goes pending). A TIGHTENING (cancel, freeze, budget-down, rotate-to-safer) should apply AT ONCE — delaying protection to wait for a block is the wrong direction; a rollback of a tightening just returns to the looser prior state, which is the general rollback case your anchor already covers. A LOOSENING (budget-up, unfreeze, rotate-owner) is the dangerous direction and must be SPV-proved before it's live — make its activation = max(timelock height, SPV-confirmed height of its control-coin spend); the chain proof is the anchored twin of the timelock. So "apply after SPV" is right for loosenings; for tightenings, apply-at-once is not just acceptable, it's correct.
+
+(5) Serialization — yes, safely relaxable: m FIXED lineages, the window budget PARTITIONED across them (shares summing to the total bound), gives m-way parallel throughput while the total-loss bound is unchanged. The anti-rollback property holds per lineage independently (a rolled-back enclave holds an old, spent coin on every lineage), and because the budgets are partitioned the sum is still the bound. Keep m fixed, changed only by an attended policy op; cost is m control UTXOs to manage. Use partitioned budgets, not a shared pool — a shared counter is probably still safe (the coins are the anchor, not the counter) but it needs its own proof; partitioned is provably safe by construction.
+
+One synthesis worth putting in §3.4 for the owner: the control coin is the principled answer to the AUTO_ARM question. AUTO_ARM buys unattended restarts by DROPPING the bound; the control coin buys unattended restarts by MOVING the bound onto the chain. So for "the operator who cannot have a pause," the control coin is strictly better than AUTO_ARM — same unattendedness, bound intact. Three points on one spectrum: R7 (attended, simplest), control coin (unattended, bound kept, SPV+serialization cost), AUTO_ARM (unattended, bound forfeited, near-zero cost). That's the whole space, and it's a clean story to tell. No verdict needed — you see it all; these are the sharp edges.
+
