@@ -1,6 +1,9 @@
 # Where can a restarted enclave get the truth about "now"? — a study for the auditor
 
-**Date:** 2026-11-05 · **Status:** a study, not a REQ — the owner asks the auditor to think along.
+**Date:** 2026-11-05 · **Status:** a study, not a REQ — the owner asked the auditor to think along.
+**Decision (owner, 2026-11-05):** the current hardware stays on R7; the roadmap is a physical TPM on the
+operator's own FLC server, or Trusted Launch on Azure for a vTPM counter (§3.5). The control coin
+(§3) is **not pursued — too complex**; it is kept here only as the record of what else exists.
 **Question:** after a restart, an enclave cannot tell the latest copy of its own sealed state from
 an older one. R7 answers with the owner's signature per start. We believe no other source of
 freshness exists *on the server*; this document states that argument so it can be attacked, and
