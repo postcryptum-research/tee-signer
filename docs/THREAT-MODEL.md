@@ -22,6 +22,7 @@
 | **V3 — host root** | everything on the host: can read a *debug* enclave's memory through the SGX debug interface, can roll sealed state back, can replace binaries, can withhold or replay anything | **T2 only** |
 | **V4 — the host's time and chain view** | V2 or V3 can set the host clock arbitrarily and feed any block headers they can obtain or mine | T1, T2 (windows run on PoW time) |
 | **V5 — owner-key thief** | holds the owner device or extracted its key, not the recovery key | partially: the timelock + the owner's cancel; fully only by the owner rotating to the recovery key in time |
+| **V7 — the cloud provider itself** (Azure, for T2 on DCsv3) | hypervisor, storage snapshots, the vTPM | **accepted as a residual by the owner (2026-11-05)**: the posture every provider-hosted TEE has (AWS Nitro rests entirely on the provider); consequence: the adversary of "root on a T2 server" is root *inside* the VM, and a hypervisor-owned vTPM counts as a trustworthy freshness source (`docs/studies/FRESHNESS-SOURCES-2026-11-05.md`, source 3) |
 | **V6 — physical / Intel-level** | CPU vulnerabilities, microcode TCB, side channels, decapping | out of scope at every tier; stated, not mitigated |
 
 The attack that motivates the project is **V1**. V1 is excluded at every TEE tier. V3 is the

@@ -141,6 +141,33 @@ So for "the operator who cannot have a pause" the control coin is strictly bette
 labeled opt-out — and the control coin is the principled answer to the question it tries to
 answer.
 
+## 3.5 Source 3 on Azure, once the provider is trusted (owner's decision, 2026-11-05)
+
+The owner accepts the cloud provider as a residual — the posture of every provider-hosted TEE
+(AWS Nitro rests on it entirely). Then the adversary of scenario 3 is root *inside* the VM, and
+the hypervisor-owned **vTPM** becomes a legitimate live hardware counter: unattended restarts with
+the bound kept, without SPV in the TCB and without serialized payouts.
+
+Sketch: at `init` (attended) the owner verifies the vTPM's endorsement chain **on the laptop**
+(Microsoft's CA; X.509 stays out of the enclave) and hands the enclave the public key of an
+**ECC P-256 attestation key** created in that vTPM, which is sealed next to the owner key; an NV
+monotonic counter is allocated for the wallet. On every seal the host increments the counter and
+the enclave records the expected value in the state; on every load — and on every ecall that
+reads a blob — the host must present `TPM2_NV_Certify` over the counter with the **enclave's
+fresh nonce** as qualifying data, signed by that AK; the enclave verifies the P-256 signature
+(code it already has) and that `counter == state.counter`. A rolled-back blob expects a smaller
+value than the counter shows: refused, and the owner's `Arm` (R7) remains the attended override
+for that and for the crash-between-increment-and-write case. Root can increment the counter
+(DoS at most), cannot decrement it, cannot forge the AK's signature, cannot replay a certify
+(nonce), cannot swap in a software TPM (different AK). TCB addition: parsing one fixed TPM2
+attestation structure; no new crate beyond what P-256 verification already needs.
+
+Facts to settle before a REQ: the project's node `sgx-node-3` exposes **no** `/dev/tpm0` today
+(it was not created with Trusted Launch); whether DCsv3 can be created with a vTPM is to be
+verified on Azure's side; the NV index is shared TPM state and must be allocated under the same
+co-tenancy rules as every other resource. On the owner's own FLC bare metal the physical TPM is
+the same design with no provider in the picture.
+
 ## 4. Questions for the auditor
 
 1. §2: is the list of freshness sources complete? Any fourth source we are missing?
