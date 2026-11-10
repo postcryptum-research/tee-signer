@@ -29,6 +29,8 @@ pub mod domain {
     pub const WITNESS: &str = "tee-signer/witness/v1";
     /// `Arm` (REQ-r7).
     pub const ARM: &str = "tee-signer/arm/v1";
+    /// `Anchor` (REQ-r9).
+    pub const ANCHOR: &str = "tee-signer/anchor/v1";
 }
 
 /// Parse a SEC1 uncompressed P-256 public key. `None` if not a valid point.
@@ -109,6 +111,29 @@ pub enum Message {
         /// Signature.
         sig: [u8; 64],
     },
+    /// Pin (or re-pin) the TPM counter that proves this state's freshness (owner; REQ-r9). Carries
+    /// the `Arm` bindings — this load's challenge and the sequence the owner saw — because it is
+    /// also the attended override for every counter mismatch: after it the blob expects `counter`
+    /// (then `+1` by the seal) and this load is armed. The only path that moves `expected` other
+    /// than `+1`.
+    Anchor {
+        /// Target enclave.
+        enclave_id: [u8; 32],
+        /// Next nonce.
+        nonce: u64,
+        /// The challenge the enclave reported for this load.
+        boot_challenge: [u8; 32],
+        /// The TPM's attestation key (SEC1 uncompressed P-256), verified by the owner on their machine.
+        ak_pk: [u8; 65],
+        /// The Name of the `TPMA_NV_COUNTER` index.
+        nv_name: [u8; crate::tpm_attest::NV_NAME_LEN],
+        /// The counter's live value, taken from an attested read.
+        counter: u64,
+        /// The highest sequence the owner has seen; must be ≤ the enclave's.
+        seq_seen: u64,
+        /// Signature by the owner.
+        sig: [u8; 64],
+    },
     /// Rotate the owner key (owner; loosening, timelocked).
     RotateOwner {
         /// Target enclave.
@@ -156,6 +181,7 @@ const TAG_ROTATE_OWNER: u8 = 5;
 const TAG_RECOVER: u8 = 6;
 const TAG_WITNESS: u8 = 7;
 const TAG_ARM: u8 = 8;
+const TAG_ANCHOR: u8 = 9;
 
 impl Message {
     /// The bytes that are signed (everything but the signature), and the domain.
@@ -181,6 +207,10 @@ impl Message {
             Message::Arm { enclave_id, nonce, boot_challenge, seq_seen, .. } => {
                 e.fixed(enclave_id).u64(*nonce).fixed(boot_challenge).u64(*seq_seen);
                 (domain::ARM, e.finish())
+            }
+            Message::Anchor { enclave_id, nonce, boot_challenge, ak_pk, nv_name, counter, seq_seen, .. } => {
+                e.fixed(enclave_id).u64(*nonce).fixed(boot_challenge).fixed(ak_pk).fixed(nv_name).u64(*counter).u64(*seq_seen);
+                (domain::ANCHOR, e.finish())
             }
             Message::RotateOwner { enclave_id, nonce, new_owner_pk, .. } => {
                 e.fixed(enclave_id).u64(*nonce).fixed(new_owner_pk);
@@ -213,6 +243,7 @@ impl Message {
             | Message::RotateOwner { sig, .. }
             | Message::Recover { sig, .. }
             | Message::Arm { sig, .. }
+            | Message::Anchor { sig, .. }
             | Message::WitnessToken { sig, .. } => sig,
         }
     }
@@ -227,6 +258,7 @@ impl Message {
             | Message::RotateOwner { enclave_id, .. }
             | Message::Recover { enclave_id, .. }
             | Message::Arm { enclave_id, .. }
+            | Message::Anchor { enclave_id, .. }
             | Message::WitnessToken { enclave_id, .. } => enclave_id,
         }
     }
@@ -254,6 +286,9 @@ impl Message {
             }
             Message::Arm { enclave_id, nonce, boot_challenge, seq_seen, sig } => {
                 e.u8(TAG_ARM).fixed(enclave_id).u64(*nonce).fixed(boot_challenge).u64(*seq_seen).fixed(sig);
+            }
+            Message::Anchor { enclave_id, nonce, boot_challenge, ak_pk, nv_name, counter, seq_seen, sig } => {
+                e.u8(TAG_ANCHOR).fixed(enclave_id).u64(*nonce).fixed(boot_challenge).fixed(ak_pk).fixed(nv_name).u64(*counter).u64(*seq_seen).fixed(sig);
             }
             Message::RotateOwner { enclave_id, nonce, new_owner_pk, sig } => {
                 e.u8(TAG_ROTATE_OWNER).fixed(enclave_id).u64(*nonce).fixed(new_owner_pk).fixed(sig);
@@ -298,6 +333,16 @@ impl Message {
                 enclave_id: d.fixed()?,
                 nonce: d.u64()?,
                 boot_challenge: d.fixed()?,
+                seq_seen: d.u64()?,
+                sig: d.fixed()?,
+            },
+            TAG_ANCHOR => Message::Anchor {
+                enclave_id: d.fixed()?,
+                nonce: d.u64()?,
+                boot_challenge: d.fixed()?,
+                ak_pk: d.fixed()?,
+                nv_name: d.fixed()?,
+                counter: d.u64()?,
                 seq_seen: d.u64()?,
                 sig: d.fixed()?,
             },

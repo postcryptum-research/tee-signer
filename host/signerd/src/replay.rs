@@ -57,6 +57,7 @@ impl P256Key {
             | Message::RotateOwner { sig, .. }
             | Message::Recover { sig, .. }
             | Message::Arm { sig, .. }
+            | Message::Anchor { sig, .. }
             | Message::WitnessToken { sig, .. } => *sig = s,
         }
     }

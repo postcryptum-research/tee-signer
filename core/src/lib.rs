@@ -18,6 +18,7 @@
 //! - `receipt`  — the signed receipt a signature leaves behind
 //! - `update`   — owner / recovery / witness messages and their verification
 //! - `proto`    — the ecall wire protocol shared by the enclave and the daemon
+//! - `tpm_attest` — REQ-r9: the TPM counter freshness proof (`TPM2_NV_Certify`) verifier
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -37,6 +38,7 @@ pub mod reason;
 pub mod receipt;
 pub mod sign;
 pub mod state;
+pub mod tpm_attest;
 pub mod update;
 pub mod wallet;
 

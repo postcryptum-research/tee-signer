@@ -391,6 +391,7 @@ fn sign_message(key: &OpenKey, msg: &mut Message) -> Result<()> {
         | Message::RotateOwner { sig, .. }
         | Message::Recover { sig, .. }
         | Message::Arm { sig, .. }
+            | Message::Anchor { sig, .. }
         | Message::WitnessToken { sig, .. } => *sig = s,
     }
     Ok(())
@@ -1060,6 +1061,30 @@ enum Cmd {
         #[arg(long)]
         i_have_investigated: bool,
     },
+    /// REQ-r9: pin the TPM counter that proves the state's freshness (or re-pin it after a mismatch).
+    /// The counter value is taken from an ATTESTED read — the `signerd tpm-certify` answer over a nonce
+    /// you chose — never from the status file (C-R9-D). Arms this load like `arm`.
+    Anchor {
+        #[arg(long)]
+        key: String,
+        /// The `signerd tpm-info --out` file (the transport's key and index Name) …
+        #[arg(long, conflicts_with_all = ["ak_pk_file", "nv_name_file"])]
+        tpm_info_file: Option<PathBuf>,
+        /// … or the two values in files of their own (hex), as the owner verified them.
+        #[arg(long, requires = "nv_name_file")]
+        ak_pk_file: Option<PathBuf>,
+        #[arg(long)]
+        nv_name_file: Option<PathBuf>,
+        /// The `signerd tpm-certify --nonce-file … --out` answer.
+        #[arg(long)]
+        proof_file: PathBuf,
+        /// The nonce you gave to `tpm-certify` (32 bytes hex), the file you carried there.
+        #[arg(long)]
+        proof_nonce_file: PathBuf,
+        /// Anchor over a sequence regression anyway (an owner-attested acceptance of a rollback; logged).
+        #[arg(long)]
+        i_have_investigated: bool,
+    },
     /// Hand the owner role to another key (a timelocked loosening, signed by the current owner).
     RotateOwner {
         #[arg(long)]
@@ -1691,6 +1716,77 @@ fn main() -> Result<()> {
                     println!("armed: this load (session {session}) signs inside the mandate again");
                 } else {
                     bail!("the enclave did not report armed after the message was accepted");
+                }
+            }
+        }
+        Cmd::Anchor { key, tpm_info_file, ak_pk_file, nv_name_file, proof_file, proof_nonce_file, i_have_investigated } => {
+            let sd = client(&cli)?;
+            let rec_path = cli.wallet_record.clone().ok_or_else(|| anyhow!("anchor needs --wallet-record <wallet.json> (or OWNER_WALLET): the sequence you last saw lives there (C-R7-5)"))?;
+            let mut w: WalletRecord = serde_json::from_str(&std::fs::read_to_string(&rec_path)?)?;
+            let last = w.last_seen_seq.unwrap_or(0);
+            // the pinned material: from the transport's info file, or from the owner's own two files
+            let (ak_pk, nv_name): ([u8; 65], [u8; signer_core::tpm_attest::NV_NAME_LEN]) = match (tpm_info_file, ak_pk_file, nv_name_file) {
+                (Some(f), _, _) => {
+                    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(f)?)?;
+                    let v = unwrap_server_file(v)?;
+                    let ak = hex::decode(v["ak_pk_hex"].as_str().ok_or_else(|| anyhow!("tpm-info file: ak_pk_hex"))?)?;
+                    let nm = hex::decode(v["nv_name_hex"].as_str().ok_or_else(|| anyhow!("tpm-info file: nv_name_hex"))?)?;
+                    (<[u8; 65]>::try_from(ak.as_slice()).map_err(|_| anyhow!("ak_pk: 65 bytes"))?, <[u8; 34]>::try_from(nm.as_slice()).map_err(|_| anyhow!("nv_name: 34 bytes"))?)
+                }
+                (None, Some(a), Some(n)) => {
+                    let ak = hex::decode(std::fs::read_to_string(a)?.trim())?;
+                    let nm = hex::decode(std::fs::read_to_string(n)?.trim())?;
+                    (<[u8; 65]>::try_from(ak.as_slice()).map_err(|_| anyhow!("ak_pk: 65 bytes"))?, <[u8; 34]>::try_from(nm.as_slice()).map_err(|_| anyhow!("nv_name: 34 bytes"))?)
+                }
+                _ => bail!("give --tpm-info-file, or --ak-pk-file and --nv-name-file"),
+            };
+            // C-R9-D: the counter comes from an attested read over the owner's own nonce
+            let proof_nonce = <[u8; 32]>::try_from(hex::decode(std::fs::read_to_string(proof_nonce_file)?.trim())?.as_slice()).map_err(|_| anyhow!("proof nonce: 32 bytes"))?;
+            let pv: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(proof_file)?)?;
+            let pv = unwrap_server_file(pv)?;
+            let attest = hex::decode(pv["attest_hex"].as_str().ok_or_else(|| anyhow!("proof file: attest_hex"))?)?;
+            let sig_v = hex::decode(pv["sig_hex"].as_str().ok_or_else(|| anyhow!("proof file: sig_hex"))?)?;
+            let sig = <[u8; 64]>::try_from(sig_v.as_slice()).map_err(|_| anyhow!("proof sig: 64 bytes"))?;
+            let parsed = signer_core::tpm_attest::parse_nv_attest(&attest).map_err(|r| anyhow!("the certify proof does not parse: {}", r.code()))?;
+            let probe = signer_core::tpm_attest::TpmAnchor { ak_pk, nv_name, expected: parsed.counter };
+            let counter = signer_core::tpm_attest::verify_nv_certify(&attest, &sig, &probe, &proof_nonce)
+                .map_err(|r| anyhow!("the certify proof is REFUSED ({}): not this key, not this index, or not your nonce — do not anchor", r.code()))?;
+            println!("attested counter: {counter} (index {}…, key {}…)", hex::encode(&nv_name[..6]), hex::encode(&ak_pk[1..7]));
+            let st = sd.get("/v1/status")?;
+            let seq = st["seq"].as_u64().unwrap_or(0);
+            let challenge_hex = st["boot_challenge"].as_str().unwrap_or("").to_string();
+            let session = st["session_id"].as_str().unwrap_or("").to_string();
+            if st["tpm_bound"].as_bool() == Some(true) {
+                println!("the state is already TPM-bound (expects {}); this anchor RE-PINS it", st["tpm_expected"].as_u64().unwrap_or(0));
+            }
+            println!("enclave load {session}: boot challenge {challenge_hex}");
+            println!("enclave remembers seq {seq}; you last saw seq {last}");
+            let mut seq_seen = last;
+            if seq < last {
+                eprintln!("ROLLBACK SIGNATURE: the enclave remembers {} fewer operations than you last saw (it has {seq}, you saw {last}). Do NOT anchor unless you know why.", last - seq);
+                if !*i_have_investigated {
+                    bail!("REFUSED to anchor over a sequence regression; after investigating, repeat with --i-have-investigated (logged in the record)");
+                }
+                let line = format!("{} enclave seq {seq} < last seen {last}: anchored with --i-have-investigated", now_utc());
+                eprintln!("ACCEPTED BY THE OWNER and logged: {line}");
+                w.rollback_acceptances.get_or_insert_with(Vec::new).push(line);
+                w.last_seen_seq = Some(seq);
+                std::fs::write(&rec_path, serde_json::to_string_pretty(&w)?)?;
+                seq_seen = seq;
+            }
+            let boot_challenge = <[u8; 32]>::try_from(hex::decode(&challenge_hex)?.as_slice()).map_err(|_| anyhow!("boot challenge is not 32 bytes"))?;
+            let okey = open_locator(key)?;
+            let mut msg = Message::Anchor { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, boot_challenge, ak_pk, nv_name, counter, seq_seen, sig: [0; 64] };
+            sign_message(&okey, &mut msg)?;
+            submit_message(&sd, &msg)?;
+            if sd.out.is_some() {
+                println!("after `signerd submit` on the server, `signerd status --out …` there will show tpm_bound: true, tpm_expected: {} and boot_armed: true for load {session}", counter + 1);
+            } else {
+                let st = sd.get("/v1/status")?;
+                if st["tpm_bound"].as_bool() == Some(true) && st["boot_armed"].as_bool() == Some(true) {
+                    println!("anchored: the state expects counter {} and this load is armed; restarts now need no owner while the TPM agrees", st["tpm_expected"].as_u64().unwrap_or(0));
+                } else {
+                    bail!("the enclave did not report tpm_bound + armed after the anchor was accepted");
                 }
             }
         }

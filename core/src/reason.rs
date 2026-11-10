@@ -98,6 +98,19 @@ pub enum Reason {
     ArmChallenge,
     /// `Arm` says the owner saw a sequence higher than the enclave's: the state was rolled back.
     ArmSeqBehind,
+    /// REQ-r9: the state is TPM-bound and no counter proof was presented for this call.
+    TpmRequired,
+    /// REQ-r9: the counter proof is not a well-formed `TPM_ST_ATTEST_NV` attestation.
+    TpmParse,
+    /// REQ-r9: the proof's `extraData` is not the nonce this enclave issued for this call (a replay).
+    TpmNonce,
+    /// REQ-r9: the proof certifies an index other than the pinned one.
+    TpmIndex,
+    /// REQ-r9: the proof is not signed by the pinned attestation key.
+    TpmSig,
+    /// REQ-r9: the TPM certifies a counter other than the one this blob expects — the blob is not
+    /// the latest state (a rollback, a crash between seal and increment, or a spurious increment).
+    StateStale,
 }
 
 impl Reason {
@@ -149,6 +162,12 @@ impl Reason {
             Reason::NotArmed => "NOT_ARMED",
             Reason::ArmChallenge => "ARM_CHALLENGE",
             Reason::ArmSeqBehind => "ARM_SEQ_BEHIND",
+            Reason::TpmRequired => "TPM_REQUIRED",
+            Reason::TpmParse => "TPM_PARSE",
+            Reason::TpmNonce => "TPM_NONCE",
+            Reason::TpmIndex => "TPM_INDEX",
+            Reason::TpmSig => "TPM_SIG",
+            Reason::StateStale => "STATE_STALE",
         }
     }
 }

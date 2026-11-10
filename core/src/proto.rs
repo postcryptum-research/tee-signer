@@ -36,6 +36,12 @@ pub mod op {
     /// the quoting enclave whose `report_data` binds the identity card and the verifier's nonce
     /// (`quote::DOMAIN`). Read-only; nothing secret leaves. REQ-r5 §3.
     pub const REPORT: u32 = 10;
+    /// REQ-r9: no input → 32 random bytes, the nonce the next blob-reading call's counter proof
+    /// must carry. Single-use: issuing a new one forgets the old one and any stored proof.
+    pub const TPM_NONCE: u32 = 11;
+    /// REQ-r9: `TpmProof` → empty `ok`. Stores the proof (unverified) for the next blob-reading
+    /// call, which verifies it against the blob's expected counter and the live nonce, then consumes both.
+    pub const TPM_PROOF: u32 = 12;
     /// test builds only: `TestInitRequest` → `InitResponse`.
     pub const TEST_INIT: u32 = 100;
     /// test builds only: reset the volatile session (a new "enclave load") → empty `ok`.
@@ -54,6 +60,31 @@ pub mod limits {
     pub const MAX_MESSAGE: usize = 72 * 1024;
     /// Receipt / card / blob outputs.
     pub const MAX_SMALL: usize = 4096;
+}
+
+/// REQ-r9: a counter proof handed to the enclave before a blob-reading call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TpmProof {
+    /// `TPMS_ATTEST` bytes of a `TPM2_NV_Certify` over the pinned index with the issued nonce.
+    pub attest: Vec<u8>,
+    /// ECDSA P-256 signature over SHA-256(attest), raw `r ‖ s`, low-s.
+    pub sig: [u8; 64],
+}
+
+impl TpmProof {
+    /// Canonical bytes.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut e = Enc::new();
+        e.bytes(&self.attest).fixed(&self.sig);
+        e.finish()
+    }
+    /// Strict decode (attest bounded by `tpm_attest::MAX_ATTEST_LEN`).
+    pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
+        let mut d = Dec::new(b);
+        let r = TpmProof { attest: d.bytes(crate::tpm_attest::MAX_ATTEST_LEN)?, sig: d.fixed()? };
+        d.finish()?;
+        Ok(r)
+    }
 }
 
 /// The response envelope.
@@ -332,6 +363,13 @@ pub struct StatusResponse {
     pub boot_challenge: [u8; 32],
     /// REQ-r7: built with the `auto-arm` feature (the pause after a restart compiled OUT; its own MRENCLAVE).
     pub auto_arm: bool,
+    /// REQ-r9: the state pins a TPM counter (an anchor is set).
+    pub tpm_bound: bool,
+    /// REQ-r9: the counter value this blob expects (0 when unbound). `STATUS` itself reads the blob
+    /// without a proof, so this is *possibly stale* by design (§2.6): information, never a decision.
+    pub tpm_expected: u64,
+    /// REQ-r9: the last counter proof verified in this enclave load was fresh (volatile).
+    pub tpm_last_fresh: bool,
 }
 
 impl StatusResponse {
@@ -367,7 +405,10 @@ impl StatusResponse {
             .str(&self.clock_label)
             .bool(self.boot_armed)
             .fixed(&self.boot_challenge)
-            .bool(self.auto_arm);
+            .bool(self.auto_arm)
+            .bool(self.tpm_bound)
+            .u64(self.tpm_expected)
+            .bool(self.tpm_last_fresh);
         e.finish()
     }
     /// Strict decode.
@@ -400,6 +441,9 @@ impl StatusResponse {
             boot_armed: d.bool()?,
             boot_challenge: d.fixed()?,
             auto_arm: d.bool()?,
+            tpm_bound: d.bool()?,
+            tpm_expected: d.u64()?,
+            tpm_last_fresh: d.bool()?,
         };
         d.finish()?;
         Ok(r)
