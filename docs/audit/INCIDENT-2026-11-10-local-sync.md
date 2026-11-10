@@ -58,3 +58,8 @@ the resync of the same day confirmed no `.local` on the box. Nothing was ever sy
 - *Dev ceremony key rotation now vs at the release ceremony:* the owner's decision, pending
   (auditor's assessment: low urgency — never paired with its passphrase on the box, MRENCLAVE pin
   bounds a signature by it).
+
+**Owner's ruling (2026-11-10, same day):** «не проблема … главное не в репозиторий» — the mirrored
+`.local/` on the owner's own shared build host is accepted; what matters is that nothing of it was
+ever in git (it never was: `.local/` is gitignored). No rotation of the dev ceremony key. Incident
+closed with the fixes above (sync exclusion, removal, token rotation).
