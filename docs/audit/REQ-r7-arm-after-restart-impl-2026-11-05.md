@@ -87,6 +87,34 @@ finds the transaction-signing calls in `sign_op` only (the auditor can repeat it
   signet 329586 (REQ-r6b §4.5 part 2), the ceremony-signed pause build is deployed and the same
   drill runs on the live node with the YubiKey owner.
 
+### 4.1 T2 deployment of the pause build — 2026-11-10 (C-R7-13, in progress)
+
+- **Ceremony signing of `ca5c1a6a…`** (Hetzner build box, pinned image; `SIGN=ceremony`): `PHASE=gendata`
+  → `enclave_hash.hex` (256 B) → signed on the laptop with the offline ceremony key
+  (`scripts/ceremony-sign.sh`, signature verified under the pinned public key) → `PHASE=catsig`:
+  gates 1, 2, 3, 4, 6 and **7** (`MRSIGNER 56b25ccb…` = the pinned ceremony key) all passed,
+  `MRENCLAVE ca5c1a6adfb439be65afba2acae246507c6d87f0c0d399345015ff0590e27c80`.
+  `docker/compare-builds.sh r7-pause r7-pause-ceremony`: **REPRODUCIBLE**, `enclave.so` byte-identical
+  to the dev-signed build of 2026-11-05 (output `~/tee-signer-out/r7-pause-ceremony/`). The sources
+  were `main` @ 8de2e6d (R7 + R8 merged); nothing under `core/` or `enclave/` changed since 6022ce9,
+  which the identical measurement confirms.
+- **Sidecar image for T2** built on the box from those outputs (`build-signerd-image-t2.sh`,
+  `signerd` + `dcap-quote-helper` + `enclave.signed.so` + `MANIFEST`), 39 MB tarball shipped to the
+  node by `scp`, loaded (`tee-signer/signerd:t2` = `a1cdb0f1d697`; the R6 image `6543d86dd219` kept
+  until the drill passes). The node's stack sources updated; compose regenerated with the same
+  fragments as before (`opt-add-tee-signer-t2.custom`, `opt-save-storage-xxs`) — the only diff is
+  the R8 `/exchange` mount; `~/tee-signer-exchange/` created and holding the owner's three files
+  (`owner.pub` = the YubiKey `9a` key, `recovery.pub` = a **fresh** recovery key made today — see
+  `INCIDENT-2026-11-10-local-sync.md` —, `nonce.txt`), carried laptop → build box → node by `scp`.
+- **Re-init and drill: owner-run on the server** (this dev session's permission mode stops at
+  replacing the production sidecar; the server steps are the operator's in the FAQ anyway). The
+  retired wallet's `state.sealed`, `receipts.jsonl` and `token` are moved into a `retired-51dee44d-…`
+  subdirectory of the state volume (reversible; the old enclave's state is unopenable by the new
+  measurement by design), the sidecar is started on the new image, then `signerd init / quote /
+  status --out /exchange/…`; the laptop verifies the quote against `ca5c1a6a…` + the ceremony
+  MRSIGNER with the owner's nonce, writes the record, the owner installs the mandate with the
+  YubiKey, and the restart drill follows. Results appended below when run.
+
 ## 5. Conditions
 
 | Condition | Where discharged |

@@ -6,7 +6,7 @@ HOST=${TEE_SGX_HOST:-andrey@94.130.18.162}
 DEST=${TEE_SGX_DIR:-'~/tee-signer/'}
 cd "$(dirname "$0")/.."
 rsync -a --delete \
-  --exclude target --exclude .git \
+  --exclude target --exclude .git --exclude .local --exclude .claude \
   --exclude 'enclave/App/libenclave_u.a' --exclude 'enclave/App/Enclave_u.*' \
   --exclude 'enclave/Enclave/Enclave_t.*' --exclude 'enclave/Enclave/*.o' --exclude 'enclave/Enclave/*.pem' \
   --exclude 'enclave/enclave.so' --exclude 'enclave/enclave.signed.so' --exclude 'enclave/build' --exclude 'enclave/.config_*' \
