@@ -142,6 +142,13 @@ payout through the plugin are the owner's follow-up — `seq` 0 → 1 would comp
 accepted"). The dev-signed R6 image `6543d86dd219` and the retired state copy stay on the node until
 the owner says otherwise.
 
+C-R7-13 **DISCHARGED** by the auditor firsthand (2026-11-10): the two status files prove the volatile
+armed flag (true after init → false after the reload, with a fresh challenge `f2fe5b1d…` ≠ the
+init load's `ee06fb1c…`) and the owner's Arm over the new challenge; an Arm over the old challenge
+could not have passed — the anti-replay property live. Left as confirmations on a funded wallet
+(source-proven): the post-arm sign (`seq` 0 → 1) and the live arm negatives (`ARM_CHALLENGE`,
+`ARM_SEQ_BEHIND`).
+
 ## 5. Conditions
 
 | Condition | Where discharged |
