@@ -53,8 +53,11 @@ fn passphrase(prompt: &str, confirm: bool) -> Result<String> {
             bail!("passphrases differ");
         }
     }
-    if a.len() < 8 {
-        bail!("passphrase too short (8+)");
+    // Owner's rule (2026-11-10): a floor of 4 characters, not 8 — a passphrase the owner forgets or
+    // sticks to the monitor protects nothing; the keyfile relies on scrypt (N=2^18) and on never
+    // leaving the owner's machine. Checked when a passphrase is set, not when it is used.
+    if confirm && a.chars().count() < 4 {
+        bail!("passphrase too short (4+)");
     }
     Ok(a)
 }

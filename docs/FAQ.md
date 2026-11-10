@@ -91,7 +91,9 @@ cd owner/owner-cli/target/debug
 
 The recovery key asks a passphrase and goes on two USB drives in two places; the owner key lives
 inside the laptop's TPM (a YubiKey is setup 2; an encrypted keyfile on a third drive is the
-permitted floor). Write the passphrases down somewhere safe: nothing can recover them.
+permitted floor). Write the passphrases down somewhere safe: nothing can recover them. A passphrase is at least 4
+characters — pick one you will still know in a year; the keyfile is scrypt-hardened and must never
+leave your machine, which is what a short passphrase relies on.
 
 Carry the two public keys to the server:
 
