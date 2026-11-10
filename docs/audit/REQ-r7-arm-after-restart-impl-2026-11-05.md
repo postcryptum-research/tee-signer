@@ -115,6 +115,33 @@ finds the transaction-signing calls in `sign_op` only (the auditor can repeat it
   MRSIGNER with the owner's nonce, writes the record, the owner installs the mandate with the
   YubiKey, and the restart drill follows. Results appended below when run.
 
+**Run 2026-11-10 13:19–13:3x UTC — owner-run `scripts/t2-r7-redeploy.sh` in the owner's terminal
+(laptop → build box relay → node, `scp` only; log `.local/signet-t2/r7-deploy-20261110-131904.log`,
+files `.local/signet-t2/exchange/`, both gitignored, readable by the auditor on this laptop).**
+A first run at 12:55 did the server half and the quote check, then stopped at the recovery-passphrase
+prompt (run through the session's `!`, no TTY); the interim wallet it created (fp `04333c94`) was
+retired unfunded together with the recovery key the dev had generated for it — the owner then made
+the recovery key themselves (`keygen`, passphrase known only to them; owner-cli floor lowered to 4
+characters, 6dde33f) and the run below re-initialised on it.
+
+| Step | Result |
+|---|---|
+| server: R6 sidecar stopped; `state.sealed`, `receipts.jsonl`, `token` moved into `retired-51dee44d-2026-11-10/` in the volume; `stack.sh up --no-deps tee-signer` | container recreated on `tee-signer/signerd:t2` = `a1cdb0f1d697`; log `signerd starting enclave="sgx" initialised=false`; **old token → HTTP 401, new token → HTTP 200** |
+| server: `signerd init --network signet --owner-pk-file /exchange/owner.pub --recovery-pk-file /exchange/recovery.pub --out …`; `quote --nonce-file`; `status` | `ok` × 3; status: `tier T2-release`, `mrenclave ca5c1a6a…`, `initialised true`, `installed false`, **`boot_armed true` (init arms)**, `auto_arm false`, nonce 0, seq 0 |
+| laptop: `owner-cli init --response … --owner piv:9a --recovery-pk-file … --expect-mrenclave ca5c1a6a… --quote … --nonce-file …` | `ATTESTED: piv:9a generated on YubiKey 39252737 …`; verifier steps 1–7 ok: chain to the pinned Intel SGX Root CA, `DEBUG = 0`, **MRENCLAVE `ca5c1a6a…`**, **MRSIGNER `56b25ccb…` (ceremony)**, card signed by identity `02020313…`, `report_data = SHA-256(domain ‖ nonce ecdb39e9… ‖ card)`, TCB `SWHardeningNeeded` with the recorded SA-00615 exception; quote sha256 `9c25f738…cdc9c6`; record written: xpub `tpubDDpFY9q…f8Nb`, **fingerprint `51ca22a4`**, enclave id `d36145e2…` |
+| laptop: `recovery-verify` with the owner's key (passphrase typed by the owner) | `recovery blob OK: decrypts to a 24-word mnemonic whose m/84'/1'/0' xpub and fingerprint match the wallet record` |
+| laptop: mandate re-targeted to `51ca22a4`, checkpoint from mempool.space/signet; `policy-sign --key piv:9a` (PIN + touch #1) | mandate `6ba0c427…`, nonce 0 → `/exchange/policy-install.msg` |
+| server: `signerd submit --file /exchange/policy-install.msg`; `status` | `{"http_status":200,"ok":true,"response":{"installed":true}}`; `installed true`, `mandate_hash 6ba0c427…`, `boot_armed true` |
+| **drill:** server `docker restart tee-btcpay-tee-signer-1`; `signerd status --out /exchange/status-after-restart.json` | **`boot_armed false`**, `boot_challenge f2fe5b1d…411d4`, nonce 0, seq 0 — the production enclave reloaded on T2 waits for the owner |
+| laptop: `owner-cli --status-file status-after-restart.json --wallet-record wallet.json --out arm.msg arm --key piv:9a` (PIN + touch #2) | `enclave remembers seq 0; you last saw seq 0` → signed `Arm{enclave_id, nonce 0, boot_challenge f2fe5b1d…, seq_seen 0}` for load `1ef8c603…` |
+| server: `signerd submit --file /exchange/arm.msg`; `status` | `{"http_status":200,"ok":true,"response":{"applied":true}}`; **`boot_armed true`**, nonce 1, seq 0 |
+| server: T2 BTCPay store wallet ← `[51ca22a4/84'/1'/0']tpubDDpFY9q…` (cold), plugin ← new token | HTTP 200 / 200; plugin status `configured true, walletIsHot false, xpubMatches true, processorEnabled true, error None`; the plugin's enclave view has **no `bootArmed` field yet** (`None`) — the FAQ claim that the plugin page shows the pause is withdrawn until the plugin exposes it (carried, host-side) |
+
+Not in this run: a signature after the arm (the new wallet is unfunded; a faucet deposit and a
+payout through the plugin are the owner's follow-up — `seq` 0 → 1 would complete C-R7-13's "sign
+accepted"). The dev-signed R6 image `6543d86dd219` and the retired state copy stay on the node until
+the owner says otherwise.
+
 ## 5. Conditions
 
 | Condition | Where discharged |

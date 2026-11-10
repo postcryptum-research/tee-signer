@@ -214,7 +214,7 @@ secret in the threat model (an attacker who has it is still bound by the mandate
 
 **8. After any restart of the signer** — a reboot, an update, a crash — the enclave signs nothing
 until you approve that start (R7). The status file says `boot_armed: false` and carries the
-start's challenge; the plugin's status page shows the same. Approve it the same way as any
+start's challenge (the plugin's status page does not show it yet — a carried item). Approve it the same way as any
 owner step: status file to the laptop, a signed message back.
 
 On the server:

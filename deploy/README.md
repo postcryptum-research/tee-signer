@@ -52,7 +52,7 @@ Occupied ports on the host (2026-11-03 `ss -ltn`): 22, 80, 443, 1080-1082, 3001-
 | signing key | `~/tee-signer-keys/enclave-dev-2.28.pem` on the Hetzner box, 0600, **dev key, labeled** (a release key is a ceremony); never in an image or in git |
 | node disk | **29 GB, shared with the siblings' data.** Signet IBD unpruned took it to 95 % on 2026-11-03; our `bitcoind` was stopped at once and runs **pruned** (`TEE_EXTRA_FRAGMENTS=opt-save-storage-xxs`, 5 GB). Check `df -h /` before any new data on the node |
 | token / owner access | sidecar token copy at `~/tee-signer/token` on the node (0600); from the laptop: Hetzner forward `ssh -f -N -L 127.0.0.1:7395:127.0.0.1:7390 azureuser@52.236.130.102` (on the box) + laptop forward 7395 through `.local/signet/tunnel.sock`; `owner-cli --signerd http://127.0.0.1:7395 --token-file .local/signet-t2/token …` |
-| T2 wallet (signet, dev) | xpub `tpubDCSDiHr…heEPV`, fingerprint `fae69580`, enclave id `f742311c…`, MRENCLAVE `51dee44d…`, MRSIGNER `73f20c7b…` (dev key), mandate `802cee97…`; record + attestations in the laptop's `.local/signet-t2/` (gitignored) |
+| T2 wallet (signet, dev) | **since 2026-11-10 (R7 pause build):** xpub `tpubDDpFY9q…f8Nb`, fingerprint `51ca22a4`, enclave id `d36145e2…`, MRENCLAVE `ca5c1a6a…`, MRSIGNER `56b25ccb…` (ceremony key), mandate `6ba0c427…`, owner `piv:9a@39252737`, recovery key the owner's; image `tee-signer/signerd:t2` = `a1cdb0f1d697`; record + log in the laptop's `.local/signet-t2/` (gitignored). Retired: the R6 wallet `fae69580` / `51dee44d…` (state copy in the volume's `retired-51dee44d-2026-11-10/`, recovery blob in the archived record) |
 
 ## R8 — no tunnel: the owner's files
 
