@@ -37,7 +37,19 @@ public class TeePayoutProcessor : BaseAutomatedPayoutProcessor<OnChainAutomatedP
     private readonly BitcoinLikePayoutHandler _handler;
     private readonly TeeSignerClientFactory _clients;
     private readonly WalletRepository _walletRepository;
+    private readonly DelayedTransactionBroadcaster _broadcaster;
     private readonly ILogger _log;
+
+    /// <summary>Refusals that clear by themselves (a window rolls over, the owner unfreezes or arms,
+    /// the header feed catches up). They never count towards disabling the processor for a payout:
+    /// retrying costs nothing (no signature is produced), and disabling would strand a legitimate
+    /// payout queued at the end of a window — the T2 stall of 2026-11-10.</summary>
+    private static readonly HashSet<string> TransientReasons = new()
+    {
+        "CAP_WINDOW", "CAP_UNLISTED_WINDOW", "CAP_TRUSTED_WINDOW", "FEE_WINDOW",
+        "FROZEN", "NOT_ARMED", "CHAIN_STALE", "CHAIN_REORG",
+        "FRESHNESS_MISSING", "FRESHNESS_SIG", "FRESHNESS_TIP", "FRESHNESS_SEQ_BEHIND", "SEQ_BEHIND_SESSION",
+    };
 
     public BTCPayNetwork Network { get; }
 
@@ -54,6 +66,7 @@ public class TeePayoutProcessor : BaseAutomatedPayoutProcessor<OnChainAutomatedP
         PayoutMethodHandlerDictionary payoutHandlers,
         PaymentMethodHandlerDictionary handlers,
         IPluginHookService pluginHookService,
+        DelayedTransactionBroadcaster broadcaster,
         TeeSignerClientFactory clients) :
         base(PaymentTypes.CHAIN.GetPaymentMethodId(((BitcoinLikePayoutHandler)payoutHandlers[payoutMethodId]).Network.CryptoCode),
             logger, storeRepository, settings, applicationDbContextFactory, handlers, pluginHookService, eventAggregator)
@@ -64,6 +77,7 @@ public class TeePayoutProcessor : BaseAutomatedPayoutProcessor<OnChainAutomatedP
         Network = _handler.Network;
         _clients = clients;
         _walletRepository = walletRepository;
+        _broadcaster = broadcaster;
         _log = logger.CreateLogger("TeeSigner");
     }
 
@@ -128,10 +142,21 @@ public class TeePayoutProcessor : BaseAutomatedPayoutProcessor<OnChainAutomatedP
         if (destinations.Count == 0)
             return;
 
+        // Fee rate: the node's estimate for the target (the store's fallback when the node has none),
+        // floored at 1 sat/vB. On a quiet signet the estimate equals the node's own minimum relay fee
+        // (0.1 sat/vB) and the rounded transaction fee then falls one satoshi short at broadcast
+        // ("min relay fee not met, 20 < 21", T1 2026-11-10). The mandate's maxFeeRate stays the
+        // ceiling: the enclave refuses anything above it.
+        var fallback = new FeeRate((decimal)Math.Max(1, settings.FallbackFeeRateSatVb));
+        FeeRate feeRate;
+        try { feeRate = (await explorer.GetFeeRateAsync(Math.Max(blob.FeeTargetBlock, 1), fallback, CancellationToken)).FeeRate; }
+        catch (Exception) { feeRate = fallback; }
+        if (feeRate.SatoshiPerByte < 1m)
+            feeRate = new FeeRate(1m);
         var request = new CreatePSBTRequest
         {
             Destinations = destinations.Select(d => d.dest).ToList(),
-            FeePreference = new FeePreference { BlockTarget = Math.Max(blob.FeeTargetBlock, 1), FallbackFeeRate = new FeeRate((decimal)Math.Max(1, settings.FallbackFeeRateSatVb)) },
+            FeePreference = new FeePreference { ExplicitFeeRate = feeRate },
             ReserveChangeAddress = true,
             RBF = true,
             MinConfirmations = settings.MinConfirmations,
@@ -145,11 +170,15 @@ public class TeePayoutProcessor : BaseAutomatedPayoutProcessor<OnChainAutomatedP
         }
         catch (NBXplorerException e)
         {
-            _log.LogWarning("tee-signer: CreatePSBT failed: {Err}", e.Error?.Message);
+            // Transient by nature (deposits not yet confirmed, an empty wallet, NBXplorer behind):
+            // counted, never disabling. Ten such minutes used to switch this processor off for the
+            // payout for good — the T2 stall of 2026-11-10, where the faucet deposit confirmed on the
+            // 11th minute and the payout then waited forever.
+            _log.LogWarning("tee-signer: CreatePSBT failed: {Err} (will retry)", e.Error?.Message);
             foreach (var (payout, _) in destinations)
             {
                 var pb = payout.GetBlob(_serializer);
-                if (pb.IncrementErrorCount() >= 10) pb.DisableProcessor(TeePayoutProcessorFactory.ProcessorName);
+                pb.IncrementErrorCount();
                 payout.SetBlob(pb, _serializer);
             }
             return;
@@ -158,12 +187,16 @@ public class TeePayoutProcessor : BaseAutomatedPayoutProcessor<OnChainAutomatedP
         var result = await client.Sign(psbt.ToBase64(), CancellationToken);
         if (result.Refused is not null)
         {
-            _log.LogWarning("tee-signer: enclave refused the payout batch: {Reasons}", string.Join(",", result.Refused.Reasons));
-            foreach (var (payout, _) in destinations)
+            var transient = result.Refused.Reasons.Count > 0 && result.Refused.Reasons.All(TransientReasons.Contains);
+            _log.LogWarning("tee-signer: enclave refused the payout batch: {Reasons}{Note}", string.Join(",", result.Refused.Reasons), transient ? " (transient, will retry)" : "");
+            if (!transient)
             {
-                var pb = payout.GetBlob(_serializer);
-                if (pb.IncrementErrorCount() >= 10) pb.DisableProcessor(TeePayoutProcessorFactory.ProcessorName);
-                payout.SetBlob(pb, _serializer);
+                foreach (var (payout, _) in destinations)
+                {
+                    var pb = payout.GetBlob(_serializer);
+                    if (pb.IncrementErrorCount() >= 10) pb.DisableProcessor(TeePayoutProcessorFactory.ProcessorName);
+                    payout.SetBlob(pb, _serializer);
+                }
             }
             return;
         }
@@ -175,7 +208,6 @@ public class TeePayoutProcessor : BaseAutomatedPayoutProcessor<OnChainAutomatedP
         }
         var tx = signed.ExtractTransaction();
         var txHash = tx.GetHash();
-        var previousProofs = destinations.ToDictionary(d => d.payout.Id, d => d.payout.Proof);
         foreach (var (payout, _) in destinations)
         {
             payout.State = PayoutState.InProgress;
@@ -190,12 +222,13 @@ public class TeePayoutProcessor : BaseAutomatedPayoutProcessor<OnChainAutomatedP
         var broadcast = await explorer.BroadcastAsync(tx, cts.Token);
         if (!broadcast.Success)
         {
-            _log.LogError("tee-signer: broadcast refused by the node: {Err}", broadcast.RPCMessage);
-            foreach (var (payout, _) in destinations)
-            {
-                payout.State = PayoutState.AwaitingPayment;
-                payout.Proof = previousProofs[payout.Id];
-            }
+            // The enclave has signed and charged the mandate's window for THIS transaction, so the
+            // payout is never handed back to be signed again (every retry used to cost one more
+            // signature — three in three minutes on T1, 2026-11-10). It stays InProgress with the
+            // txid as its proof, and BTCPay's delayed broadcaster retries the same transaction
+            // (persisted in PlannedTransactions) until the node takes it.
+            _log.LogError("tee-signer: broadcast refused by the node: {Err}; {Txid} (enclave seq {Seq}) is scheduled for rebroadcast, the payout stays InProgress", broadcast.RPCMessage, txHash, result.Ok.Seq);
+            await _broadcaster.Schedule(DateTimeOffset.UtcNow, tx, Network);
             return;
         }
         var walletId = new WalletId(PayoutProcessorSettings.StoreId, Network.CryptoCode);

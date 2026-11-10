@@ -172,6 +172,32 @@ signature was therefore shown on the dev path (`owner-cli` through the dev forwa
 The unarmed half (`NOT_ARMED` on a real reload) is source-proven and will be shown on the T1 drill
 (C-R7-12) where the sidecar can be restarted freely.
 
+**Root causes of the payout stall and two more host-side defects, found on the Hetzner test stack
+the same day (plugin, host-side, not the enclave; fixed in the plugin, see its README):**
+
+1. *T2 stall:* the payout's stored blob read `ErrorCount 10, DisabledProcessors ["TeeSignerPayoutProcessor"]`
+   — ten one-minute `CreatePSBT: Not enough funds` failures while the faucet deposits waited for a
+   block (and NBXplorer had not indexed the new xpub) switched the processor off *for that payout*,
+   so "0 found to process" and silence; the BTCPay restart changed nothing. The "Completed" the
+   payout later showed came from BTCPay matching the dev-path transaction (same destination and
+   amount), not from the processor — the enclave's `seq` stayed 1. Fix: transient failures are
+   counted but never disable.
+2. *Fee one satoshi short:* on the test stack the node's estimate equals its minimum relay fee
+   (0.1 sat/vB) and the transaction was refused (`min relay fee not met, 20 < 21`). Fix: floor at
+   1 sat/vB (the mandate's `maxFeeRate` remains the ceiling).
+3. *Re-signing on broadcast failure:* each refused broadcast handed the payout back and the next
+   tick asked the enclave for a **new** signature — `seq` 8 → 11 in three minutes, `window_outflow`
+   charged three times for one payout, three valid unbroadcast transactions for the same coin. The
+   mandate bounded it (that is the design: charge on sign), but it is a host defect. Fix: never
+   re-sign; keep the payout `InProgress` with the txid and let BTCPay's delayed broadcaster retry the
+   same transaction.
+
+Test stack evidence after the fix (`~/tee-signer-btcpay/e2e/processor-debug-2026-11-10.log` on the
+box): a 1 000 sat payout signed **once** (`seq` 11 → 12, session `fe53ef9a…`), broadcast as
+`6831bb46…` at 209 sat / 209 vB = 1.0 sat/vB, `InProgress` within 10 s. The transient-failure test
+(an over-balance payout for 12 minutes) is appended below when done. The fixed DLL is staged on the
+T2 node; its install restarts BTCPay there and is the owner's step.
+
 ## 5. Conditions
 
 | Condition | Where discharged |
