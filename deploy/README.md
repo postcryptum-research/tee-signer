@@ -67,3 +67,10 @@ the file). `ssh` is never used to pull a process's output; `docs/FAQ.md` setup 1
 sequence. The dev tunnels of earlier rounds (7390/7395/7398 forwards) remain a developer
 convenience, not an operator path.
 
+The 2026-11-10 T2 redeploy (C-R7-13) is the worked, owner-run example of this scheme end to end:
+`scripts/t2-r7-redeploy.sh` — run on the laptop in the owner's own terminal (prompts: recovery
+passphrase once, YubiKey PIN + touch twice); it stops the sidecar, sets the previous wallet's state
+aside in the volume, starts the new image, `init`/`quote`/`status` to files, verifies the quote on the
+laptop, installs the mandate, runs the restart drill (`arm`) and re-points the T2 BTCPay store and
+plugin. Not idempotent: a second run retires the wallet it just created.
+
