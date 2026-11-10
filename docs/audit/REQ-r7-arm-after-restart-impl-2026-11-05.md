@@ -81,9 +81,10 @@ finds the transaction-signing calls in `sign_op` only (the auditor can repeat it
   container) and the opt-out's own MRENCLAVE are deferred to a follow-up. Nothing in the product
   path depends on it: the pinned build is the pause build, and `tier_label()`, `init
   --accept-auto-arm` and the status warnings are covered by the T0 tests.
-- **T1 dev sidecar drill on the pause build** (fresh `init` — the measurement changed, so the old
-  sealed state is unopenable by design; restart → `NOT_ARMED`; `arm` with the TPM owner key; sign
-  accepted): pending, appended when run. **T2**: after the YubiKey custody transition completes at
+- **T1 dev sidecar drill on the pause build**: **not run — dropped by the owner on 2026-11-10** (T1 is
+  the build-and-test tier; nothing is deployed there for drills). The drill ran on T2 instead (§4.1);
+  the `NOT_ARMED` refusal on a real reload stays source- and T0-proven and may be captured on T2 at
+  the next owner-run restart. **T2**: after the YubiKey custody transition completes at
   signet 329586 (REQ-r6b §4.5 part 2), the ceremony-signed pause build is deployed and the same
   drill runs on the live node with the YubiKey owner.
 
