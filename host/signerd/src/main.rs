@@ -14,6 +14,7 @@
 
 mod enclave;
 mod replay;
+mod tpm;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -128,6 +129,30 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// REQ-r9 (no tunnel): the TPM transport's key, index Name and counter, for the owner's anchoring.
+    TpmInfo {
+        #[arg(long, env = "SIGNERD_STATE_DIR")]
+        state_dir: PathBuf,
+        #[arg(long, default_value = "http://127.0.0.1:7390")]
+        url: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// REQ-r9 (no tunnel): an attested counter read — `TPM2_NV_Certify` over the owner's nonce — for the
+    /// owner's `anchor` (C-R9-D: the counter value comes from this proof, never from the status file).
+    TpmCertify {
+        #[arg(long, env = "SIGNERD_STATE_DIR")]
+        state_dir: PathBuf,
+        #[arg(long, default_value = "http://127.0.0.1:7390")]
+        url: String,
+        /// 32 bytes hex, chosen by the owner on their machine — or a file holding it, carried here.
+        #[arg(long, conflicts_with = "nonce_file")]
+        nonce: Option<String>,
+        #[arg(long)]
+        nonce_file: Option<PathBuf>,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Serve the API (the daemon).
     Run {
         /// Directory for the sealed blob, the receipt log and the token.
@@ -183,6 +208,8 @@ struct Daemon {
     last_witness: Option<Vec<u8>>,
     bitcoind: Option<Bitcoind>,
     quote_helper: Option<PathBuf>,
+    /// REQ-r9: the TPM counter transport (`SIGNERD_TPM`), None = no counter in front of the enclave.
+    tpm: Option<Box<dyn tpm::TpmTransport>>,
 }
 
 type Shared = Arc<Mutex<Daemon>>;
@@ -209,10 +236,40 @@ impl Daemon {
         let dir = std::fs::File::open(&self.state_dir)?;
         dir.sync_all()?;
         self.sealed = Some(sealed);
+        // REQ-r9: every persisted blob expects the counter one higher — increment after the blob is
+        // durable (seal → persist → increment). A failure here leaves blob = N+1, counter = N: the
+        // next call is STATE_STALE until the owner anchors — a pause, never a loss.
+        if let Some(t) = self.tpm.as_mut() {
+            match t.increment() {
+                Ok(c) => tracing::debug!(counter = c, "tpm counter incremented"),
+                Err(e) => error!("tpm increment failed after persist: {e} — the enclave will refuse STATE_STALE until the owner anchors"),
+            }
+        }
         Ok(())
     }
 
     fn call(&mut self, op_code: u32, input: &[u8]) -> Result<Response> {
+        self.enclave.call(op_code, input)
+    }
+
+    /// REQ-r9: a blob-reading call that changes state or signs. With a TPM transport configured the
+    /// host first asks the enclave for a nonce, has the TPM certify the counter over it, deposits the
+    /// proof, then makes the call; the enclave verifies the proof against the blob it is handed.
+    /// Without a transport it is a plain call (an unanchored state needs no proof; an anchored one
+    /// then refuses TPM_REQUIRED, which is the honest answer).
+    fn call_fresh(&mut self, op_code: u32, input: &[u8]) -> Result<Response> {
+        if let Some(t) = self.tpm.as_mut() {
+            let r = self.enclave.call(op::TPM_NONCE, &[])?;
+            if !r.ok {
+                return Ok(r);
+            }
+            let nonce = <[u8; 32]>::try_from(r.payload.as_slice()).map_err(|_| anyhow!("tpm nonce length"))?;
+            let proof = t.certify(&nonce)?;
+            let r = self.enclave.call(op::TPM_PROOF, &proof.encode())?;
+            if !r.ok {
+                return Ok(r);
+            }
+        }
         self.enclave.call(op_code, input)
     }
 
@@ -370,7 +427,7 @@ async fn feed_once(shared: &Shared) -> Result<u32> {
             }
             let mut d = shared.lock().await;
             let sealed = d.sealed()?;
-            let r = d.call(op::HEADERS, &proto::SealedWith { sealed, data: bytes, extra: None }.encode())?;
+            let r = d.call_fresh(op::HEADERS, &proto::SealedWith { sealed, data: bytes, extra: None }.encode())?;
             let hr = proto::HeadersResponse::decode(&r.payload).ok();
             if let Some(hr) = &hr {
                 d.persist(hr.sealed.clone())?; // accepted fork, or a chain freeze: both are state
@@ -400,7 +457,7 @@ async fn feed_once(shared: &Shared) -> Result<u32> {
         }
         let mut d = shared.lock().await;
         let sealed = d.sealed()?;
-        let r = d.call(op::HEADERS, &proto::SealedWith { sealed, data: bytes, extra: None }.encode())?;
+        let r = d.call_fresh(op::HEADERS, &proto::SealedWith { sealed, data: bytes, extra: None }.encode())?;
         if r.ok {
             let hr = proto::HeadersResponse::decode(&r.payload).map_err(|_| anyhow!("headers response"))?;
             d.persist(hr.sealed)?;
@@ -439,6 +496,8 @@ enum OwnerStep {
     Quote(String),
     Freeze,
     Policy,
+    TpmInfo,
+    TpmCertify(String),
 }
 
 /// A value given directly, or read (trimmed) from a carried file.
@@ -460,6 +519,8 @@ async fn owner_step(state_dir: &Path, url: &str, out: &Path, step: OwnerStep) ->
         OwnerStep::Freeze => http.post(format!("{base}/v1/freeze")).bearer_auth(&token).send().await?,
         OwnerStep::Policy => http.get(format!("{base}/v1/policy")).bearer_auth(&token).send().await?,
         OwnerStep::Quote(nonce) => http.get(format!("{base}/v1/quote")).query(&[("nonce", nonce)]).bearer_auth(&token).send().await?,
+        OwnerStep::TpmInfo => http.get(format!("{base}/v1/tpm/info")).bearer_auth(&token).send().await?,
+        OwnerStep::TpmCertify(nonce) => http.get(format!("{base}/v1/tpm/certify")).query(&[("nonce", nonce)]).bearer_auth(&token).send().await?,
         OwnerStep::Init { network, owner_pk, recovery_pk } => {
             let net: u8 = match network.as_str() {
                 "mainnet" => 0,
@@ -538,6 +599,14 @@ struct StatusJson {
     boot_armed: bool,
     boot_challenge: String,
     auto_arm: bool,
+    /// REQ-r9: the state pins a TPM counter.
+    tpm_bound: bool,
+    /// REQ-r9: the counter value the blob expects — read without a proof, possibly stale (§2.6).
+    tpm_expected: u64,
+    /// REQ-r9: the last proof verified in this enclave load was fresh.
+    tpm_last_fresh: bool,
+    /// REQ-r9: the host's transport (`SIGNERD_TPM`), if any.
+    tpm_transport: Option<String>,
 }
 
 fn display_hash(mut h: [u8; 32]) -> String {
@@ -583,6 +652,10 @@ async fn h_status(AxState(s): AxState<Shared>, headers: HeaderMap) -> axum::resp
             boot_armed: st.boot_armed,
             boot_challenge: hex::encode(st.boot_challenge),
             auto_arm: st.auto_arm,
+            tpm_bound: st.tpm_bound,
+            tpm_expected: st.tpm_expected,
+            tpm_last_fresh: st.tpm_last_fresh,
+            tpm_transport: d.tpm.as_ref().map(|t| t.describe()),
         })
         .into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), vec![]),
@@ -661,7 +734,7 @@ async fn h_install(AxState(s): AxState<Shared>, headers: HeaderMap, Json(req): J
         (Ok(m), Ok(s)) => (m, s),
         _ => return err(StatusCode::BAD_REQUEST, "hex", vec![]),
     };
-    let r = match d.call(op::INSTALL, &proto::SealedWith { sealed, data: mandate, extra: Some(sig) }.encode()) {
+    let r = match d.call_fresh(op::INSTALL, &proto::SealedWith { sealed, data: mandate, extra: Some(sig) }.encode()) {
         Ok(r) => r,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), vec![]),
     };
@@ -714,7 +787,7 @@ async fn h_message(AxState(s): AxState<Shared>, headers: HeaderMap, Json(req): J
         d.last_witness = Some(msg);
         return Json(serde_json::json!({"witness": "cached"})).into_response();
     }
-    let r = match d.call(op::APPLY_MESSAGE, &proto::SealedWith { sealed, data: msg, extra: None }.encode()) {
+    let r = match d.call_fresh(op::APPLY_MESSAGE, &proto::SealedWith { sealed, data: msg, extra: None }.encode()) {
         Ok(r) => r,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), vec![]),
     };
@@ -734,10 +807,14 @@ async fn h_freeze(AxState(s): AxState<Shared>, headers: HeaderMap) -> axum::resp
         return err(StatusCode::UNAUTHORIZED, "token", vec![]);
     }
     let Ok(sealed) = d.sealed() else { return err(StatusCode::CONFLICT, "not initialised", vec![]) };
-    let r = match d.call(op::FREEZE, &sealed) {
+    let r = match d.call_fresh(op::FREEZE, &sealed) {
         Ok(r) => r,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), vec![]),
     };
+    if !r.ok {
+        // REQ-r9: a freeze is a state change too — a stale or unproven blob is refused by name
+        return err(StatusCode::UNPROCESSABLE_ENTITY, "freeze refused", r.reasons);
+    }
     let Ok(sr) = proto::SealedResponse::decode(&r.payload) else { return err(StatusCode::INTERNAL_SERVER_ERROR, "decode", vec![]) };
     if let Err(e) = d.persist(sr.sealed) {
         return err(StatusCode::INTERNAL_SERVER_ERROR, format!("persist: {e}"), vec![]);
@@ -894,7 +971,7 @@ async fn h_sign(AxState(s): AxState<Shared>, headers: HeaderMap, Json(req): Json
         None => d.last_witness.clone(),
     };
     // phase 1: judge
-    let r = match d.call(op::JUDGE, &proto::SealedWith { sealed, data: psbt.clone(), extra: witness }.encode()) {
+    let r = match d.call_fresh(op::JUDGE, &proto::SealedWith { sealed, data: psbt.clone(), extra: witness }.encode()) {
         Ok(r) => r,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), vec![]),
     };
@@ -919,7 +996,7 @@ async fn h_sign(AxState(s): AxState<Shared>, headers: HeaderMap, Json(req): Json
         );
     }
     // phase 2: sign
-    let r = match d.call(op::SIGN, &proto::SealedWith { sealed: jr.sealed, data: psbt, extra: None }.encode()) {
+    let r = match d.call_fresh(op::SIGN, &proto::SealedWith { sealed: jr.sealed, data: psbt, extra: None }.encode()) {
         Ok(r) => r,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), vec![]),
     };
@@ -971,7 +1048,7 @@ async fn h_headers(AxState(s): AxState<Shared>, headers: HeaderMap, Json(req): J
             _ => return err(StatusCode::BAD_REQUEST, "each header is 80 bytes hex", vec![]),
         }
     }
-    let r = match d.call(op::HEADERS, &proto::SealedWith { sealed, data: bytes, extra: None }.encode()) {
+    let r = match d.call_fresh(op::HEADERS, &proto::SealedWith { sealed, data: bytes, extra: None }.encode()) {
         Ok(r) => r,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), vec![]),
     };
@@ -998,6 +1075,45 @@ async fn h_receipts(AxState(s): AxState<Shared>, headers: HeaderMap) -> axum::re
     let text = std::fs::read_to_string(d.receipts_path()).unwrap_or_default();
     let lines: Vec<serde_json::Value> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
     Json(lines).into_response()
+}
+
+/// `GET /v1/tpm/info`: the transport's view (unauthenticated read of the TPM; the owner anchors from `certify`).
+async fn h_tpm_info(AxState(s): AxState<Shared>, headers: HeaderMap) -> axum::response::Response {
+    let mut d = s.lock().await;
+    if !authorized(&headers, &d.token) {
+        return err(StatusCode::UNAUTHORIZED, "token", vec![]);
+    }
+    let Some(t) = d.tpm.as_mut() else { return err(StatusCode::NOT_IMPLEMENTED, "no TPM transport (SIGNERD_TPM unset)", vec![]) };
+    match t.info() {
+        Ok(i) => Json(i).into_response(),
+        Err(e) => err(StatusCode::BAD_GATEWAY, format!("tpm: {e}"), vec![]),
+    }
+}
+
+#[derive(Deserialize)]
+struct TpmCertifyQuery {
+    /// 32 bytes hex chosen by the owner (their anti-replay for the anchoring read).
+    nonce: String,
+}
+
+/// `GET /v1/tpm/certify?nonce=<hex32>`: `TPM2_NV_Certify` over the owner's nonce, as a file-able JSON.
+async fn h_tpm_certify(AxState(s): AxState<Shared>, headers: HeaderMap, Query(q): Query<TpmCertifyQuery>) -> axum::response::Response {
+    let mut d = s.lock().await;
+    if !authorized(&headers, &d.token) {
+        return err(StatusCode::UNAUTHORIZED, "token", vec![]);
+    }
+    let Ok(nonce) = fixed::<32>(&q.nonce) else { return err(StatusCode::BAD_REQUEST, "nonce: 32 bytes hex", vec![]) };
+    let Some(t) = d.tpm.as_mut() else { return err(StatusCode::NOT_IMPLEMENTED, "no TPM transport (SIGNERD_TPM unset)", vec![]) };
+    match t.certify(&nonce) {
+        Ok(p) => Json(serde_json::json!({
+            "nonce": q.nonce,
+            "attest_hex": hex::encode(&p.attest),
+            "sig_hex": hex::encode(p.sig),
+            "transport": t.describe(),
+        }))
+        .into_response(),
+        Err(e) => err(StatusCode::BAD_GATEWAY, format!("tpm: {e}"), vec![]),
+    }
 }
 
 async fn h_health() -> &'static str {
@@ -1028,6 +1144,11 @@ async fn main() -> Result<()> {
             return owner_step(state_dir, url, out, OwnerStep::Quote(nonce)).await;
         }
         Cmd::Freeze { state_dir, url, out } => return owner_step(state_dir, url, out, OwnerStep::Freeze).await,
+        Cmd::TpmInfo { state_dir, url, out } => return owner_step(state_dir, url, out, OwnerStep::TpmInfo).await,
+        Cmd::TpmCertify { state_dir, url, nonce, nonce_file, out } => {
+            let nonce = value_or_file(nonce, nonce_file, "--nonce or --nonce-file")?;
+            return owner_step(state_dir, url, out, OwnerStep::TpmCertify(nonce)).await;
+        }
         Cmd::Policy { state_dir, url, out } => return owner_step(state_dir, url, out, OwnerStep::Policy).await,
         _ => {}
     }
@@ -1071,7 +1192,11 @@ async fn main() -> Result<()> {
         _ => None,
     };
     info!(enclave = enclave.kind(), initialised = sealed.is_some(), feed = bitcoind.is_some(), "signerd starting");
-    let daemon = Daemon { enclave, state_dir, sealed, token, last_witness: None, bitcoind, quote_helper: args.quote_helper.clone() };
+    let tpm_transport = tpm::from_env()?;
+    if let Some(t) = tpm_transport.as_ref() {
+        info!(transport = t.describe(), "tpm counter transport configured (REQ-r9)");
+    }
+    let daemon = Daemon { enclave, state_dir, sealed, token, last_witness: None, bitcoind, quote_helper: args.quote_helper.clone(), tpm: tpm_transport };
     let shared: Shared = Arc::new(Mutex::new(daemon));
 
     if bitcoind_rpc.is_some() {
@@ -1101,6 +1226,8 @@ async fn main() -> Result<()> {
         .route("/v1/headers", post(h_headers))
         .route("/v1/receipts", get(h_receipts))
         .route("/v1/quote", get(h_quote))
+        .route("/v1/tpm/info", get(h_tpm_info))
+        .route("/v1/tpm/certify", get(h_tpm_certify))
         .with_state(shared);
     let listener = tokio::net::TcpListener::bind(&listen).await?;
     info!(listen = %listen, "serving");

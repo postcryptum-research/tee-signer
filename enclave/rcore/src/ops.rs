@@ -133,6 +133,8 @@ pub fn dispatch(op_code: u32, input: &[u8]) -> Response {
         op::JUDGE => judge_op(input),
         op::SIGN => sign_op(input),
         op::REPORT => report(input),
+        op::TPM_NONCE => tpm_nonce(),
+        op::TPM_PROOF => tpm_proof(input),
         #[cfg(feature = "test-init")]
         op::TEST_INIT => test_init(input),
         #[cfg(feature = "test-init")]
@@ -148,14 +150,102 @@ fn open(sealed: &[u8]) -> Result<Envelope, Response> {
     Envelope::unseal(sealed).ok_or_else(|| refuse(Reason::StateUnsealable.into()))
 }
 
-fn open_full(sealed: &[u8]) -> Result<(Envelope, State), Response> {
+/// REQ-r9 (C-R9-C): how each op treats the blob it reads. `Fresh` ops change state or sign and
+/// must see a fresh counter proof when the state is TPM-bound; `Stale` ops only report and are
+/// labeled possibly-stale (REQ-r9 §2.6); `NoBlob` ops read no sealed state. Every op code in
+/// `proto::op` is classified here — the test `freshness_table_is_complete` refuses a new op that is
+/// not — and the handlers call the helper of their class.
+#[allow(dead_code)] // the table is the reviewable classification and the test gate's input
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Freshness {
+    /// Verifies the proof (`open_full_fresh`).
+    Fresh,
+    /// Reads without a proof, information only (`open` / `open_full_stale`).
+    Stale,
+    /// No sealed state is read.
+    NoBlob,
+}
+
+/// The classification of every op (C-R9-C).
+#[allow(dead_code)]
+pub const FRESHNESS: &[(u32, Freshness)] = &[
+    (op::INIT, Freshness::NoBlob),
+    (op::INSTALL, Freshness::Fresh),
+    (op::STATUS, Freshness::Stale),
+    (op::POLICY, Freshness::Stale),
+    // APPLY_MESSAGE: Fresh for every message but `Anchor`, the attended override (see apply_message)
+    (op::APPLY_MESSAGE, Freshness::Fresh),
+    (op::FREEZE, Freshness::Fresh),
+    (op::HEADERS, Freshness::Fresh),
+    (op::JUDGE, Freshness::Fresh),
+    (op::SIGN, Freshness::Fresh),
+    (op::REPORT, Freshness::Stale),
+    (op::TPM_NONCE, Freshness::NoBlob),
+    (op::TPM_PROOF, Freshness::NoBlob),
+    (op::TEST_INIT, Freshness::NoBlob),
+    (op::TEST_RESET_SESSION, Freshness::NoBlob),
+];
+
+/// A full blob for an op that only reports (REQ-r9 §2.6): no counter proof, possibly stale.
+fn open_full_stale(sealed: &[u8]) -> Result<(Envelope, State), Response> {
     let env = open(sealed)?;
     let state = env.state.clone().ok_or_else(|| refuse(Reason::StateUnsealable.into()))?;
     Ok((env, state))
 }
 
-fn seal_or(env: &Envelope) -> Result<Vec<u8>, Response> {
+/// A full blob for an op that changes state or signs (REQ-r9 §2): when the state is TPM-bound the
+/// host must have deposited, for the nonce this enclave issued, a `TPM2_NV_Certify` proof that the
+/// live counter equals the value this very blob expects. Nonce and proof are consumed whatever the
+/// verdict (single-use). A fresh proof also arms this load (auto-arm on `counter == expected`,
+/// RESP-r9 Q4): the counter has proven the blob is the latest, which is what the owner's `Arm`
+/// would attest.
+fn open_full_fresh(sealed: &[u8]) -> Result<(Envelope, State), Response> {
+    let (env, state) = open_full_stale(sealed)?;
+    if let Some(anchor) = state.tpm.as_ref() {
+        let Some((nonce, bytes)) = session::tpm_proof_take() else {
+            return Err(refuse(Reason::TpmRequired.into()));
+        };
+        let Ok(proof) = proto::TpmProof::decode(&bytes) else {
+            session::tpm_set_last_fresh(false);
+            return Err(refuse(Reason::TpmParse.into()));
+        };
+        match signer_core::tpm_attest::verify_nv_certify(&proof.attest, &proof.sig, anchor, &nonce) {
+            Ok(_) => {
+                session::tpm_set_last_fresh(true);
+                session::arm();
+            }
+            Err(r) => {
+                session::tpm_set_last_fresh(false);
+                return Err(refuse(r.into()));
+            }
+        }
+    }
+    Ok((env, state))
+}
+
+/// The one seal helper (C-R9-B): every blob this enclave seals goes through here, and a TPM-bound
+/// state leaves with `expected + 1` — the host increments the counter after persisting the blob.
+fn seal_or(env: &mut Envelope) -> Result<Vec<u8>, Response> {
+    if let Some(s) = env.state.as_mut() {
+        s.bump_tpm();
+    }
     env.seal().ok_or_else(|| refuse_code("SEAL_FAILED"))
+}
+
+/// REQ-r9: issue the nonce for the next blob-reading call.
+fn tpm_nonce() -> Response {
+    Response::ok(session::tpm_nonce_issue().to_vec())
+}
+
+/// REQ-r9: deposit the proof for the live nonce (verified by the next `Fresh` op, not here).
+fn tpm_proof(input: &[u8]) -> Response {
+    if proto::TpmProof::decode(input).is_err() {
+        return refuse(Reason::TpmParse.into());
+    }
+    if !session::tpm_proof_store(input) {
+        return refuse(Reason::TpmNonce.into());
+    }
+    Response::ok(Vec::new())
 }
 
 fn init(input: &[u8]) -> Response {
@@ -216,8 +306,8 @@ fn build_init(
     };
     let Ok(id_sk) = SecretKey::from_slice(&identity_sk) else { return refuse_code("KEY_DERIVATION") };
     let card_sig = sign_digest_secp(&secp, &id_sk, &card.digest());
-    let env = Envelope { network: network as u8, seed, identity_sk, owner_pk, recovery_pk, state, last_judged: None };
-    let sealed = match seal_or(&env) {
+    let mut env = Envelope { network: network as u8, seed, identity_sk, owner_pk, recovery_pk, state, last_judged: None };
+    let sealed = match seal_or(&mut env) {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -274,7 +364,7 @@ fn install(input: &[u8]) -> Response {
     }
     let state = State::new_at_init(enclave_id, env.owner_pk, env.recovery_pk, mandate, sig);
     env.state = Some(state);
-    match seal_or(&env) {
+    match seal_or(&mut env) {
         Ok(sealed) => Response::ok(proto::SealedResponse { sealed }.encode()),
         Err(r) => r,
     }
@@ -358,6 +448,9 @@ fn status(input: &[u8]) -> Response {
             boot_armed: session::armed(),
             boot_challenge: session::challenge(),
             auto_arm: cfg!(feature = "auto-arm"),
+            tpm_bound: false,
+            tpm_expected: 0,
+            tpm_last_fresh: session::tpm_last_fresh(),
         };
         return Response::ok(r.encode());
     };
@@ -391,12 +484,15 @@ fn status(input: &[u8]) -> Response {
         boot_armed: session::armed(),
         boot_challenge: session::challenge(),
         auto_arm: cfg!(feature = "auto-arm"),
+        tpm_bound: st.tpm.is_some(),
+        tpm_expected: st.tpm.as_ref().map(|t| t.expected).unwrap_or(0),
+        tpm_last_fresh: session::tpm_last_fresh(),
     };
     Response::ok(r.encode())
 }
 
 fn policy(input: &[u8]) -> Response {
-    let (_, s) = match open_full(input) {
+    let (_, s) = match open_full_stale(input) {
         Ok(x) => x,
         Err(r) => return r,
     };
@@ -414,17 +510,28 @@ fn apply_message(input: &[u8]) -> Response {
         Ok(r) => r,
         Err(_) => return refuse(Reason::PolicyInvalid.into()),
     };
-    let (mut env, s) = match open_full(&req.sealed) {
+    let Ok(msg) = Message::decode(&req.data) else { return refuse(Reason::PolicyInvalid.into()) };
+    // REQ-r9 §2.5: the owner's `Anchor` is the attended override for a counter mismatch, so it is the
+    // one message that opens the blob WITHOUT a counter proof — a stale blob could otherwise never be
+    // re-anchored (found by the e2e rollback drill). Its own bindings stand in for the proof: the
+    // owner's signature, the next nonce, THIS load's challenge, and `seq_seen` ≤ the enclave's seq.
+    // Every other message needs the proof like any state change.
+    let opened = match &msg {
+        Message::Anchor { .. } => open_full_stale(&req.sealed),
+        _ => open_full_fresh(&req.sealed),
+    };
+    let (mut env, s) = match opened {
         Ok(x) => x,
         Err(r) => return r,
     };
     if !session::check_seq(s.seq) {
         return refuse(Reason::SeqBehindSession.into());
     }
-    let Ok(msg) = Message::decode(&req.data) else { return refuse(Reason::PolicyInvalid.into()) };
     let result = match &msg {
         // REQ-r7: the boot-arm takes THIS load's challenge as data; the core stays pure
         Message::Arm { .. } => s.apply_arm(&msg, &session::challenge()),
+        // REQ-r9: the anchor is the owner's attended override; it arms like Arm and pins the TPM
+        Message::Anchor { .. } => s.apply_anchor(&msg, &session::challenge()),
         _ => s.apply_message(&msg),
     };
     match result {
@@ -432,11 +539,11 @@ fn apply_message(input: &[u8]) -> Response {
             // the HWM ratchets on every accepted blob, Arm included (C-R7-3): an armed process can
             // never be handed a blob older than the one it was armed on
             session::raise(ns.seq);
-            if matches!(msg, Message::Arm { .. }) {
+            if matches!(msg, Message::Arm { .. } | Message::Anchor { .. }) {
                 session::arm();
             }
             env.state = Some(ns);
-            match seal_or(&env) {
+            match seal_or(&mut env) {
                 Ok(sealed) => Response::ok(proto::SealedResponse { sealed }.encode()),
                 Err(r) => r,
             }
@@ -446,13 +553,13 @@ fn apply_message(input: &[u8]) -> Response {
 }
 
 fn freeze(input: &[u8]) -> Response {
-    let (mut env, mut s) = match open_full(input) {
+    let (mut env, mut s) = match open_full_fresh(input) {
         Ok(x) => x,
         Err(r) => return r,
     };
     s.freeze();
     env.state = Some(s);
-    match seal_or(&env) {
+    match seal_or(&mut env) {
         Ok(sealed) => Response::ok(proto::SealedResponse { sealed }.encode()),
         Err(r) => r,
     }
@@ -466,7 +573,7 @@ fn headers(input: &[u8]) -> Response {
     if req.data.len() % 80 != 0 {
         return refuse(Reason::HeaderInvalid.into());
     }
-    let (mut env, mut s) = match open_full(&req.sealed) {
+    let (mut env, mut s) = match open_full_fresh(&req.sealed) {
         Ok(x) => x,
         Err(r) => return r,
     };
@@ -481,7 +588,7 @@ fn headers(input: &[u8]) -> Response {
     let res = apply_headers(&mut s, &hs);
     let best_height = s.chain.best.map(|b| b.height).unwrap_or(0);
     env.state = Some(s);
-    let sealed = match seal_or(&env) {
+    let sealed = match seal_or(&mut env) {
         Ok(x) => x,
         Err(r) => return r,
     };
@@ -497,7 +604,7 @@ fn judge_op(input: &[u8]) -> Response {
         Ok(r) => r,
         Err(_) => return refuse(Reason::PsbtParse.into()),
     };
-    let (mut env, s) = match open_full(&req.sealed) {
+    let (mut env, s) = match open_full_fresh(&req.sealed) {
         Ok(x) => x,
         Err(r) => return r,
     };
@@ -534,7 +641,7 @@ fn judge_op(input: &[u8]) -> Response {
                 receipt: receipt.clone(),
             });
             env.state = Some(state);
-            match seal_or(&env) {
+            match seal_or(&mut env) {
                 Ok(sealed) => Response::ok(proto::JudgeResponse { sealed, receipt }.encode()),
                 Err(r) => r,
             }
@@ -543,7 +650,7 @@ fn judge_op(input: &[u8]) -> Response {
             None => refuse(refusal),
             Some(st) => {
                 env.state = Some(st);
-                match seal_or(&env) {
+                match seal_or(&mut env) {
                     Ok(sealed) => refuse_with(refusal, proto::SealedResponse { sealed }.encode()),
                     Err(r) => r,
                 }
@@ -557,7 +664,7 @@ fn sign_op(input: &[u8]) -> Response {
         Ok(r) => r,
         Err(_) => return refuse(Reason::PsbtParse.into()),
     };
-    let (env, s) = match open_full(&req.sealed) {
+    let (env, s) = match open_full_fresh(&req.sealed) {
         Ok(x) => x,
         Err(r) => return r,
     };
@@ -624,3 +731,46 @@ fn test_init(input: &[u8]) -> Response {
 
 #[allow(dead_code)]
 fn _unused(_: String) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// C-R9-C: a new op code cannot appear without a freshness classification, and every classified
+    /// op exists. The list below is the full `proto::op` module by hand — adding an op there without
+    /// adding it here, or here without classifying it in `FRESHNESS`, fails this test.
+    #[test]
+    fn freshness_table_is_complete() {
+        let all: &[u32] = &[
+            op::INIT,
+            op::INSTALL,
+            op::STATUS,
+            op::POLICY,
+            op::APPLY_MESSAGE,
+            op::FREEZE,
+            op::HEADERS,
+            op::JUDGE,
+            op::SIGN,
+            op::REPORT,
+            op::TPM_NONCE,
+            op::TPM_PROOF,
+            op::TEST_INIT,
+            op::TEST_RESET_SESSION,
+        ];
+        for o in all {
+            assert!(FRESHNESS.iter().any(|(c, _)| c == o), "op {o} is not classified in FRESHNESS");
+        }
+        for (c, _) in FRESHNESS {
+            assert!(all.contains(c), "FRESHNESS names an op {c} that does not exist");
+        }
+        // the ops that change state or sign are all Fresh; the pure reads are Stale
+        for (c, f) in FRESHNESS {
+            match *c {
+                op::INSTALL | op::APPLY_MESSAGE | op::FREEZE | op::HEADERS | op::JUDGE | op::SIGN => assert_eq!(*f, Freshness::Fresh),
+                op::STATUS | op::POLICY | op::REPORT => assert_eq!(*f, Freshness::Stale),
+                _ => assert_eq!(*f, Freshness::NoBlob),
+            }
+        }
+    }
+}
+

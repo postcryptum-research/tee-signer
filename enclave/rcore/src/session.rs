@@ -14,6 +14,17 @@ static HWM: AtomicU64 = AtomicU64::new(0);
 #[cfg(not(feature = "auto-arm"))]
 static ARMED: AtomicBool = AtomicBool::new(false);
 
+// REQ-r9: the TPM counter proof of the NEXT blob-reading ecall — a single live nonce (random,
+// consumed on issue of the next one and on use), the proof bytes the host deposited for it, and
+// whether the last verified proof was fresh. Volatile like everything here.
+static TPM_NONCE: [AtomicU64; 4] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+static TPM_NONCE_LIVE: AtomicBool = AtomicBool::new(false);
+/// Proof storage: `MAX_ATTEST_LEN` (512) + 64 bytes of signature, as 72 little-endian words.
+static TPM_PROOF: [AtomicU64; 72] = [const { AtomicU64::new(0) }; 72];
+static TPM_PROOF_LEN: AtomicU64 = AtomicU64::new(0);
+static TPM_PROOF_PRESENT: AtomicBool = AtomicBool::new(false);
+static TPM_LAST_FRESH: AtomicBool = AtomicBool::new(false);
+
 fn ensure() {
     if INIT.load(Ordering::Acquire) {
         return;
@@ -85,6 +96,78 @@ pub fn raise(seq: u64) {
     HWM.fetch_max(seq, Ordering::AcqRel);
 }
 
+/// REQ-r9: issue the nonce for the next blob-reading call. Random, in-enclave, single-use: a new
+/// nonce forgets the previous one and any proof deposited for it (exactly one live nonce, C-R9 Q5).
+pub fn tpm_nonce_issue() -> [u8; 32] {
+    ensure();
+    let mut b = [0u8; 32];
+    crate::sgx::read_rand(&mut b);
+    for (i, w) in TPM_NONCE.iter().enumerate() {
+        w.store(u64::from_le_bytes(b[8 * i..8 * i + 8].try_into().unwrap_or([0; 8])), Ordering::Relaxed);
+    }
+    TPM_PROOF_PRESENT.store(false, Ordering::Release);
+    TPM_NONCE_LIVE.store(true, Ordering::Release);
+    b
+}
+
+fn tpm_nonce_value() -> [u8; 32] {
+    let mut out = [0u8; 32];
+    for (i, w) in TPM_NONCE.iter().enumerate() {
+        out[8 * i..8 * i + 8].copy_from_slice(&w.load(Ordering::Relaxed).to_le_bytes());
+    }
+    out
+}
+
+/// REQ-r9: deposit the proof bytes (attest ‖ sig, unverified) for the live nonce. `false` when no
+/// nonce is live or the proof is too long.
+pub fn tpm_proof_store(bytes: &[u8]) -> bool {
+    ensure();
+    if !TPM_NONCE_LIVE.load(Ordering::Acquire) || bytes.len() > 72 * 8 {
+        return false;
+    }
+    for (i, w) in TPM_PROOF.iter().enumerate() {
+        let mut chunk = [0u8; 8];
+        let start = 8 * i;
+        if start < bytes.len() {
+            let end = core::cmp::min(start + 8, bytes.len());
+            chunk[..end - start].copy_from_slice(&bytes[start..end]);
+        }
+        w.store(u64::from_le_bytes(chunk), Ordering::Relaxed);
+    }
+    TPM_PROOF_LEN.store(bytes.len() as u64, Ordering::Relaxed);
+    TPM_PROOF_PRESENT.store(true, Ordering::Release);
+    true
+}
+
+/// REQ-r9: take the live nonce and the deposited proof for THIS call, consuming both (single-use
+/// whatever the verdict). `None` when either is missing.
+pub fn tpm_proof_take() -> Option<([u8; 32], alloc::vec::Vec<u8>)> {
+    ensure();
+    let live = TPM_NONCE_LIVE.swap(false, Ordering::AcqRel);
+    let present = TPM_PROOF_PRESENT.swap(false, Ordering::AcqRel);
+    if !live || !present {
+        return None;
+    }
+    let nonce = tpm_nonce_value();
+    let len = TPM_PROOF_LEN.load(Ordering::Relaxed) as usize;
+    let mut out = alloc::vec::Vec::with_capacity(len);
+    for w in TPM_PROOF.iter() {
+        out.extend_from_slice(&w.load(Ordering::Relaxed).to_le_bytes());
+    }
+    out.truncate(len);
+    Some((nonce, out))
+}
+
+/// REQ-r9: record the verdict of the last proof (for `STATUS`).
+pub fn tpm_set_last_fresh(fresh: bool) {
+    TPM_LAST_FRESH.store(fresh, Ordering::Release);
+}
+
+/// REQ-r9: whether the last verified proof in this load was fresh.
+pub fn tpm_last_fresh() -> bool {
+    TPM_LAST_FRESH.load(Ordering::Acquire)
+}
+
 /// Test builds only: forget the session (simulates an enclave reload: new id, new challenge,
 /// unarmed, HWM 0).
 #[cfg(feature = "test-init")]
@@ -93,4 +176,7 @@ pub fn reset() {
     HWM.store(0, Ordering::Release);
     #[cfg(not(feature = "auto-arm"))]
     ARMED.store(false, Ordering::Release);
+    TPM_NONCE_LIVE.store(false, Ordering::Release);
+    TPM_PROOF_PRESENT.store(false, Ordering::Release);
+    TPM_LAST_FRESH.store(false, Ordering::Release);
 }

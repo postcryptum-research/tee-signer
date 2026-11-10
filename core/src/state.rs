@@ -12,8 +12,12 @@ use crate::mandate::{self, Checkpoint, Mandate, Network, WalletSpec};
 use crate::reason::{Reason, Refusal};
 use crate::update::{parse_p256_pubkey, Message};
 
-/// State encoding version.
+/// State encoding version 1: no TPM anchor (every state before REQ-r9, and every unanchored one).
 pub const STATE_VERSION: u16 = 1;
+/// State encoding version 2 (REQ-r9): version 1's fields followed by the TPM anchor. The version
+/// *is* the presence of the anchor — an unanchored state is a v1 state, an anchored one a v2 state —
+/// so each value has exactly one encoding and the R1 vectors (v1 blobs) stay valid.
+pub const STATE_VERSION_TPM: u16 = 2;
 
 /// Max recent headers kept for the witness tip check and reorg detection.
 pub const MAX_RECENT: usize = 2048;
@@ -146,6 +150,8 @@ pub struct State {
     pub own_index_bound: [u32; 2],
     /// Receipt sequence: number of signatures produced.
     pub seq: u64,
+    /// REQ-r9: the TPM counter this state is bound to, if any. `None` = R7 behaviour unchanged.
+    pub tpm: Option<crate::tpm_attest::TpmAnchor>,
 }
 
 impl State {
@@ -176,13 +182,23 @@ impl State {
             window: Window { start_height: start, ..Default::default() },
             own_index_bound: [0, 0],
             seq: 0,
+            tpm: None,
+        }
+    }
+
+    /// REQ-r9 (C-R9-B): the one place the expected counter moves by `+1` — called by the shell's
+    /// single seal helper for every blob it seals, never per path. Saturating: a counter at
+    /// `u64::MAX` can never be matched again, which is a refusal, not a wrap.
+    pub fn bump_tpm(&mut self) {
+        if let Some(t) = self.tpm.as_mut() {
+            t.expected = t.expected.saturating_add(1);
         }
     }
 
     /// Canonical bytes for sealing.
     pub fn encode(&self) -> Vec<u8> {
         let mut e = Enc::new();
-        e.u16(STATE_VERSION);
+        e.u16(if self.tpm.is_some() { STATE_VERSION_TPM } else { STATE_VERSION });
         e.fixed(&self.enclave_id);
         e.u8(self.network as u8);
         // wallet is re-derived from the mandate's wallet at decode; it is sealed via the mandate
@@ -226,13 +242,17 @@ impl State {
         e.u32(self.own_index_bound[0]);
         e.u32(self.own_index_bound[1]);
         e.u64(self.seq);
+        if let Some(t) = self.tpm.as_ref() {
+            e.fixed(&t.ak_pk).fixed(&t.nv_name).u64(t.expected);
+        }
         e.finish()
     }
 
     /// Strict decode.
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(bytes);
-        if d.u16()? != STATE_VERSION {
+        let version = d.u16()?;
+        if version != STATE_VERSION && version != STATE_VERSION_TPM {
             return Err(DecodeError);
         }
         let enclave_id = d.fixed()?;
@@ -286,6 +306,11 @@ impl State {
         };
         let own_index_bound = [d.u32()?, d.u32()?];
         let seq = d.u64()?;
+        let tpm = if version == STATE_VERSION_TPM {
+            Some(crate::tpm_attest::TpmAnchor { ak_pk: d.fixed()?, nv_name: d.fixed()?, expected: d.u64()? })
+        } else {
+            None
+        };
         d.finish()?;
         Ok(State {
             enclave_id,
@@ -304,6 +329,7 @@ impl State {
             window,
             own_index_bound,
             seq,
+            tpm,
         })
     }
 
@@ -498,6 +524,7 @@ impl State {
             // Arm is a statement about a process, not about the sealed state alone: only `apply_arm`,
             // which takes this load's challenge as data, may accept it.
             Message::Arm { .. } => Err(Reason::PolicyInvalid.into()),
+            Message::Anchor { .. } => Err(Reason::PolicyInvalid.into()),
             Message::WitnessToken { .. } => Err(Reason::PolicyInvalid.into()),
         }
     }
@@ -525,6 +552,38 @@ impl State {
             return Err(Reason::ArmSeqBehind.into());
         }
         s.nonce = next;
+        Ok(s)
+    }
+
+    /// The anchor transition (REQ-r9 §2.5): every check of `apply_arm` — owner signature, enclave
+    /// id, next nonce (consumed), this load's challenge, the sequence the owner saw — plus the
+    /// structural check of the pinned material; then the state pins the TPM and expects `counter`.
+    /// The shell seals the result (which bumps `expected` to `counter + 1`) and arms the load.
+    pub fn apply_anchor(&self, msg: &Message, boot_challenge: &[u8; 32]) -> Result<State, Refusal> {
+        let Message::Anchor { nonce, boot_challenge: c, ak_pk, nv_name, counter, seq_seen, .. } = msg else {
+            return Err(Reason::PolicyInvalid.into());
+        };
+        if msg.enclave_id() != &self.enclave_id || !msg.verify(&self.owner_pk) {
+            return Err(Reason::PolicySig.into());
+        }
+        let mut s = self.clone();
+        s.activate_pending();
+        let next = s.nonce.checked_add(1).ok_or_else(|| Refusal::one(Reason::Overflow))?;
+        if *nonce != next {
+            return Err(Reason::PolicyNonce.into());
+        }
+        if c != boot_challenge {
+            return Err(Reason::ArmChallenge.into());
+        }
+        if *seq_seen > s.seq {
+            return Err(Reason::ArmSeqBehind.into());
+        }
+        let anchor = crate::tpm_attest::TpmAnchor { ak_pk: *ak_pk, nv_name: *nv_name, expected: *counter };
+        if !anchor.well_formed() {
+            return Err(Reason::PolicyInvalid.into());
+        }
+        s.nonce = next;
+        s.tpm = Some(anchor);
         Ok(s)
     }
 }
