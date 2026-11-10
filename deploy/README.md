@@ -74,3 +74,13 @@ aside in the volume, starts the new image, `init`/`quote`/`status` to files, ver
 laptop, installs the mandate, runs the restart drill (`arm`) and re-points the T2 BTCPay store and
 plugin. Not idempotent: a second run retires the wallet it just created.
 
+### Dev stack operations run by hand on 2026-11-10 (so they are not lost)
+
+| Step | Where | Command / action | What happens |
+|---|---|---|---|
+| browser access to the T2 BTCPay | laptop + box | on the box `ssh -f -N -L 127.0.0.1:7397:127.0.0.1:7392 azureuser@52.236.130.102`; on the laptop `ssh -S .local/signet/tunnel.sock -O forward -L 127.0.0.1:7397:127.0.0.1:7397 andrey@94.130.18.162`; open `http://127.0.0.1:7397` (login `admin@tee.local`, dev password in `btcpay/e2e/gates.sh`) | two ssh forwards chained through the box; BTCPay itself stays bound to loopback on the node. Remove with `-O cancel` on the laptop and `kill` of the box-side ssh (parking) |
+| wallet rescan after importing an xpub that already received coins | BTCPay UI | store → Wallets → BTC → `…` → **Rescan** | NBXplorer indexes only from the moment it starts tracking a derivation; coins that arrived before (or while it was not yet tracking) are found by the rescan. The enclave is not involved |
+| restart BTCPay only | node | `docker restart generated_btcpayserver_1` | BTCPay restarts (~30 s); the sidecar keeps running, so the enclave does **not** pause and no `arm` is needed |
+| build the plugin | box | `cd ~/tee-signer/btcpay && DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile.plugin-build --target export -o ~/tee-signer-btcpay/plugin-new .` | a `dotnet/sdk` container clones BTCPay v2.4.7 and publishes the DLL into `~/tee-signer-btcpay/plugin-new/` (~2 min) |
+| upgrade the plugin on a stack | box → node, node | `scp ~/tee-signer-btcpay/plugin-new/BTCPayServer.Plugins.TeeSigner.dll azureuser@52.236.130.102:tee-signer-btcpay/plugin/` then on the node `~/tee-signer/btcpay/docker/stack.sh install-plugin` (T1: the same `install-plugin` on the box) | the DLL is copied into the BTCPay container's `Plugins/` directory and BTCPay restarts; keep the previous DLL next to it as `*.before-<date>` to roll back. The enclave is untouched |
+

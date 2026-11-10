@@ -166,6 +166,11 @@ both signing paths refuse by name if it does not. "View seed", PayJoin and the s
 processor switch themselves off on a cold wallet — that is gate (a) of the e2e suite, and gate
 (b) checks that NBXplorer's database holds no key material.
 
+If coins reached the wallet before the import (or while BTCPay was not yet tracking the xpub),
+the store shows a zero balance until you rescan: store → **Wallets** → **BTC** → the `…` menu →
+**Rescan**. NBXplorer indexes a wallet from the moment it starts tracking it; the rescan finds what
+came earlier. The enclave is not involved and nothing is signed.
+
 **6. The mandate: written and signed on the laptop, handed to the server.** Start from the
 example in [`POLICY.md`](POLICY.md) §2: your cold-storage descriptor as a *trusted*
 destination with its own caps, `unlisted` caps for customer payouts (e.g. `maxPerTx` 1 000 000
@@ -437,6 +442,17 @@ transactions — the plugin always includes them; a PSBT built elsewhere must to
 BTCPay's payout processor retries on its schedule; after ten refusals it disables itself for that
 payout, as the stock processor does.
 
+**A payout that stays `AwaitingPayment`.** The plugin's processor retries every minute and logs
+each attempt in BTCPay's log as `tee-signer: …`. Refusals that clear by themselves (the window's
+budget, `FROZEN`, `NOT_ARMED`, a stale header feed) and "not enough funds" are retried for as long
+as it takes and never switch the processor off; a refusal that can never clear (an amount above a
+per-transaction cap, a destination the mandate forbids) switches the processor off *for that payout*
+after ten attempts — the log says so; cancel it and create a correct one. If the store's balance is
+below what a block explorer shows for the wallet, rescan (step 5 above). Restarting BTCPay does not
+touch the enclave (the sidecar keeps running, no `arm` is needed); restarting the sidecar does.
+A payout is never signed twice: when the node refuses the broadcast, the signed transaction is
+kept and rebroadcast; the enclave is not asked again.
+
 ### Why does a mandate change wait a day? Which changes apply at once?
 
 A **tightening** — every field moving in the restrictive direction (lower caps, removed trusted
@@ -481,6 +497,49 @@ The result file says applied (a tightening) or pending with its activation heigh
 loosening). The file is intent; the sealed state is law: editing a JSON file changes nothing
 until it is signed with the next nonce and accepted. Keep the mandate JSON you signed next to
 `wallet.json`.
+
+### How do I move to a new enclave build (a new MRENCLAVE)?
+
+A new build is a new wallet: the sealed state of the old enclave cannot be opened by the new one,
+by design. So an upgrade is a retire-and-reinit, and the coins of the old wallet have to be moved.
+
+1. **Empty the old wallet first**, while it still runs: a payout of the balance to a destination you
+   control (within its mandate: a trusted destination, or the unlisted caps), or later from the
+   recovery blob into any BIP84 wallet ([CONTINUITY.md](CONTINUITY.md)) — a new enclave can never
+   reopen the old state.
+2. **Server:** load the new sidecar image (`docker load -i …`), stop the sidecar, set the old state
+   aside inside its volume, start on the new image:
+   ```sh
+   docker stop tee-btcpay-tee-signer-1
+   docker run --rm -v tee-btcpay_tee_signer_datadir:/v ubuntu:22.04 sh -c 'mkdir -p /v/retired-<old-mrenclave>-<date> && mv /v/state.sealed /v/receipts.jsonl /v/token /v/retired-<old-mrenclave>-<date>/'
+   TEE_FRAGMENT=opt-add-tee-signer-t2.custom TEE_EXTRA_FRAGMENTS=opt-save-storage-xxs btcpay/docker/stack.sh up --no-deps tee-signer
+   ```
+   The sidecar starts with an empty state and mints a new token; the old token stops working.
+3. **Init, verify, mandate, BTCPay:** setup 1 steps 3–7 again (`init`, `quote`, the laptop's
+   verification against the new build's MRENCLAVE, `recovery-verify`, the mandate signed at nonce 0,
+   the store wallet re-imported with the new xpub, the plugin given the new token). A rescan (step 5)
+   if coins arrived before the import. Then the restart drill of step 8 once, so you have seen the
+   pause and the `arm` on this build.
+4. Keep the old wallet record (it holds the recovery blob of the old seed) next to the new one.
+
+The project's own run of this on 2026-11-10 is `scripts/t2-r7-redeploy.sh` (the dev stack: the
+laptop carries the files through a relay box); it is a worked example, not a product tool — and not
+idempotent: a second run retires the wallet it just created.
+
+### How do I upgrade the plugin?
+
+Build the DLL (`btcpay/docker/Dockerfile.plugin-build`, a container with the .NET SDK; nothing is
+installed on the server), carry it to the server's `tee-signer-btcpay/plugin/` with `scp`, keep the
+previous DLL next to it as `*.before-<date>`, then on the server:
+
+```sh
+btcpay/docker/stack.sh install-plugin
+```
+
+It copies the DLL into the BTCPay container's `Plugins/` directory and restarts BTCPay (~30 s). The
+sidecar and the enclave are untouched: no pause, no `arm`. To roll back, copy the saved DLL back and
+run the same command.
+
 
 ### Why does the enclave have two keys?
 
