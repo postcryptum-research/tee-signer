@@ -141,9 +141,11 @@ already on `main` (286 diffs); the two new core files are rustfmt-clean.
 
 ## 5. Not in this round (carried, stated)
 
-- **The dev agent** (`tee-tpm-agent`, the owner's laptop TPM through `tss-esapi`: own AK handle, own
-  `TPMA_NV_COUNTER | TPMA_NV_ORDERLY` index, loopback only, three routes) and the reverse-tunnel bench
-  run — the `RemoteTpm` client is ready for it. Must-hold E and Q6 are checked when it exists.
+- **The dev agent** (`tee-tpm-agent`, the owner's laptop TPM through `tss-esapi`) — **frozen by the owner
+  on 2026-11-10** («замораживаем идею»). The product path is a TPM in front of the node:
+  [issue #1](https://github.com/77ph/BTCPayTEE/issues/1) (a vTPM via Azure Trusted Launch on `sgx-node-3`,
+  or a +1 counter VM) or the operator's own server with a physical TPM. The `RemoteTpm` client stays for
+  the +1-VM option; must-hold E and Q6 apply to that agent when it is written.
 - The `tss` transport for a local `/dev/tpmrm0` (the product path) — when a node has a TPM.
 - Hardware builds of this `rcore` (T1 build box; the ceremony signing) and any deployment: the
   project's node has no TPM, so the product claim stays deployment-gated (design §4/§6).
