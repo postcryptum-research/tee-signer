@@ -210,6 +210,18 @@ processor** (the old code would have switched the processor off at the tenth min
 `unfreeze` (the dev wallet's keyfile owner, from the laptop) → the next tick signed it **once**
 (`seq` 13, session `fe53ef9a…`), broadcast `6ab93a53…`, `InProgress` within 35 s.
 
+*No-re-sign path, tested explicitly at the auditor's request (15:52–15:56 UTC, test stack):* the test
+node's `minrelaytxfee` was raised to 2 sat/vB (above the plugin's floor) and restarted; the restart
+also emptied its mempool, so the node then refused the processor's transaction for a **non-fee**
+reason — `bad-txns-inputs-missingorspent` (its input was the unconfirmed change of an earlier test
+payout the node no longer held). Outcome: **one** signature (`seq` 13 → 14, `window_outflow` charged
+once, 5 478 → 6 896), the payout stays `InProgress` with `TransactionId f5ba80a7…`, the log reads
+`broadcast refused by the node: bad-txns-inputs-missingorspent; f5ba80a7… (enclave seq 14) is scheduled
+for rebroadcast, the payout stays InProgress`, and the following ticks found **no** payout to process
+— no second signature. Before the fix the same situation produced a new signature every minute. The
+same transaction is left to BTCPay's delayed broadcaster (it needs its parent confirmed first); the
+node's policy was then restored.
+
 ## 5. Conditions
 
 | Condition | Where discharged |
