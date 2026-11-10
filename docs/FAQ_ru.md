@@ -67,12 +67,16 @@ English: [`FAQ.md`](FAQ.md). Картина на одной странице: [`
 sidecar.
 
 ```sh
-mkdir -p ~/tee-signer-exchange
+mkdir -p -m 1777 ~/tee-signer-exchange
 docker load -i signerd-t2-image.tar.gz
 TEE_FRAGMENT=opt-add-tee-signer-t2.custom TEE_EXTRA_FRAGMENTS=opt-save-storage-xxs btcpay/docker/stack.sh gen
 btcpay/docker/stack.sh up
 btcpay/docker/stack.sh install-plugin
 ```
+
+Обменный каталог создаётся доступным на запись всем, с sticky-битом (`-m 1777`): sidecar работает
+от своего пользователя (uid 999) и пишет туда ответы; после обычного `mkdir` писать в каталог
+можете только вы, и каждый `--out /exchange/…` упадёт с «permission denied».
 
 **2. Ноутбук: ключи.** Приватные ключи рождаются здесь и никуда не уходят; переезжают только
 публичные. На Linux нужны `libtss2-dev` для TPM и `pcscd` + `libpcsclite-dev` для YubiKey;

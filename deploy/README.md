@@ -58,7 +58,7 @@ Occupied ports on the host (2026-11-03 `ss -ltn`): 22, 80, 443, 1080-1082, 3001-
 
 Owner operations never cross a tunnel. The sidecar mounts an exchange directory
 (`TEE_EXCHANGE_DIR`, default `~/tee-signer-exchange` of the user who runs the stack, seen as
-`/exchange` inside the container). The owner's machine sends files there with `scp` (public keys,
+`/exchange` inside the container; create it `-m 1777` — the sidecar writes there as uid 999). The owner's machine sends files there with `scp` (public keys,
 a nonce, signed messages) and takes files back the same way (`init-response.json`, `status.json`,
 `quote.json`, `policy.json`, `*.result.json`). On the server the steps are
 `docker exec tee-btcpay-tee-signer-1 signerd status|submit|init|quote|policy|freeze --state-dir /var/lib/signerd … --out /exchange/<file>`;

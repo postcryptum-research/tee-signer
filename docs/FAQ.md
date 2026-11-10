@@ -65,12 +65,16 @@ reproducibly and signed with the project's offline ceremony key on a build box, 
 server (setup 2 says how to reproduce it yourself); what reaches the server is the sidecar image.
 
 ```sh
-mkdir -p ~/tee-signer-exchange
+mkdir -p -m 1777 ~/tee-signer-exchange
 docker load -i signerd-t2-image.tar.gz
 TEE_FRAGMENT=opt-add-tee-signer-t2.custom TEE_EXTRA_FRAGMENTS=opt-save-storage-xxs btcpay/docker/stack.sh gen
 btcpay/docker/stack.sh up
 btcpay/docker/stack.sh install-plugin
 ```
+
+The exchange directory is made world-writable with the sticky bit (`-m 1777`): the sidecar runs as
+its own user (uid 999) and writes its answers there; a plain `mkdir` gives a directory only you can
+write to, and every `--out /exchange/…` would fail with "permission denied".
 
 **2. The laptop: the keys.** The private keys are born here and never leave; only public keys
 travel. Linux needs `libtss2-dev` for the TPM backend, `pcscd` and `libpcsclite-dev` for a
