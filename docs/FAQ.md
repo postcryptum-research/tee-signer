@@ -247,6 +247,13 @@ docker exec tee-btcpay-tee-signer-1 signerd submit --state-dir /var/lib/signerd 
 
 Payouts resume. A reboot at night is a pause until your morning, never a loss.
 
+*In development (R9, not on the project's node yet):* with a TPM in front of the enclave — a physical
+one on your own server, or the virtual TPM of a Trusted-Launch VM — the enclave checks the TPM's
+counter against the value it sealed last and arms itself when they agree, so a restart no longer
+waits for you; the pause above stays the fallback whenever the counter disagrees. Against root inside
+the server the counter cannot be turned back; against the cloud provider, who owns a virtual TPM, the
+protection is the same as without one.
+
 **What you get:** the seed is never a file; a stolen admin login, a bad plugin or a hacked BTCPay
 container can at most spend the current window's unlisted budget, to destinations capped per
 transaction — that window cap is the ceiling on the damage. Root on the server cannot read the

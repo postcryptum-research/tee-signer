@@ -55,6 +55,8 @@ before return; nothing derived from the seed is cached across ecalls.
 | `headers` | sealed blob, N × 80-byte headers | sealed blob, accepted count | header verifier (§6) |
 | `judge` | sealed blob, PSBT, optional witness token | sealed blob (charged), summary, or refusal (+ sealed blob if disarmed) | `classify` + `judge`; records `last_judged` |
 | `sign` | **charged** sealed blob, PSBT | signed PSBT, receipt + identity signature | signs only if `last_judged.txid == txid(PSBT)` and `last_judged.seq == state.seq` (§4) |
+| `tpm_nonce` (R9) | — | 32 random bytes | the nonce the next state-changing or signing call's counter proof must carry; single-use, a new one forgets the old one and any deposited proof |
+| `tpm_proof` (R9) | `TPMS_ATTEST` bytes + P-256 signature | ok | deposited unverified for the live nonce; the next state-changing or signing call verifies it against the blob it is handed (§4c) |
 
 Test-only ops `TEST_INIT` (known seed and identity key, a ready state) and `TEST_RESET_SESSION`
 (forget the volatile session mark) exist behind the `rcore` feature `test-init` so the vector
@@ -117,6 +119,22 @@ no-monotonic-counter limit of Q3 in its sharpest form.
   budget, amplified by detection latency. `freshness.required` **detects** this through the monitor;
   it does not prevent it. Prevention needs a monotonic counter SGX1 does not have; a counter
   service or an external anchor on T2 is a later REQ.
+
+## 4c. The TPM counter — freshness without the owner (R9, branch `r9-tpm`, IMPL review pending)
+
+When the sealed state carries a `TpmAnchor` (an attestation key, a `TPMA_NV_COUNTER` index Name and the
+counter value this blob expects — set by the owner's `Anchor` message), every ecall that changes state or
+signs (`install`, `apply_message`, `freeze`, `headers`, `judge`, `sign`) opens the blob only against a
+`TPM2_NV_Certify` proof the host deposited for the nonce the enclave issued just before: the fixed-layout
+attestation must name the pinned index, carry that nonce as `extraData`, verify under the pinned key, and
+certify `counter == expected`; otherwise `TPM_REQUIRED` / `TPM_PARSE` / `TPM_NONCE` / `TPM_INDEX` /
+`TPM_SIG` / `STATE_STALE`. Every seal stores `expected + 1` (one helper, `seal_or`), and the host increments
+the counter after persisting the blob. A fresh proof also arms the load (§4b's pause satisfied by the
+counter instead of the owner): an unattended restart with the bound kept. The pure reads `status`, `policy`,
+`report` need no proof and are labeled possibly stale. The `Anchor` message is the attended override and
+the one message that opens a blob without a proof: a rolled-back or desynchronised blob can be re-anchored
+only by the owner (signature, next nonce, this load's challenge, `seq_seen`). Honest scope: the bound holds
+against root inside the VM; against the provider who owns a virtual TPM it reverts to the hot float.
 
 ## 4b. The boot-arm — no signature after a restart until the owner arms this load (R7)
 
