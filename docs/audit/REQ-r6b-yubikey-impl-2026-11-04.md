@@ -139,6 +139,22 @@ Until block 329586 the TPM key rules the live T2 wallet; then the YubiKey key do
 (the owner, PIN + touch) accepted — that is the T2 proof of a YubiKey signature verified in the
 release enclave and of the TPM owner's retirement.
 
+### 4.6 Live T2 custody transition, part 2 — 2026-11-10, signet block 330222 (C-R6b-1)
+
+owner-cli rebuilt from `main` @ 8de2e6d. The T2 sidecar still runs the R6 build `51dee44d…`
+(the R7 pause build is deployed only after this evidence — C-R7-13), reached over the dev
+forward 7395; the enclave's `armed` flag is not involved here.
+
+| Step | Result |
+|---|---|
+| `status` at enclave `best_height` 330222 | `pending_owner: None`, nonce 11, `frozen: false` — the YubiKey key `piv:9a@39252737` became the owner at 329586 (the timelocked loosening of part 1, 144 blocks); 636 blocks had passed |
+| `freeze` (unsigned) | `frozen: true` |
+| **Negative:** `unfreeze --key tpm:0x81000100` (the TPM owner of part 1; the signature is produced inside the laptop TPM and is valid for that key) | `422 message refused ["POLICY_SIG"]`, exit 1; nonce stays 11, still frozen — the retired owner cannot act |
+| `unfreeze --key piv:9a` (the owner, PIN + touch) | **owed** — the owner runs it in their own terminal (the YubiKey is theirs); the row is filled in when they paste the output |
+
+Log: laptop `.local/signet-t2/part2-2026-11-10.log` (gitignored). The wallet record now carries
+the `9a` key as owner (`owner_activated_height` 329586) and the TPM key as the previous owner.
+
 Tier label of this evidence: T0 (in-process rcore, no SGX, regtest) — it proves the owner-cli
 mechanics (locator, attestation gate, PIN per signature, touch per signature, the refusal of
 another key) and the enclave-side verification code path, which is the same `rcore` that runs
