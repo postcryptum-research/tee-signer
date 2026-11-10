@@ -194,9 +194,21 @@ the same day (plugin, host-side, not the enclave; fixed in the plugin, see its R
 
 Test stack evidence after the fix (`~/tee-signer-btcpay/e2e/processor-debug-2026-11-10.log` on the
 box): a 1 000 sat payout signed **once** (`seq` 11 → 12, session `fe53ef9a…`), broadcast as
-`6831bb46…` at 209 sat / 209 vB = 1.0 sat/vB, `InProgress` within 10 s. The transient-failure test
-(an over-balance payout for 12 minutes) is appended below when done. The fixed DLL is staged on the
-T2 node; its install restarts BTCPay there and is the owner's step.
+`6831bb46…` at 209 sat / 209 vB = 1.0 sat/vB, `InProgress` within 10 s. A 200 000 sat payout
+(meant as an over-balance case; the test wallet turned out to hold more) was instead **refused by the
+enclave ten times with `CAP_UNLISTED_TX`** (> `maxPerTx` 100 000), no signature (`seq` stayed 12),
+and the processor disabled itself for that payout at the tenth refusal — the intended behaviour for a
+refusal that can never clear. The transient case (the signer frozen, a 1 000 sat payout retried for
+11.5 minutes, then the owner's unfreeze) is appended below. The fixed DLL waits on the build box
+(`~/tee-signer-btcpay/plugin-new/`); carrying it to the T2 node and `stack.sh install-plugin` there
+(a BTCPay restart) is the owner's step.
+
+*Transient case, done 15:35–15:48 UTC:* the dev signer frozen (`/v1/freeze`), a 1 000 sat payout queued;
+12 ticks in 11.5 minutes, each `enclave refused the payout batch: FROZEN (transient, will retry)`, no
+signature (`seq` 12), and the payout's blob after 11.5 minutes carries **no error count and no disabled
+processor** (the old code would have switched the processor off at the tenth minute). The owner's
+`unfreeze` (the dev wallet's keyfile owner, from the laptop) → the next tick signed it **once**
+(`seq` 13, session `fe53ef9a…`), broadcast `6ab93a53…`, `InProgress` within 35 s.
 
 ## 5. Conditions
 
