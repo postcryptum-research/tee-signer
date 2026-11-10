@@ -159,8 +159,9 @@ Custody chain of the live T2 wallet, complete: keyfile owner (init, 2026-11-03) 
 accepted 2026-11-03, active at 329441; keyfile refused `POLICY_SIG` at 329442) → YubiKey `9a`
 (rotation accepted at 329442 with in-line attestation, active at 329586; TPM refused `POLICY_SIG`
 at 330222, YubiKey accepted at 330230). Each retirement is proven by a refusal of the retired key
-and an acceptance of the new one on the same enclave. C-R6b-1 evidence is complete; the auditor
-verifies firsthand.
+and an acceptance of the new one on the same enclave. C-R6b-1 DISCHARGED 2026-11-10 — the auditor read the
+raw log firsthand (the state transitions frozen@11 → still frozen@11 after the TPM attempt →
+unfrozen@12 after `piv:9a` are self-proving; the owner's terminal lines are a relay).
 
 Tier label of this evidence: T0 (in-process rcore, no SGX, regtest) — it proves the owner-cli
 mechanics (locator, attestation gate, PIN per signature, touch per signature, the refusal of
