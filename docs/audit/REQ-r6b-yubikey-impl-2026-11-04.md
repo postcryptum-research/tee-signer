@@ -150,10 +150,17 @@ forward 7395; the enclave's `armed` flag is not involved here.
 | `status` at enclave `best_height` 330222 | `pending_owner: None`, nonce 11, `frozen: false` — the YubiKey key `piv:9a@39252737` became the owner at 329586 (the timelocked loosening of part 1, 144 blocks); 636 blocks had passed |
 | `freeze` (unsigned) | `frozen: true` |
 | **Negative:** `unfreeze --key tpm:0x81000100` (the TPM owner of part 1; the signature is produced inside the laptop TPM and is valid for that key) | `422 message refused ["POLICY_SIG"]`, exit 1; nonce stays 11, still frozen — the retired owner cannot act |
-| `unfreeze --key piv:9a` (the owner, PIN + touch) | **owed** — the owner runs it in their own terminal (the YubiKey is theirs); the row is filled in when they paste the output |
+| `unfreeze --key piv:9a` (the owner, in their own terminal: PIN prompt, then `touch the YubiKey to sign (piv:9a@39252737)…`) | `{"applied":true}`; `status` at `best_height` 330230: `frozen: false`, **nonce 12**, `pending_owner: None` — a YubiKey signature verified by the release enclave on T2 |
 
 Log: laptop `.local/signet-t2/part2-2026-11-10.log` (gitignored). The wallet record now carries
 the `9a` key as owner (`owner_activated_height` 329586) and the TPM key as the previous owner.
+
+Custody chain of the live T2 wallet, complete: keyfile owner (init, 2026-11-03) → TPM key (rotation
+accepted 2026-11-03, active at 329441; keyfile refused `POLICY_SIG` at 329442) → YubiKey `9a`
+(rotation accepted at 329442 with in-line attestation, active at 329586; TPM refused `POLICY_SIG`
+at 330222, YubiKey accepted at 330230). Each retirement is proven by a refusal of the retired key
+and an acceptance of the new one on the same enclave. C-R6b-1 evidence is complete; the auditor
+verifies firsthand.
 
 Tier label of this evidence: T0 (in-process rcore, no SGX, regtest) — it proves the owner-cli
 mechanics (locator, attestation gate, PIN per signature, touch per signature, the refusal of
