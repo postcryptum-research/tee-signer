@@ -149,6 +149,28 @@ could not have passed — the anti-replay property live. Left as confirmations o
 (source-proven): the post-arm sign (`seq` 0 → 1) and the live arm negatives (`ARM_CHALLENGE`,
 `ARM_SEQ_BEHIND`).
 
+**Live signature after the arm — 2026-11-10 14:21 UTC (the "sign accepted" half, T2).** The owner funded
+the new wallet from signet faucets (71 778 sat on `tb1qlj3wg…`, confirmed at 330252). The product path
+(a 2 000 sat payout through the plugin's payout processor) did **not** complete: the processor ticked
+every minute until 13:40:39 (`CreatePSBT failed: Not enough funds` while the deposits were unconfirmed
+and before NBXplorer indexed the new xpub — the owner's wallet rescan in the BTCPay UI fixed the
+balance), then stopped ticking; it did not run after the owner's `docker restart` of BTCPay either
+(plugin loaded, processor configured and enabled, `fullySynched true`, no error in the log, 0 ticks in
+30 min; two off/on toggles through the plugin API changed nothing). **Host-side finding, not the
+enclave's** — to be debugged on the T1 dev stack; payout `2JmVSa2z…` left `AwaitingPayment`. The
+signature was therefore shown on the dev path (`owner-cli` through the dev forward 7395; log
+`.local/signet-t2/live-sign-2026-11-10.log`):
+
+| Step | Result |
+|---|---|
+| `psbt-build` — coin `a962f5f7…:1` (10 000 sat, branch 0 index 0), 2 000 sat to `tb1qagl75…` (an address of the T1 dev wallet, *unlisted*), fee 300, change 7 700 to branch 1 index 0 | 628-char PSBT with `non_witness_utxo` from the public Esplora |
+| `sign` (JUDGE + SIGN in the armed enclave, session `1ef8c603…` = the load the owner armed) | signed PSBT; receipt **seq 1**, txid `a1c7ad9ff4bfeb39bf8bc37d420de5efeee5005585a3ea4c82a2c7b72d877104`, receipt signed by the stamp |
+| `finalize` + `broadcast` (mempool.space) | accepted; the explorer shows 1 input, outputs 2 000 → `tb1qagl75…` and 7 700 → `tb1qyzwwr…` (own change), fee 300 |
+| `status` after | `seq 1`, `boot_armed true`, `nonce 1`, **`window_outflow 2300`, `window_unlisted 2000`, `window_fees 300`** — the window counters charged exactly the mandate's view of the transaction |
+
+The unarmed half (`NOT_ARMED` on a real reload) is source-proven and will be shown on the T1 drill
+(C-R7-12) where the sidecar can be restarted freely.
+
 ## 5. Conditions
 
 | Condition | Where discharged |
