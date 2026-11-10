@@ -30,6 +30,12 @@
 <h3 class="mt-4">Enclave</h3>
 @if (Model.Error is not null) { <div class="alert alert-danger">@Model.Error</div> }
 @if (Model.Status is not null) {
+  @if (Model.Status.BootArmed == false) {
+    <div class="alert alert-warning"><strong>Paused since the last start of the signer.</strong> The enclave signs nothing until the owner approves this start (R7): on the server write the status file (<code>signerd status --out /exchange/status.json</code>), on the owner's machine <code>owner-cli --status-file … --wallet-record … --out arm.msg arm --key …</code>, then <code>signerd submit --file /exchange/arm.msg</code>. Challenge of this start: <code>@Model.Status.BootChallenge</code>. Payouts wait; nothing is lost.</div>
+  }
+  @if (Model.Status.AutoArm == true) {
+    <div class="alert alert-danger"><strong>AUTO_ARM build.</strong> This enclave was built with the operator's opt-out: it signs again right after a restart without the owner's approval. Not the ceremony-signed build; a restored old state can replay a window's budget.</div>
+  }
   <table class="table">
     <tr><th>enclave</th><td>@Model.Status.Enclave · tier <strong>@Model.Status.Tier</strong></td></tr>
     <tr><th>MRENCLAVE</th><td><code>@Model.Status.Mrenclave</code></td></tr>
@@ -37,7 +43,9 @@
     <tr><th>mandate</th><td><code>@Model.Status.MandateHash</code> · nonce @Model.Status.Nonce · installed @Model.Status.Installed</td></tr>
     <tr><th>chain</th><td>best @Model.Status.BestHeight · @Model.Status.ClockLabel</td></tr>
     <tr><th>window</th><td>from @Model.Status.WindowStart · outflow @Model.Status.WindowOutflow sat · unlisted @Model.Status.WindowUnlisted sat · fees @Model.Status.WindowFees sat</td></tr>
-    <tr><th>state</th><td>seq @Model.Status.Seq · frozen @Model.Status.Frozen · armed @Model.Status.Armed · chain frozen @Model.Status.ChainFrozen · session <code>@Model.Status.SessionId</code></td></tr>
+    <tr><th>state</th><td>seq @Model.Status.Seq · frozen @Model.Status.Frozen · chain frozen @Model.Status.ChainFrozen · session <code>@Model.Status.SessionId</code></td></tr>
+    <tr><th>after restart (R7)</th><td>@(Model.Status.BootArmed is null ? "not reported by this build" : Model.Status.BootArmed == true ? "armed by the owner for this start" : "PAUSED — waiting for the owner's arm") @if (Model.Status.AutoArm == true) { <span class="badge bg-danger">AUTO_ARM opt-out build</span> }</td></tr>
+    <tr><th>freshness witness</th><td>armed @Model.Status.Armed (developer option, off in the product)</td></tr>
   </table>
 }
 

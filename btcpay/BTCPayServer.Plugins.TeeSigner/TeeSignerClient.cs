@@ -34,6 +34,13 @@ public class TeeSignerClient
         [JsonPropertyName("seq")] public ulong Seq { get; set; }
         [JsonPropertyName("frozen")] public bool Frozen { get; set; }
         [JsonPropertyName("armed")] public bool Armed { get; set; }
+        /// <summary>R7: false after every start of the enclave until the owner signs an `arm` for this start;
+        /// the enclave signs nothing meanwhile. Absent (null) on a pre-R7 build.</summary>
+        [JsonPropertyName("boot_armed")] public bool? BootArmed { get; set; }
+        /// <summary>R7: this start's 32-byte challenge the owner's `arm` must name (hex).</summary>
+        [JsonPropertyName("boot_challenge")] public string? BootChallenge { get; set; }
+        /// <summary>R7: true only on the operator's opt-out build (AUTO_ARM=1): no pause after a restart.</summary>
+        [JsonPropertyName("auto_arm")] public bool? AutoArm { get; set; }
         [JsonPropertyName("chain_frozen")] public bool ChainFrozen { get; set; }
         [JsonPropertyName("best_height")] public uint BestHeight { get; set; }
         [JsonPropertyName("window_start")] public uint WindowStart { get; set; }
