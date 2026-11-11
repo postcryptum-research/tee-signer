@@ -31,7 +31,9 @@ case "$cmd" in
     cd "$ROOT"
     [ -d btcpayserver-docker ] || git clone -q --depth 1 https://github.com/btcpayserver/btcpayserver-docker.git
     cd btcpayserver-docker
-    cp "$HERE/$TEE_FRAGMENT.yml" docker-compose-generator/docker-fragments/
+    # our fragments (the sidecar for T1/T2, the opt-in TPM overlay); only those named in TEE_FRAGMENT /
+    # TEE_EXTRA_FRAGMENTS take part in the generation
+    cp "$HERE"/opt-add-tee-signer*.custom.yml docker-compose-generator/docker-fragments/
     mkdir -p Generated
     docker run --rm -v "$(pwd)/Generated:/app/Generated" \
       -v "$(pwd)/docker-compose-generator/docker-fragments:/app/docker-fragments" \
