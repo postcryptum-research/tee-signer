@@ -554,24 +554,36 @@ run the same command.
 
 You need a TPM 2.0 the signer's machine can reach as `/dev/tpmrm0`: a physical one on your own server,
 or the virtual TPM of a cloud VM with Trusted Launch (on Azure this is a property of the VM; the
-project's own node is waiting for it — issue #1). The signer build must carry the `tss` feature (the
-packaged image says so in its manifest). Then, **once, on the server**:
+project's own node is waiting for it — issue #1). The signer build must carry the `tss` feature (its
+`MANIFEST` says `signerd features: sgx,tss`). If the enclave you run today predates the counter check
+(builds before R9 do — the check lives inside the enclave), moving to one that has it is a **new
+enclave build and therefore a new wallet**: do ["How do I move to a new enclave build?"](#how-do-i-move-to-a-new-enclave-build-a-new-mrenclave)
+first, and come back here before its step 2 `up`. Then, **once, on the server**, with the sidecar not
+yet running against the TPM:
 
 ```sh
+sudo apt-get install -y tpm2-tools
 tpm2_getcap handles-persistent; tpm2_getcap handles-nv-index      # pick two handles nobody uses
-docker exec tee-btcpay-tee-signer-1 signerd tpm-setup --ak-handle 0x81000200 --nv-index 0x01800200 --no-orderly --out /exchange/tpm-setup.json
+export TEE_TPM_AUTH='<a secret of yours>'                          # the password of the two TPM objects
+docker run --rm --device /dev/tpmrm0 --group-add $(getent group tss | cut -d: -f3) -e SIGNERD_TPM_AUTH="$TEE_TPM_AUTH" -v ~/tee-signer-exchange:/exchange --entrypoint /usr/local/bin/signerd tee-signer/signerd:t2 tpm-setup --ak-handle 0x81000200 --nv-index 0x01800200 --no-orderly --out /exchange/tpm-setup.json
 ```
 
 `tpm-setup` creates two objects inside the TPM: an attestation key (it can only sign what the TPM
 itself attests — nobody can make it sign a forged counter reading) and a monotonic counter. It
 **refuses** a handle that is already in use — it never evicts another program's key — so a typo cannot
-hurt anything; pick another handle. Add to the sidecar's environment
-`SIGNERD_TPM=tss:device:/dev/tpmrm0?ak=0x81000200&nv=0x01800200` and `SIGNERD_TPM_AUTH=<a secret of
-yours>` (the password of the two objects; without it any process on the server could advance the
-counter and pause your signer — never spend anything, but pause it), map `/dev/tpmrm0` into the
-container, restart the sidecar. Do not start with the counter: `--no-orderly` makes a plain counter;
-the default hybrid one saves a physical TPM's flash but jumps forward after a power loss, which the
-enclave treats as "unknown state" until you re-anchor.
+hurt anything; pick another handle. Keep `tpm-setup.json`: it is the only thing that can ever remove
+the two objects again (`tpm-teardown`). The password matters: without it any process on the server
+could advance the counter and pause your signer — never spend anything, but pause it. `--no-orderly`
+makes a plain counter; the default hybrid one saves a physical TPM's flash but jumps forward after a
+power loss, which the enclave treats as "unknown state" until you re-anchor. Now start the stack with
+the TPM overlay, which maps `/dev/tpmrm0` into the sidecar and hands it the transport and the password:
+
+```sh
+TEE_FRAGMENT=opt-add-tee-signer-t2.custom TEE_EXTRA_FRAGMENTS="opt-save-storage-xxs;opt-add-tee-signer-tpm.custom" TEE_TPM_GID=$(getent group tss | cut -d: -f3) TEE_TPM_AUTH="$TEE_TPM_AUTH" ~/tee-signer/btcpay/docker/stack.sh gen
+TEE_FRAGMENT=opt-add-tee-signer-t2.custom TEE_EXTRA_FRAGMENTS="opt-save-storage-xxs;opt-add-tee-signer-tpm.custom" TEE_TPM_GID=$(getent group tss | cut -d: -f3) TEE_TPM_AUTH="$TEE_TPM_AUTH" ~/tee-signer/btcpay/docker/stack.sh up
+```
+
+(If your handles differ from the example, add `TEE_TPM_SPEC='tss:device:/dev/tpmrm0?ak=0x…&nv=0x…'`.)
 
 Then **you anchor** — tell the enclave which TPM and which counter value it must trust, with your
 owner key, from an attested reading (the counter value never comes from the server's say-so):

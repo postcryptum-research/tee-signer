@@ -9,8 +9,10 @@
 # so signing elsewhere yields the identical measurement.
 FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive SOURCE_DATE_EPOCH=1700000000 LC_ALL=C.UTF-8
+# libtss2-dev + pkg-config: the daemon's `tss` TPM transport (REQ-r9, host side only — nothing of
+# libtss2 enters the enclave; gate 5 proves the measurement is unchanged by this line).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential ca-certificates curl gnupg python3 openssl binutils git \
+        build-essential ca-certificates curl gnupg python3 openssl binutils git pkg-config libtss2-dev \
     && rm -rf /var/lib/apt/lists/*
 # Intel SGX repository, every package pinned to what the cluster runs (measured on sgx-node-3).
 RUN mkdir -p /etc/apt/keyrings && \
@@ -55,11 +57,11 @@ RUN cd /src/enclave/rcore && cargo fetch --locked && cd /src/host/signerd && car
 RUN bash -o pipefail -c 'source /opt/intel/sgxsdk/environment && cd /src/enclave && \
     make RELEASE=1 MITIGATION-CVE-2020-0551=LOAD CARGO=/opt/cargo/bin/cargo CARGO_FLAGS=--offline SDK_CPUID_LIST=sdk-cpuid-baseline-2.28.txt enclave.so App/libenclave_u.a build/Enclave.config.gen.xml 2>&1 | tail -20'
 RUN bash -o pipefail -c 'source /opt/intel/sgxsdk/environment && cd /src/host/signerd && \
-    ENCLAVE_U_DIR=/src/enclave/App cargo build --release --locked --offline --features sgx 2>&1 | tail -3'
+    ENCLAVE_U_DIR=/src/enclave/App cargo build --release --locked --offline --features sgx,tss 2>&1 | tail -3'
 # The DCAP quote helper (untrusted host side): a separate process, as the sibling projects learned
 # on DCsv3 — the quoting library cannot share a process with the application enclave.
 COPY docker/dcap-quote-helper.c /src/docker/dcap-quote-helper.c
 RUN gcc -O2 -Wall -o /src/host/dcap-quote-helper /src/docker/dcap-quote-helper.c -ldl
 # Manifest of everything that decides the measurement.
-RUN bash -c 'cd /src && { echo "image: tee-signer-build"; echo "ubuntu: $(. /etc/os-release && echo $VERSION)"; echo "gcc: $(gcc --version | head -1)"; echo "rust: $(rustc --version)"; dpkg -l | grep -E "^ii  libsgx" | awk "{print \$2\" \"\$3}"; echo "sdk: $(cat /opt/intel/sgxsdk/version.txt 2>/dev/null || echo 2.28.100.1)"; echo "SOURCE_DATE_EPOCH: $SOURCE_DATE_EPOCH"; } > /src/MANIFEST'
+RUN bash -c 'cd /src && { echo "image: tee-signer-build"; echo "ubuntu: $(. /etc/os-release && echo $VERSION)"; echo "gcc: $(gcc --version | head -1)"; echo "rust: $(rustc --version)"; dpkg -l | grep -E "^ii  libsgx" | awk "{print \$2\" \"\$3}"; echo "sdk: $(cat /opt/intel/sgxsdk/version.txt 2>/dev/null || echo 2.28.100.1)"; echo "signerd features: sgx,tss"; dpkg -l | grep -E "^ii  libtss2-dev" | awk "{print \$2\" \"\$3}"; echo "SOURCE_DATE_EPOCH: $SOURCE_DATE_EPOCH"; } > /src/MANIFEST'
 WORKDIR /src/enclave

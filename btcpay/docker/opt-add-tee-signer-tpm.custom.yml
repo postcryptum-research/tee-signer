@@ -1,0 +1,18 @@
+# btcpayserver-docker fragment, opt-in on top of opt-add-tee-signer-t2.custom (or the T1 one): a TPM 2.0
+# in front of the signer (REQ-r9). Include it with TEE_EXTRA_FRAGMENTS="…;opt-add-tee-signer-tpm.custom"
+# only on a node that HAS /dev/tpmrm0 (a Trusted-Launch vTPM, or a physical TPM) — compose refuses to
+# start the sidecar when the device is missing, which is the right answer.
+#   TEE_TPM_GID   the node's `tss` group id (`getent group tss | cut -d: -f3`): the sidecar runs as uid 999
+#   TEE_TPM_SPEC  the transport, default tss:device:/dev/tpmrm0?ak=0x81000200&nv=0x01800200 — the two
+#                 handles `signerd tpm-setup` was run with on this node (never defaults inside signerd)
+#   TEE_TPM_AUTH  the authValue of the key and the counter (mandatory: a shared TPM without it lets any
+#                 process on the node pause the signer by incrementing the counter)
+services:
+  tee-signer:
+    devices:
+      - "/dev/tpmrm0:/dev/tpmrm0"
+    group_add:
+      - "${TEE_TPM_GID:?set TEE_TPM_GID to the node's tss group id}"
+    environment:
+      SIGNERD_TPM: "${TEE_TPM_SPEC:-tss:device:/dev/tpmrm0?ak=0x81000200&nv=0x01800200}"
+      SIGNERD_TPM_AUTH: "${TEE_TPM_AUTH:?set TEE_TPM_AUTH (the TPM objects' authValue)}"

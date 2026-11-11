@@ -6,7 +6,10 @@
 # read-only RPC cookie mount, as on T1.
 FROM ubuntu:22.04
 ARG DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg libprotobuf23 zlib1g && \
+# libtss2-*: the daemon's `tss` TPM transport (REQ-r9) — used only when the compose fragment
+# opt-add-tee-signer-tpm.custom maps /dev/tpmrm0 and sets SIGNERD_TPM; inert otherwise.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg libprotobuf23 zlib1g \
+        libtss2-esys-3.0.2-0 libtss2-tctildr0 libtss2-tcti-device0 libtss2-mu0 libtss2-sys1 && \
     mkdir -p /etc/apt/keyrings && \
     curl -fsSL https://download.01.org/intel-sgx/sgx_repo/ubuntu/intel-sgx-deb.key | gpg --dearmor -o /etc/apt/keyrings/intel-sgx.gpg && \
     echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/intel-sgx.gpg] https://download.01.org/intel-sgx/sgx_repo/ubuntu jammy main' > /etc/apt/sources.list.d/intel-sgx.list && \

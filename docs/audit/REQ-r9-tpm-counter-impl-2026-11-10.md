@@ -248,3 +248,48 @@ refuse. Probed in the laptop run: the owner's key under `--ak-handle` ("public k
 with another Name on our own handles ("its Name differs"), a missing record — each refused with our two
 objects still present; the real record then removed them and the handle lists matched the snapshot.
 
+## 8. Addendum 2026-11-11 (evening) — the T2 image recipe with `tss`, prepared and proven, not deployed
+
+Owner's «1 и 2»: (1) the FAQ's file-exchange anchor form is now exercised by `scripts/e2e-tss-local.sh`
+(`signerd status --out` → `owner-cli --status-file … --out anchor.msg anchor …` → `signerd submit --file`
+→ `tpm_bound: true`, PASSED on the laptop TPM); (2) the image recipe for the product path, branch
+`t2-tss-image`, for your image/compose review before any deployment:
+
+| File | Change |
+|---|---|
+| `docker/Dockerfile.enclave-build` | `pkg-config libtss2-dev` in the first apt layer; daemon `cargo build … --features sgx,tss`; MANIFEST gains `signerd features: sgx,tss` and the `libtss2-dev` version |
+| `btcpay/docker/Dockerfile.signerd-t2` | runtime `libtss2-esys-3.0.2-0 libtss2-tctildr0 libtss2-tcti-device0 libtss2-mu0 libtss2-sys1` (jammy 3.2.0-1ubuntu1.1) |
+| `btcpay/docker/opt-add-tee-signer-tpm.custom.yml` (new) | opt-in overlay for the sidecar: `/dev/tpmrm0`, `group_add ${TEE_TPM_GID:?}`, `SIGNERD_TPM=${TEE_TPM_SPEC:-tss:device:/dev/tpmrm0?ak=0x81000200&nv=0x01800200}`, `SIGNERD_TPM_AUTH=${TEE_TPM_AUTH:?}` — both `:?` so a forgotten gid or password refuses to start |
+| `btcpay/docker/stack.sh` | `gen` copies all `opt-add-tee-signer*.custom.yml` fragments (only the named ones take part) |
+| `deploy/README.md`, `docs/FAQ{,_ru}.md`, `docs/ENCLAVE.md` §4c, `docs/DESIGN.md` §10 | the product path spelled out: ceremony + new wallet, one-shot `tpm-setup` before the sidecar, the overlay, the four anchor steps |
+
+**Gate 5 (reproducibility), Hetzner box, 2026-11-11:** the same sources (current `main`) built twice —
+`~/tee-signer-out/r9-main-baseline` under the old build image (`tee-signer-build:2.28`, no libtss2) and
+`~/tee-signer-out/r9-tss` under the new one (`tee-signer-build:2.28-tss`) — `docker/compare-builds.sh`:
+`REPRODUCIBLE: MRENCLAVE c7c5d8ef373b57083034693616b06b2dc0f12b345ee905b8b0d8be8d4f527db0; attributes/mask,
+misc, ProdID/SVN identical; enclave.so byte-identical`. Both runs `build+gates: OK` (dev key). So libtss2
+changes the daemon only: `signerd` 9.3 MB → 11.5 MB, `tpm-setup --help` answers inside the T2 image, `ldd`
+resolves `libtss2-esys/tctildr/mu/sys`. The T2 image built from `r9-tss` under a check tag was removed
+again together with its dev-signed tarball (never shipped); the two output directories stay as evidence.
+
+**Compose merge check (box, the generator container in a temp dir of ours, removed):** with
+`BTCPAYGEN_ADDITIONAL_FRAGMENTS=opt-save-storage-xxs;opt-add-tee-signer-tpm.custom;opt-add-tee-signer-t2.custom`
+the generated `tee-signer` service has the three devices (`sgx_enclave`, `sgx_provision`, `tpmrm0`), the
+merged environment incl. `SIGNERD_TPM`/`SIGNERD_TPM_AUTH`, the volumes, and `group_add` — nothing else moved.
+
+**What this means for the product path (stated for the owner too):** `c7c5d8ef…` is the measurement of
+current `main`, which has R9 *inside the enclave* (TPM_NONCE/TPM_PROOF ops, the verifier); the live T2
+enclave `ca5c1a6a…` predates it. Putting the vTPM in front of the T2 signer is therefore a **new enclave
+build** — ceremony-signed (`SIGN=ceremony PHASE=gendata/catsig`, as on 2026-11-10) — **and a new wallet**
+(the sealed state does not cross MRENCLAVEs; FAQ "How do I move to a new enclave build"; the owner's
+`t2-r7-redeploy.sh` is the worked example). Nothing was loaded on the node; the live stack is untouched.
+
+**Auditor's verdict, same day (verbatim excerpt):** «T2 tss-recipe — ACK / IMPL-PASS firsthand @e9400db. diff
+трогает ТОЛЬКО docker/ + btcpay/docker/ + docs — ни одного enclave/core/signerd-source. Строка сборки
+ЭНКЛАВА не изменена; изменена только сборка демона (`--features sgx` → `sgx,tss`); libtss2-dev — host build-dep
+⇒ enclave.so обязан быть байт-идентичен ⇒ MRENCLAVE неизменен; compare-builds.sh — эмпирическое подтверждение
+необходимого свойства. Оверлей fail-closed (`:?` на gid и auth, device-gated). Consequence AFFIRM: vTPM-путь =
+новая ceremony-signed сборка + новый кошелёк. Не верил firsthand: сам прогон gate 5 и item 1 — беру на отчёт.
+ВЕРДИКТ: мерж t2-tss-image — ACK. Деплоя нет до owner vTPM-шага + моей image/compose-проверки в тот момент.»
+Merged to `main` on that ack.
+
