@@ -185,10 +185,7 @@ impl<'a> Dec<'a> {
         core::str::from_utf8(b).map(String::from).map_err(|_| DecodeError)
     }
     /// An optional value.
-    pub fn option<T>(
-        &mut self,
-        f: impl FnOnce(&mut Self) -> Result<T, DecodeError>,
-    ) -> Result<Option<T>, DecodeError> {
+    pub fn option<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, DecodeError>) -> Result<Option<T>, DecodeError> {
         match self.u8()? {
             0 => Ok(None),
             1 => Ok(Some(f(self)?)),

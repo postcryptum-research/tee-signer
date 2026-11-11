@@ -61,7 +61,9 @@ pub fn build(
     // the previous transaction: given by the operator (from their own node), else from the Esplora
     let hex_tx = match prev_tx_hex {
         Some(h) => h.trim().to_string(),
-        None => reqwest::blocking::get(format!("{}/tx/{txid}/hex", esplora.trim_end_matches('/')))?.error_for_status()?.text()?,
+        None => reqwest::blocking::get(format!("{}/tx/{txid}/hex", esplora.trim_end_matches('/')))?
+            .error_for_status()?
+            .text()?,
     };
     let prev: Transaction = deserialize(&hex::decode(hex_tx.trim())?)?;
     if prev.compute_txid() != txid {
@@ -74,17 +76,28 @@ pub fn build(
         bail!("that output is not the wallet's address at {branch}/{index}");
     }
     let in_amount = prevout.value.to_sat();
-    let change = in_amount.checked_sub(amount).and_then(|v| v.checked_sub(fee)).ok_or_else(|| anyhow!("amount + fee exceed the coin"))?;
+    let change = in_amount
+        .checked_sub(amount)
+        .and_then(|v| v.checked_sub(fee))
+        .ok_or_else(|| anyhow!("amount + fee exceed the coin"))?;
     let dest = Address::from_str(to)?.require_network(net.to_bitcoin())?;
     let mut outputs = vec![TxOut { value: Amount::from_sat(amount), script_pubkey: dest.script_pubkey() }];
     let change_pk = child(&x, 1, change_index)?;
     if change >= 546 {
-        outputs.push(TxOut { value: Amount::from_sat(change), script_pubkey: ScriptBuf::new_p2wpkh(&change_pk.wpubkey_hash()) });
+        outputs.push(TxOut {
+            value: Amount::from_sat(change),
+            script_pubkey: ScriptBuf::new_p2wpkh(&change_pk.wpubkey_hash()),
+        });
     }
     let tx = Transaction {
         version: Version::TWO,
         lock_time: LockTime::ZERO,
-        input: vec![TxIn { previous_output: OutPoint { txid, vout }, script_sig: ScriptBuf::new(), sequence: Sequence::ENABLE_RBF_NO_LOCKTIME, witness: Witness::new() }],
+        input: vec![TxIn {
+            previous_output: OutPoint { txid, vout },
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+            witness: Witness::new(),
+        }],
         output: outputs,
     };
     let mut psbt = Psbt::from_unsigned_tx(tx)?;
@@ -129,7 +142,10 @@ pub fn finalize(s: &str) -> Result<String> {
 }
 
 pub fn broadcast(esplora: &str, tx_hex: &str) -> Result<String> {
-    let r = reqwest::blocking::Client::new().post(format!("{}/tx", esplora.trim_end_matches('/'))).body(tx_hex.trim().to_string()).send()?;
+    let r = reqwest::blocking::Client::new()
+        .post(format!("{}/tx", esplora.trim_end_matches('/')))
+        .body(tx_hex.trim().to_string())
+        .send()?;
     let status = r.status();
     let text = r.text()?;
     if !status.is_success() {

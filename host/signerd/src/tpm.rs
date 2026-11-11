@@ -97,7 +97,11 @@ impl SoftwareTpm {
         Ok(t)
     }
     fn save(&self) -> Result<()> {
-        let f = SoftFile { sk_hex: hex::encode(self.sk.to_bytes()), name_hex: hex::encode(self.name), counter: self.counter };
+        let f = SoftFile {
+            sk_hex: hex::encode(self.sk.to_bytes()),
+            name_hex: hex::encode(self.name),
+            counter: self.counter,
+        };
         let tmp = self.path.with_extension("tmp");
         {
             use std::os::unix::fs::OpenOptionsExt;
@@ -125,10 +129,19 @@ impl SoftwareTpm {
 
 impl TpmTransport for SoftwareTpm {
     fn describe(&self) -> String {
-        format!("software:{}{}", self.path.display(), self.lie.as_ref().map(|l| format!(" (LYING: {l})")).unwrap_or_default())
+        format!(
+            "software:{}{}",
+            self.path.display(),
+            self.lie.as_ref().map(|l| format!(" (LYING: {l})")).unwrap_or_default()
+        )
     }
     fn info(&mut self) -> Result<TpmInfo> {
-        Ok(TpmInfo { ak_pk_hex: hex::encode(self.ak_pk()), nv_name_hex: hex::encode(self.name), counter: self.counter, transport: self.describe() })
+        Ok(TpmInfo {
+            ak_pk_hex: hex::encode(self.ak_pk()),
+            nv_name_hex: hex::encode(self.name),
+            counter: self.counter,
+            transport: self.describe(),
+        })
     }
     fn certify(&mut self, nonce: &[u8; 32]) -> Result<TpmProof> {
         let signer_name = [0u8; NV_NAME_LEN];
@@ -180,7 +193,8 @@ struct IncrementOut {
 
 impl RemoteTpm {
     pub fn new(url: &str) -> Result<Self> {
-        let rest = url.strip_prefix("http://").ok_or_else(|| anyhow!("remote tpm: http:// only (loopback or a tunnel)"))?;
+        let rest =
+            url.strip_prefix("http://").ok_or_else(|| anyhow!("remote tpm: http:// only (loopback or a tunnel)"))?;
         let (hostport, path) = match rest.find('/') {
             Some(i) => (&rest[..i], rest[i..].trim_end_matches('/').to_string()),
             None => (rest, String::new()),

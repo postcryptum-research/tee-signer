@@ -179,8 +179,11 @@ fn piv_locator(locator: &str) -> Option<Result<(hw_signer::yubikey_piv::PivSlot,
         None => (rest, None),
     };
     Some((|| {
-        let slot: hw_signer::yubikey_piv::PivSlot = slot.parse().map_err(|e| anyhow!("PIV slot {slot:?}: {e} (9a, 9c, 9d, 9e or 82..95)"))?;
-        let serial = serial.map(|n| n.parse::<u32>().map_err(|_| anyhow!("YubiKey serial {n:?}: decimal, as `ykman info` prints it"))).transpose()?;
+        let slot: hw_signer::yubikey_piv::PivSlot =
+            slot.parse().map_err(|e| anyhow!("PIV slot {slot:?}: {e} (9a, 9c, 9d, 9e or 82..95)"))?;
+        let serial = serial
+            .map(|n| n.parse::<u32>().map_err(|_| anyhow!("YubiKey serial {n:?}: decimal, as `ykman info` prints it")))
+            .transpose()?;
         Ok((slot, serial))
     })())
 }
@@ -190,9 +193,14 @@ fn piv_locator(locator: &str) -> Option<Result<(hw_signer::yubikey_piv::PivSlot,
 /// a CACHED touch would let malware on this machine piggyback on one touch. With `for_signing`
 /// the PIN is prompted at the first signature (never stored, never taken from the environment);
 /// without, the key can show its public key and nothing else.
-fn open_piv(slot: hw_signer::yubikey_piv::PivSlot, serial: Option<u32>, for_signing: bool) -> Result<hw_signer::yubikey_piv::YubiKeyPivSigner> {
+fn open_piv(
+    slot: hw_signer::yubikey_piv::PivSlot,
+    serial: Option<u32>,
+    for_signing: bool,
+) -> Result<hw_signer::yubikey_piv::YubiKeyPivSigner> {
     use hw_signer::yubikey_piv::{slot_name, YubiKeyPivSigner};
-    let y = YubiKeyPivSigner::open(serial, slot).map_err(|e| anyhow!("YubiKey open piv:{}: {e} (is pcscd running? is the key plugged in?)", slot_name(slot)))?;
+    let y = YubiKeyPivSigner::open(serial, slot)
+        .map_err(|e| anyhow!("YubiKey open piv:{}: {e} (is pcscd running? is the key plugged in?)", slot_name(slot)))?;
     let name = format!("piv:{}@{}", slot_name(slot), y.serial());
     owner_slot_policy_ok(&name, y.pin_policy(), y.touch_policy())?;
     let y = y.with_touch_notice(move || eprintln!("touch the YubiKey to sign ({name})…"));
@@ -207,7 +215,11 @@ fn open_piv(slot: hw_signer::yubikey_piv::PivSlot, serial: Option<u32>, for_sign
 /// `Once` would let one PIN cover a whole card session, `Cached` lets one touch cover 15 s of
 /// signatures, `Never` removes the human from the loop. `Default` is refused too: what it means
 /// depends on the slot, and an owner key is generated with explicit policies.
-fn owner_slot_policy_ok(name: &str, pin: hw_signer::yubikey_piv::PivPinPolicy, touch: hw_signer::yubikey_piv::PivTouchPolicy) -> Result<()> {
+fn owner_slot_policy_ok(
+    name: &str,
+    pin: hw_signer::yubikey_piv::PivPinPolicy,
+    touch: hw_signer::yubikey_piv::PivTouchPolicy,
+) -> Result<()> {
     use hw_signer::yubikey_piv::{PivPinPolicy, PivTouchPolicy};
     if matches!(pin, PivPinPolicy::Always) && matches!(touch, PivTouchPolicy::Always) {
         return Ok(());
@@ -236,7 +248,8 @@ fn open_locator(locator: &str) -> Result<OpenKey> {
     if let Some(h) = tpm_handle(locator) {
         let handle = h?;
         let pass = passphrase(&format!("authValue for the TPM key at {locator}"), false)?;
-        let t = hw_signer::tpm::TpmSigner::open_persistent_protected(handle, pass.as_bytes()).map_err(|e| anyhow!("TPM open {locator}: {e}"))?;
+        let t = hw_signer::tpm::TpmSigner::open_persistent_protected(handle, pass.as_bytes())
+            .map_err(|e| anyhow!("TPM open {locator}: {e}"))?;
         let pk = tpm_pk(&t)?;
         return Ok(OpenKey { signer: Signer::Tpm(t), pk });
     }
@@ -267,8 +280,10 @@ fn hw_pk(s: &impl hw_signer::HardwareSigner, what: &str) -> Result<[u8; 65]> {
 fn piv_certs(y: &hw_signer::yubikey_piv::YubiKeyPivSigner) -> Result<(Vec<u8>, Vec<u8>)> {
     use der::Encode as _;
     let slot_der = y.attestation().map_err(|e| anyhow!("slot attestation: {e}"))?;
-    let mut yk = yubikey::YubiKey::open_by_serial(yubikey::Serial(y.serial())).map_err(|e| anyhow!("YubiKey {}: {e}", y.serial()))?;
-    let c = yubikey::certificate::Certificate::read(&mut yk, hw_signer::yubikey_piv::PivSlot::Attestation).map_err(|e| anyhow!("read f9 certificate: {e}"))?;
+    let mut yk = yubikey::YubiKey::open_by_serial(yubikey::Serial(y.serial()))
+        .map_err(|e| anyhow!("YubiKey {}: {e}", y.serial()))?;
+    let c = yubikey::certificate::Certificate::read(&mut yk, hw_signer::yubikey_piv::PivSlot::Attestation)
+        .map_err(|e| anyhow!("read f9 certificate: {e}"))?;
     Ok((slot_der, c.cert.to_der()?))
 }
 
@@ -288,7 +303,8 @@ fn owner_pk_of_locator(locator: &str) -> Result<([u8; 65], String)> {
         let y = open_piv(slot, serial, false)?;
         let pk = hw_pk(&y, "YubiKey")?;
         let (slot_der, f9_der) = piv_certs(&y)?;
-        let a = piv_attest::verify(&slot_der, &f9_der, y.serial(), &pk).map_err(|e| anyhow!("{locator} cannot become the owner: {e}"))?;
+        let a = piv_attest::verify(&slot_der, &f9_der, y.serial(), &pk)
+            .map_err(|e| anyhow!("{locator} cannot become the owner: {e}"))?;
         eprintln!(
             "ATTESTED: {locator} generated on YubiKey {} (firmware {}), PIN {} / touch {}, chain to {}",
             a.serial,
@@ -297,7 +313,10 @@ fn owner_pk_of_locator(locator: &str) -> Result<([u8; 65], String)> {
             a.touch_policy,
             a.chain.last().cloned().unwrap_or_default()
         );
-        return Ok((pk, format!("piv:{}@{} (attested, firmware {})", hw_signer::yubikey_piv::slot_name(slot), a.serial, a.firmware)));
+        return Ok((
+            pk,
+            format!("piv:{}@{} (attested, firmware {})", hw_signer::yubikey_piv::slot_name(slot), a.serial, a.firmware),
+        ));
     }
     Ok((pubkey_of(Path::new(locator))?, locator.to_string()))
 }
@@ -315,7 +334,8 @@ fn tpm_handle_in_use(handle: u32) -> Result<bool> {
     let mut ctx = tss_esapi::Context::new(tcti).map_err(|e| anyhow!("TPM context: {e}"))?;
     let mut from = 0x8100_0000u32;
     loop {
-        let (data, more) = ctx.get_capability(CapabilityType::Handles, from, 64).map_err(|e| anyhow!("TPM capability: {e}"))?;
+        let (data, more) =
+            ctx.get_capability(CapabilityType::Handles, from, 64).map_err(|e| anyhow!("TPM capability: {e}"))?;
         let CapabilityData::Handles(list) = data else { return Ok(false) };
         let handles: Vec<u32> = list.into_inner().into_iter().map(u32::from).collect();
         if handles.contains(&handle) {
@@ -337,10 +357,12 @@ fn keygen_tpm(handle: u32, role: &str) -> Result<[u8; 65]> {
     if tpm_handle_in_use(handle)? {
         bail!("REFUSED: TPM persistent handle 0x{handle:08x} is already in use by another key; never evicted — pick a free one with --handle (tpm2_getcap handles-persistent)");
     }
-    let pass = passphrase(&format!("authValue for the {role} key in the TPM (typed at every use, never stored)"), true)?;
+    let pass =
+        passphrase(&format!("authValue for the {role} key in the TPM (typed at every use, never stored)"), true)?;
     let mut t = hw_signer::tpm::TpmSigner::create_protected_under(hw_signer::tpm::DEFAULT_PARENT, pass.as_bytes())
         .map_err(|e| anyhow!("TPM create: {e}"))?;
-    t.persist(handle).map_err(|e| anyhow!("TPM persist at 0x{handle:08x}: {e} (handle in use? pick another with --handle)"))?;
+    t.persist(handle)
+        .map_err(|e| anyhow!("TPM persist at 0x{handle:08x}: {e} (handle in use? pick another with --handle)"))?;
     tpm_pk(&t)
 }
 
@@ -391,7 +413,7 @@ fn sign_message(key: &OpenKey, msg: &mut Message) -> Result<()> {
         | Message::RotateOwner { sig, .. }
         | Message::Recover { sig, .. }
         | Message::Arm { sig, .. }
-            | Message::Anchor { sig, .. }
+        | Message::Anchor { sig, .. }
         | Message::WitnessToken { sig, .. } => *sig = s,
     }
     Ok(())
@@ -540,7 +562,10 @@ fn hash_of(s: &str) -> Result<[u8; 32]> {
 
 /// `wpkh([fp/84h/1h/0h]tpub.../<0;1>/*)` or `wpkh(tpub.../0/*)` → (xpub bytes, branches)
 fn parse_descriptor(d: &str) -> Result<([u8; 78], Vec<u32>)> {
-    let inner = d.strip_prefix("wpkh(").and_then(|x| x.strip_suffix(')')).ok_or_else(|| anyhow!("v1 accepts wpkh(KEY/branch/*) descriptors only"))?;
+    let inner = d
+        .strip_prefix("wpkh(")
+        .and_then(|x| x.strip_suffix(')'))
+        .ok_or_else(|| anyhow!("v1 accepts wpkh(KEY/branch/*) descriptors only"))?;
     let inner = inner.split_once('#').map(|(a, _)| a).unwrap_or(inner);
     let key_part = if let Some(rest) = inner.strip_prefix('[') {
         rest.split_once(']').map(|(_, k)| k).ok_or_else(|| anyhow!("origin"))?
@@ -585,7 +610,8 @@ fn to_mandate(j: &MandateJson) -> Result<Mandate> {
     for t in &j.destinations.trusted {
         let matcher = match (&t.address, &t.descriptor) {
             (Some(a), None) => {
-                let addr = bitcoin::Address::from_str(a)?.require_network(bnet).map_err(|e| anyhow!("address {a}: {e}"))?;
+                let addr =
+                    bitcoin::Address::from_str(a)?.require_network(bnet).map_err(|e| anyhow!("address {a}: {e}"))?;
                 Matcher::Address { script_pubkey: addr.script_pubkey().to_bytes() }
             }
             (None, Some(d)) => {
@@ -594,7 +620,12 @@ fn to_mandate(j: &MandateJson) -> Result<Mandate> {
             }
             _ => bail!("trusted '{}': exactly one of address / descriptor", t.label),
         };
-        trusted.push(TrustedDest { label: t.label.clone(), matcher, max_per_tx: t.max_per_tx, max_per_window: t.max_per_window });
+        trusted.push(TrustedDest {
+            label: t.label.clone(),
+            matcher,
+            max_per_tx: t.max_per_tx,
+            max_per_window: t.max_per_window,
+        });
     }
     let checkpoint = match &j.chain {
         Some(c) => Checkpoint {
@@ -608,14 +639,26 @@ fn to_mandate(j: &MandateJson) -> Result<Mandate> {
         None => bail!("chain.checkpoint missing: run `policy build --node-rpc …` to fill it from a node"),
     };
     let witness_pk = match &j.freshness.witness_pub_key {
-        Some(h) => Some(<[u8; 65]>::try_from(hex::decode(h)?.as_slice()).map_err(|_| anyhow!("witness key is 65 bytes hex"))?),
+        Some(h) => {
+            Some(<[u8; 65]>::try_from(hex::decode(h)?.as_slice()).map_err(|_| anyhow!("witness key is 65 bytes hex"))?)
+        }
         None => None,
     };
     let m = Mandate {
         version: j.version,
         network,
-        wallet: WalletSpec { fingerprint, account: AccountPath { purpose: acc[0], coin: acc[1], account: acc[2] }, script_types },
-        destinations: Destinations { trusted, unlisted: ClassCaps { max_per_tx: j.destinations.unlisted.max_per_tx, max_per_window: j.destinations.unlisted.max_per_window } },
+        wallet: WalletSpec {
+            fingerprint,
+            account: AccountPath { purpose: acc[0], coin: acc[1], account: acc[2] },
+            script_types,
+        },
+        destinations: Destinations {
+            trusted,
+            unlisted: ClassCaps {
+                max_per_tx: j.destinations.unlisted.max_per_tx,
+                max_per_window: j.destinations.unlisted.max_per_window,
+            },
+        },
         limits: Limits {
             max_per_tx: j.limits.max_per_tx,
             window_blocks: j.limits.window.blocks,
@@ -660,14 +703,30 @@ fn describe(m: &Mandate) -> Vec<(String, String)> {
     let mut v = vec![
         ("network".into(), format!("{:?}", m.network)),
         ("wallet.fingerprint".into(), hex::encode(m.wallet.fingerprint)),
-        ("wallet.account".into(), format!("{}'/{}'/{}'", m.wallet.account.purpose, m.wallet.account.coin, m.wallet.account.account)),
+        (
+            "wallet.account".into(),
+            format!("{}'/{}'/{}'", m.wallet.account.purpose, m.wallet.account.coin, m.wallet.account.account),
+        ),
     ];
     for t in &m.destinations.trusted {
         let how = match &t.matcher {
-            Matcher::Address { script_pubkey } => format!("address {}", bitcoin::Address::from_script(bitcoin::Script::from_bytes(script_pubkey), m.network.to_bitcoin()).map(|a| a.to_string()).unwrap_or_else(|_| hex::encode(script_pubkey))),
-            Matcher::Descriptor { xpub, branches, gap } => format!("descriptor {} branches {:?} gap {}", Xpub::decode(xpub).map(|x| x.to_string()).unwrap_or_default(), branches, gap),
+            Matcher::Address { script_pubkey } => format!(
+                "address {}",
+                bitcoin::Address::from_script(bitcoin::Script::from_bytes(script_pubkey), m.network.to_bitcoin())
+                    .map(|a| a.to_string())
+                    .unwrap_or_else(|_| hex::encode(script_pubkey))
+            ),
+            Matcher::Descriptor { xpub, branches, gap } => format!(
+                "descriptor {} branches {:?} gap {}",
+                Xpub::decode(xpub).map(|x| x.to_string()).unwrap_or_default(),
+                branches,
+                gap
+            ),
         };
-        v.push((format!("trusted[{}]", t.label), format!("{how}; maxPerTx {} maxPerWindow {}", t.max_per_tx, t.max_per_window)));
+        v.push((
+            format!("trusted[{}]", t.label),
+            format!("{how}; maxPerTx {} maxPerWindow {}", t.max_per_tx, t.max_per_window),
+        ));
     }
     let l = &m.limits;
     v.extend([
@@ -681,13 +740,34 @@ fn describe(m: &Mandate) -> Vec<(String, String)> {
         ("limits.maxInputs/maxOutputs".into(), format!("{}/{}", l.max_inputs, l.max_outputs)),
         ("limits.ownIndexGap".into(), l.own_index_gap.to_string()),
         ("limits.maxReorg".into(), l.max_reorg.to_string()),
-        ("rules".into(), format!("sighash {:?}, payjoin {:?}, opReturn {:?}, rbf {}", m.rules.sighash, m.rules.payjoin, m.rules.op_return, m.rules.rbf)),
+        (
+            "rules".into(),
+            format!(
+                "sighash {:?}, payjoin {:?}, opReturn {:?}, rbf {}",
+                m.rules.sighash, m.rules.payjoin, m.rules.op_return, m.rules.rbf
+            ),
+        ),
         ("chain.checkpoint".into(), {
             let mut h = m.checkpoint.hash;
             h.reverse();
-            format!("{} @ {} (bits {:08x}, period start {} bits {:08x})", hex::encode(h), m.checkpoint.height, m.checkpoint.bits, m.checkpoint.period_start_time, m.checkpoint.period_bits)
+            format!(
+                "{} @ {} (bits {:08x}, period start {} bits {:08x})",
+                hex::encode(h),
+                m.checkpoint.height,
+                m.checkpoint.bits,
+                m.checkpoint.period_start_time,
+                m.checkpoint.period_bits
+            )
         }),
-        ("freshness".into(), format!("required {}, maxTipLag {}, witness {}", m.freshness.required, m.freshness.max_tip_lag, m.freshness.witness_pk.map(hex::encode).unwrap_or_else(|| "none".into()))),
+        (
+            "freshness".into(),
+            format!(
+                "required {}, maxTipLag {}, witness {}",
+                m.freshness.required,
+                m.freshness.max_tip_lag,
+                m.freshness.witness_pk.map(hex::encode).unwrap_or_else(|| "none".into())
+            ),
+        ),
         ("validity.notAfterHeight".into(), m.not_after_height.to_string()),
         ("timelockBlocks".into(), m.timelock_blocks.to_string()),
         ("hash".into(), hex::encode(m.hash())),
@@ -785,7 +865,11 @@ impl Signerd {
         if self.offline.is_some() {
             bail!("no tunnel: nothing is sent from this machine; use --out <file> and carry the file to the server ({path})");
         }
-        let r = reqwest::blocking::Client::new().post(format!("{}{path}", self.url)).bearer_auth(&self.token).json(&body).send()?;
+        let r = reqwest::blocking::Client::new()
+            .post(format!("{}{path}", self.url))
+            .bearer_auth(&self.token)
+            .json(&body)
+            .send()?;
         let status = r.status();
         let v: serde_json::Value = r.json()?;
         if !status.is_success() {
@@ -795,7 +879,9 @@ impl Signerd {
     }
     fn enclave_id(&self) -> Result<[u8; 32]> {
         let st = self.get("/v1/status")?;
-        let pk = hex::decode(st["identity_pk"].as_str().ok_or_else(|| anyhow!("status has no identity_pk (not initialised?)"))?)?;
+        let pk = hex::decode(
+            st["identity_pk"].as_str().ok_or_else(|| anyhow!("status has no identity_pk (not initialised?)"))?,
+        )?;
         Ok(signer_core::sha256(&pk))
     }
     fn nonce(&self) -> Result<u64> {
@@ -832,7 +918,9 @@ fn note_seq(path: &Path, seq: u64) -> Result<()> {
 fn value_or_file(value: &Option<String>, file: &Option<PathBuf>, what: &str) -> Result<String> {
     match (value, file) {
         (Some(v), _) => Ok(v.trim().to_string()),
-        (None, Some(f)) => Ok(std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?.trim().to_string()),
+        (None, Some(f)) => {
+            Ok(std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?.trim().to_string())
+        }
         (None, None) => bail!("{what}"),
     }
 }
@@ -1290,15 +1378,29 @@ fn unwrap_server_file(v: serde_json::Value) -> Result<serde_json::Value> {
 
 fn client(cli: &Cli) -> Result<Signerd> {
     if let Some(f) = &cli.status_file {
-        let st = unwrap_server_file(serde_json::from_str(&std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?)?)?;
-        return Ok(Signerd { url: String::new(), token: String::new(), record: cli.wallet_record.clone(), offline: Some(st), out: cli.out.clone() });
+        let st = unwrap_server_file(serde_json::from_str(
+            &std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?,
+        )?)?;
+        return Ok(Signerd {
+            url: String::new(),
+            token: String::new(),
+            record: cli.wallet_record.clone(),
+            offline: Some(st),
+            out: cli.out.clone(),
+        });
     }
     let token = match (&cli.token, &cli.token_file) {
         (Some(t), _) => t.clone(),
         (None, Some(f)) => std::fs::read_to_string(f)?.trim().to_string(),
         _ => bail!("--token or --token-file (live), or --status-file (no tunnel)"),
     };
-    Ok(Signerd { url: cli.signerd.trim_end_matches('/').to_string(), token, record: cli.wallet_record.clone(), offline: None, out: cli.out.clone() })
+    Ok(Signerd {
+        url: cli.signerd.trim_end_matches('/').to_string(),
+        token,
+        record: cli.wallet_record.clone(),
+        offline: None,
+        out: cli.out.clone(),
+    })
 }
 
 fn submit_message(sd: &Signerd, msg: &Message) -> Result<()> {
@@ -1334,7 +1436,11 @@ fn main() -> Result<()> {
             let out = out.clone().ok_or_else(|| anyhow!("--out is required for --backend file"))?;
             let out = &out;
             let pk = keygen(out, role)?;
-            println!("{} key written to {} (scrypt N=2^18 + AES-256-GCM; keep it OFF the BTCPay box)", role, out.display());
+            println!(
+                "{} key written to {} (scrypt N=2^18 + AES-256-GCM; keep it OFF the BTCPay box)",
+                role,
+                out.display()
+            );
             println!("pubkey: {}", hex::encode(pk));
         }
         Cmd::Pubkey { key } => {
@@ -1371,9 +1477,31 @@ fn main() -> Result<()> {
                 eprintln!("certificates and record written to {} (they name the device's serial: keep them out of the repository)", dir.display());
             }
             println!("{}", serde_json::to_string_pretty(&a)?);
-            eprintln!("ATTESTED: generated on YubiKey {} (firmware {}), PIN {} / touch {}, chain {}", a.serial, a.firmware, a.pin_policy, a.touch_policy, a.chain.join(" <- "));
+            eprintln!(
+                "ATTESTED: generated on YubiKey {} (firmware {}), PIN {} / touch {}, chain {}",
+                a.serial,
+                a.firmware,
+                a.pin_policy,
+                a.touch_policy,
+                a.chain.join(" <- ")
+            );
         }
-        Cmd::Init { network, owner, recovery_pk, recovery_pk_file, out, expect_mrenclave, signing_key_label, accept, pccs, accept_auto_arm, response, quote, nonce, nonce_file } => {
+        Cmd::Init {
+            network,
+            owner,
+            recovery_pk,
+            recovery_pk_file,
+            out,
+            expect_mrenclave,
+            signing_key_label,
+            accept,
+            pccs,
+            accept_auto_arm,
+            response,
+            quote,
+            nonce,
+            nonce_file,
+        } => {
             let recovery_pk = &value_or_file(recovery_pk, recovery_pk_file, "--recovery-pk or --recovery-pk-file")?;
             let nonce = &match (nonce, nonce_file) {
                 (None, Some(f)) => Some(std::fs::read_to_string(f)?.trim().to_string()),
@@ -1381,7 +1509,13 @@ fn main() -> Result<()> {
             };
             // no tunnel: with a carried response nothing is sent from this machine at all
             let sd = match response {
-                Some(_) => Signerd { url: String::new(), token: String::new(), record: cli.wallet_record.clone(), offline: Some(serde_json::Value::Null), out: cli.out.clone() },
+                Some(_) => Signerd {
+                    url: String::new(),
+                    token: String::new(),
+                    record: cli.wallet_record.clone(),
+                    offline: Some(serde_json::Value::Null),
+                    out: cli.out.clone(),
+                },
                 None => client(&cli)?,
             };
             let (opk, owner_label) = owner_pk_of_locator(owner)?;
@@ -1392,19 +1526,28 @@ fn main() -> Result<()> {
             }
             let net = network_of(network)?;
             let r = match response {
-                Some(f) => unwrap_server_file(serde_json::from_str(&std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?)?)?,
-                None => sd.post("/v1/init", serde_json::json!({"network": net as u8, "owner_pk_hex": owner_pk, "recovery_pk_hex": recovery_pk}))?,
+                Some(f) => unwrap_server_file(serde_json::from_str(
+                    &std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?,
+                )?)?,
+                None => sd.post(
+                    "/v1/init",
+                    serde_json::json!({"network": net as u8, "owner_pk_hex": owner_pk, "recovery_pk_hex": recovery_pk}),
+                )?,
             };
             let card_hex = r["card_hex"].as_str().unwrap_or("").to_string();
             let card = IdentityCard::decode(&hex::decode(&card_hex)?).map_err(|_| anyhow!("card"))?;
             let identity_pk = hex::decode(r["identity_pk"].as_str().unwrap_or(""))?;
-            let card_sig = <[u8; 64]>::try_from(hex::decode(r["card_sig_hex"].as_str().unwrap_or(""))?.as_slice()).map_err(|_| anyhow!("card sig"))?;
+            let card_sig = <[u8; 64]>::try_from(hex::decode(r["card_sig_hex"].as_str().unwrap_or(""))?.as_slice())
+                .map_err(|_| anyhow!("card sig"))?;
             let secp = bitcoin::secp256k1::Secp256k1::new();
             let idpk = <[u8; 33]>::try_from(identity_pk.as_slice()).map_err(|_| anyhow!("identity pk"))?;
             if !signer_core::sign::verify_digest_secp(&secp, &idpk, &card.digest(), &card_sig) {
                 bail!("identity card signature does not verify — do not fund this wallet");
             }
-            if card.identity_pk != idpk || Xpub::decode(&card.xpub).map(|x| x.to_string()).unwrap_or_default() != r["xpub"].as_str().unwrap_or("") {
+            if card.identity_pk != idpk
+                || Xpub::decode(&card.xpub).map(|x| x.to_string()).unwrap_or_default()
+                    != r["xpub"].as_str().unwrap_or("")
+            {
                 bail!("identity card does not name the returned wallet — do not fund this wallet");
             }
             let mut rec = WalletRecord {
@@ -1443,12 +1586,26 @@ fn main() -> Result<()> {
                 if sd.offline.is_some() && quote.is_none() {
                     bail!("REFUSED: a T2 card with no tunnel needs the quote as a file: on the server `signerd quote --nonce <your 32-byte hex> --out quote.json`, then here `--quote quote.json --nonce <the same hex>`; no record is written");
                 }
-                if let Err(e) = attest_record(&sd, &mut rec, expect_mrenclave.clone(), None, signing_key_label.clone(), accept, pccs, true, quote.clone(), nonce.clone()) {
+                if let Err(e) = attest_record(
+                    &sd,
+                    &mut rec,
+                    expect_mrenclave.clone(),
+                    None,
+                    signing_key_label.clone(),
+                    accept,
+                    pccs,
+                    true,
+                    quote.clone(),
+                    nonce.clone(),
+                ) {
                     bail!("REFUSED: attestation failed — {e}\nThe wallet record is NOT written. The enclave holds a fresh, untrusted key set: wipe signerd's state dir and initialise again; do not fund.");
                 }
                 rec.trust_label = Some("attested".into());
             } else {
-                rec.trust_label = Some(format!("TOFU: tier {} — no attestation exists on this hardware; the identity card is trusted on first use", rec.tier));
+                rec.trust_label = Some(format!(
+                    "TOFU: tier {} — no attestation exists on this hardware; the identity card is trusted on first use",
+                    rec.tier
+                ));
                 println!("WARNING: {} (not attested)", rec.trust_label.as_deref().unwrap_or(""));
             }
             std::fs::write(out, serde_json::to_string_pretty(&rec)?)?;
@@ -1467,17 +1624,25 @@ fn main() -> Result<()> {
                 let node = Node::new(url, cookie)?;
                 let height = match checkpoint_height {
                     Some(h) => *h,
-                    None => node.rpc("getblockchaininfo", serde_json::json!([]))?["headers"].as_u64().unwrap_or(0) as u32 - 6,
+                    None => {
+                        node.rpc("getblockchaininfo", serde_json::json!([]))?["headers"].as_u64().unwrap_or(0) as u32
+                            - 6
+                    }
                 };
                 j.chain = Some(ChainJson { checkpoint: node.checkpoint(height)? });
                 println!("checkpoint filled from the node at height {height}");
             } else if let Some(es) = esplora {
                 let es = es.trim_end_matches('/');
-                let tip: u32 = reqwest::blocking::get(format!("{es}/blocks/tip/height"))?.error_for_status()?.text()?.trim().parse()?;
+                let tip: u32 = reqwest::blocking::get(format!("{es}/blocks/tip/height"))?
+                    .error_for_status()?
+                    .text()?
+                    .trim()
+                    .parse()?;
                 let height = checkpoint_height.unwrap_or(tip.saturating_sub(6));
                 let hdr = |h: u32| -> Result<serde_json::Value> {
                     let hash = reqwest::blocking::get(format!("{es}/block-height/{h}"))?.error_for_status()?.text()?;
-                    let v: serde_json::Value = reqwest::blocking::get(format!("{es}/block/{}", hash.trim()))?.error_for_status()?.json()?;
+                    let v: serde_json::Value =
+                        reqwest::blocking::get(format!("{es}/block/{}", hash.trim()))?.error_for_status()?.json()?;
                     Ok(v)
                 };
                 let h = hdr(height)?;
@@ -1506,10 +1671,13 @@ fn main() -> Result<()> {
         }
         Cmd::PolicyShow { json, installed_file } => {
             let p = match installed_file {
-                Some(f) => unwrap_server_file(serde_json::from_str(&std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?)?)?,
+                Some(f) => unwrap_server_file(serde_json::from_str(
+                    &std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?,
+                )?)?,
                 None => client(&cli)?.get("/v1/policy")?,
             };
-            let installed = Mandate::decode(&hex::decode(p["mandate_hex"].as_str().unwrap_or(""))?).map_err(|_| anyhow!("installed mandate undecodable"))?;
+            let installed = Mandate::decode(&hex::decode(p["mandate_hex"].as_str().unwrap_or(""))?)
+                .map_err(|_| anyhow!("installed mandate undecodable"))?;
             println!("installed (nonce {}):", p["nonce"]);
             let inst = describe(&installed);
             match json {
@@ -1537,7 +1705,10 @@ fn main() -> Result<()> {
                     }
                     match compare(&installed, &new) {
                         Ok(Change::Tightening) => println!("classification: TIGHTENING (applies at once)"),
-                        Ok(Change::Loosening) => println!("classification: LOOSENING (waits {} blocks after acceptance)", installed.timelock_blocks),
+                        Ok(Change::Loosening) => println!(
+                            "classification: LOOSENING (waits {} blocks after acceptance)",
+                            installed.timelock_blocks
+                        ),
                         Err(e) => println!("classification: REFUSED — immutable field changed: {e:?}"),
                     }
                 }
@@ -1562,7 +1733,11 @@ fn main() -> Result<()> {
                     }
                 }
             };
-            println!("signing mandate {} for enclave {} at nonce {nonce}", hex::encode(m.hash()), hex::encode(enclave_id));
+            println!(
+                "signing mandate {} for enclave {} at nonce {nonce}",
+                hex::encode(m.hash()),
+                hex::encode(enclave_id)
+            );
             for (k, v) in describe(&m) {
                 println!("  {k:<28} {v}");
             }
@@ -1579,7 +1754,10 @@ fn main() -> Result<()> {
                 if sd.out.is_some() {
                     submit_message(&sd, &msg)?; // `signerd submit` routes a nonce-0 PolicyUpdate to /v1/install
                 } else {
-                    let r = sd.post("/v1/install", serde_json::json!({"mandate_hex": hex::encode(m.encode()), "sig_hex": hex::encode(msg.sig())}))?;
+                    let r = sd.post(
+                        "/v1/install",
+                        serde_json::json!({"mandate_hex": hex::encode(m.encode()), "sig_hex": hex::encode(msg.sig())}),
+                    )?;
                     println!("installed: {r}");
                 }
             } else {
@@ -1603,7 +1781,8 @@ fn main() -> Result<()> {
         Cmd::Rearm { key, seq } => {
             let sd = client(&cli)?;
             let okey = open_locator(key)?;
-            let mut msg = Message::Rearm { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, seq: *seq, sig: [0; 64] };
+            let mut msg =
+                Message::Rearm { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, seq: *seq, sig: [0; 64] };
             sign_message(&okey, &mut msg)?;
             submit_message(&sd, &msg)?;
         }
@@ -1612,7 +1791,12 @@ fn main() -> Result<()> {
             let (new_owner_pk, label) = owner_pk_of_locator(new_owner)?;
             eprintln!("new owner: {label}");
             let okey = open_locator(key)?;
-            let mut msg = Message::RotateOwner { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, new_owner_pk, sig: [0; 64] };
+            let mut msg = Message::RotateOwner {
+                enclave_id: sd.enclave_id()?,
+                nonce: sd.nonce()? + 1,
+                new_owner_pk,
+                sig: [0; 64],
+            };
             sign_message(&okey, &mut msg)?;
             submit_message(&sd, &msg)?;
         }
@@ -1621,7 +1805,8 @@ fn main() -> Result<()> {
             let (new_owner_pk, label) = owner_pk_of_locator(new_owner)?;
             eprintln!("new owner: {label}");
             let rkey = open_key(recovery_key)?;
-            let mut msg = Message::Recover { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, new_owner_pk, sig: [0; 64] };
+            let mut msg =
+                Message::Recover { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, new_owner_pk, sig: [0; 64] };
             sign_message(&rkey, &mut msg)?;
             submit_message(&sd, &msg)?;
         }
@@ -1629,20 +1814,72 @@ fn main() -> Result<()> {
             let sd = client(&cli)?;
             println!("{}", sd.post("/v1/freeze", serde_json::json!({}))?);
         }
-        Cmd::Attest { wallet, expect_mrenclave, expect_mrsigner, signing_key_label, accept, pccs, pin, save, replay, nonce, nonce_file } => {
+        Cmd::Attest {
+            wallet,
+            expect_mrenclave,
+            expect_mrsigner,
+            signing_key_label,
+            accept,
+            pccs,
+            pin,
+            save,
+            replay,
+            nonce,
+            nonce_file,
+        } => {
             let nonce = &match (nonce, nonce_file) {
                 (None, Some(f)) => Some(std::fs::read_to_string(f)?.trim().to_string()),
                 (n, _) => n.clone(),
             };
             // a carried quote needs no server; a live attest does
-            let sd = if replay.is_some() && nonce.is_some() && cli.token.is_none() && cli.token_file.is_none() && cli.status_file.is_none() {
-                Signerd { url: String::new(), token: String::new(), record: cli.wallet_record.clone(), offline: Some(serde_json::Value::Null), out: cli.out.clone() }
+            let sd = if replay.is_some()
+                && nonce.is_some()
+                && cli.token.is_none()
+                && cli.token_file.is_none()
+                && cli.status_file.is_none()
+            {
+                Signerd {
+                    url: String::new(),
+                    token: String::new(),
+                    record: cli.wallet_record.clone(),
+                    offline: Some(serde_json::Value::Null),
+                    out: cli.out.clone(),
+                }
             } else {
                 client(&cli)?
             };
-            attest(&sd, wallet, expect_mrenclave.clone(), expect_mrsigner.clone(), signing_key_label.clone(), accept, pccs, *pin, save.clone(), replay.clone(), nonce.clone())?;
+            attest(
+                &sd,
+                wallet,
+                expect_mrenclave.clone(),
+                expect_mrsigner.clone(),
+                signing_key_label.clone(),
+                accept,
+                pccs,
+                *pin,
+                save.clone(),
+                replay.clone(),
+                nonce.clone(),
+            )?;
         }
-        Cmd::Monitor { wallet, mandate, esplora, interval, esplora_delay_ms, full_every, journal, once, no_freeze, witness_key, stall_after, max_tip_lag, max_addresses, node_rpc, node_cookie, acknowledge } => {
+        Cmd::Monitor {
+            wallet,
+            mandate,
+            esplora,
+            interval,
+            esplora_delay_ms,
+            full_every,
+            journal,
+            once,
+            no_freeze,
+            witness_key,
+            stall_after,
+            max_tip_lag,
+            max_addresses,
+            node_rpc,
+            node_cookie,
+            acknowledge,
+        } => {
             let sd = client(&cli)?;
             let cfg = monitor::Cfg {
                 wallet: wallet.clone(),
@@ -1696,16 +1933,24 @@ fn main() -> Result<()> {
                 if !*i_have_investigated {
                     bail!("REFUSED to arm over a sequence regression; after investigating, repeat with --i-have-investigated (this acceptance is logged in the record)");
                 }
-                let line = format!("{} enclave seq {seq} < last seen {last}: armed with --i-have-investigated", now_utc());
+                let line =
+                    format!("{} enclave seq {seq} < last seen {last}: armed with --i-have-investigated", now_utc());
                 eprintln!("ACCEPTED BY THE OWNER and logged: {line}");
                 w.rollback_acceptances.get_or_insert_with(Vec::new).push(line);
                 w.last_seen_seq = Some(seq);
                 std::fs::write(&rec_path, serde_json::to_string_pretty(&w)?)?;
                 seq_seen = seq;
             }
-            let boot_challenge = <[u8; 32]>::try_from(hex::decode(&challenge_hex)?.as_slice()).map_err(|_| anyhow!("boot challenge is not 32 bytes"))?;
+            let boot_challenge = <[u8; 32]>::try_from(hex::decode(&challenge_hex)?.as_slice())
+                .map_err(|_| anyhow!("boot challenge is not 32 bytes"))?;
             let okey = open_locator(key)?;
-            let mut msg = Message::Arm { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, boot_challenge, seq_seen, sig: [0; 64] };
+            let mut msg = Message::Arm {
+                enclave_id: sd.enclave_id()?,
+                nonce: sd.nonce()? + 1,
+                boot_challenge,
+                seq_seen,
+                sig: [0; 64],
+            };
             sign_message(&okey, &mut msg)?;
             submit_message(&sd, &msg)?;
             if sd.out.is_some() {
@@ -1719,45 +1964,73 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::Anchor { key, tpm_info_file, ak_pk_file, nv_name_file, proof_file, proof_nonce_file, i_have_investigated } => {
+        Cmd::Anchor {
+            key,
+            tpm_info_file,
+            ak_pk_file,
+            nv_name_file,
+            proof_file,
+            proof_nonce_file,
+            i_have_investigated,
+        } => {
             let sd = client(&cli)?;
             let rec_path = cli.wallet_record.clone().ok_or_else(|| anyhow!("anchor needs --wallet-record <wallet.json> (or OWNER_WALLET): the sequence you last saw lives there (C-R7-5)"))?;
             let mut w: WalletRecord = serde_json::from_str(&std::fs::read_to_string(&rec_path)?)?;
             let last = w.last_seen_seq.unwrap_or(0);
             // the pinned material: from the transport's info file, or from the owner's own two files
-            let (ak_pk, nv_name): ([u8; 65], [u8; signer_core::tpm_attest::NV_NAME_LEN]) = match (tpm_info_file, ak_pk_file, nv_name_file) {
-                (Some(f), _, _) => {
-                    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(f)?)?;
-                    let v = unwrap_server_file(v)?;
-                    let ak = hex::decode(v["ak_pk_hex"].as_str().ok_or_else(|| anyhow!("tpm-info file: ak_pk_hex"))?)?;
-                    let nm = hex::decode(v["nv_name_hex"].as_str().ok_or_else(|| anyhow!("tpm-info file: nv_name_hex"))?)?;
-                    (<[u8; 65]>::try_from(ak.as_slice()).map_err(|_| anyhow!("ak_pk: 65 bytes"))?, <[u8; 34]>::try_from(nm.as_slice()).map_err(|_| anyhow!("nv_name: 34 bytes"))?)
-                }
-                (None, Some(a), Some(n)) => {
-                    let ak = hex::decode(std::fs::read_to_string(a)?.trim())?;
-                    let nm = hex::decode(std::fs::read_to_string(n)?.trim())?;
-                    (<[u8; 65]>::try_from(ak.as_slice()).map_err(|_| anyhow!("ak_pk: 65 bytes"))?, <[u8; 34]>::try_from(nm.as_slice()).map_err(|_| anyhow!("nv_name: 34 bytes"))?)
-                }
-                _ => bail!("give --tpm-info-file, or --ak-pk-file and --nv-name-file"),
-            };
+            let (ak_pk, nv_name): ([u8; 65], [u8; signer_core::tpm_attest::NV_NAME_LEN]) =
+                match (tpm_info_file, ak_pk_file, nv_name_file) {
+                    (Some(f), _, _) => {
+                        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(f)?)?;
+                        let v = unwrap_server_file(v)?;
+                        let ak =
+                            hex::decode(v["ak_pk_hex"].as_str().ok_or_else(|| anyhow!("tpm-info file: ak_pk_hex"))?)?;
+                        let nm = hex::decode(
+                            v["nv_name_hex"].as_str().ok_or_else(|| anyhow!("tpm-info file: nv_name_hex"))?,
+                        )?;
+                        (
+                            <[u8; 65]>::try_from(ak.as_slice()).map_err(|_| anyhow!("ak_pk: 65 bytes"))?,
+                            <[u8; 34]>::try_from(nm.as_slice()).map_err(|_| anyhow!("nv_name: 34 bytes"))?,
+                        )
+                    }
+                    (None, Some(a), Some(n)) => {
+                        let ak = hex::decode(std::fs::read_to_string(a)?.trim())?;
+                        let nm = hex::decode(std::fs::read_to_string(n)?.trim())?;
+                        (
+                            <[u8; 65]>::try_from(ak.as_slice()).map_err(|_| anyhow!("ak_pk: 65 bytes"))?,
+                            <[u8; 34]>::try_from(nm.as_slice()).map_err(|_| anyhow!("nv_name: 34 bytes"))?,
+                        )
+                    }
+                    _ => bail!("give --tpm-info-file, or --ak-pk-file and --nv-name-file"),
+                };
             // C-R9-D: the counter comes from an attested read over the owner's own nonce
-            let proof_nonce = <[u8; 32]>::try_from(hex::decode(std::fs::read_to_string(proof_nonce_file)?.trim())?.as_slice()).map_err(|_| anyhow!("proof nonce: 32 bytes"))?;
+            let proof_nonce =
+                <[u8; 32]>::try_from(hex::decode(std::fs::read_to_string(proof_nonce_file)?.trim())?.as_slice())
+                    .map_err(|_| anyhow!("proof nonce: 32 bytes"))?;
             let pv: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(proof_file)?)?;
             let pv = unwrap_server_file(pv)?;
             let attest = hex::decode(pv["attest_hex"].as_str().ok_or_else(|| anyhow!("proof file: attest_hex"))?)?;
             let sig_v = hex::decode(pv["sig_hex"].as_str().ok_or_else(|| anyhow!("proof file: sig_hex"))?)?;
             let sig = <[u8; 64]>::try_from(sig_v.as_slice()).map_err(|_| anyhow!("proof sig: 64 bytes"))?;
-            let parsed = signer_core::tpm_attest::parse_nv_attest(&attest).map_err(|r| anyhow!("the certify proof does not parse: {}", r.code()))?;
+            let parsed = signer_core::tpm_attest::parse_nv_attest(&attest)
+                .map_err(|r| anyhow!("the certify proof does not parse: {}", r.code()))?;
             let probe = signer_core::tpm_attest::TpmAnchor { ak_pk, nv_name, expected: parsed.counter };
             let counter = signer_core::tpm_attest::verify_nv_certify(&attest, &sig, &probe, &proof_nonce)
                 .map_err(|r| anyhow!("the certify proof is REFUSED ({}): not this key, not this index, or not your nonce — do not anchor", r.code()))?;
-            println!("attested counter: {counter} (index {}…, key {}…)", hex::encode(&nv_name[..6]), hex::encode(&ak_pk[1..7]));
+            println!(
+                "attested counter: {counter} (index {}…, key {}…)",
+                hex::encode(&nv_name[..6]),
+                hex::encode(&ak_pk[1..7])
+            );
             let st = sd.get("/v1/status")?;
             let seq = st["seq"].as_u64().unwrap_or(0);
             let challenge_hex = st["boot_challenge"].as_str().unwrap_or("").to_string();
             let session = st["session_id"].as_str().unwrap_or("").to_string();
             if st["tpm_bound"].as_bool() == Some(true) {
-                println!("the state is already TPM-bound (expects {}); this anchor RE-PINS it", st["tpm_expected"].as_u64().unwrap_or(0));
+                println!(
+                    "the state is already TPM-bound (expects {}); this anchor RE-PINS it",
+                    st["tpm_expected"].as_u64().unwrap_or(0)
+                );
             }
             println!("enclave load {session}: boot challenge {challenge_hex}");
             println!("enclave remembers seq {seq}; you last saw seq {last}");
@@ -1767,16 +2040,27 @@ fn main() -> Result<()> {
                 if !*i_have_investigated {
                     bail!("REFUSED to anchor over a sequence regression; after investigating, repeat with --i-have-investigated (logged in the record)");
                 }
-                let line = format!("{} enclave seq {seq} < last seen {last}: anchored with --i-have-investigated", now_utc());
+                let line =
+                    format!("{} enclave seq {seq} < last seen {last}: anchored with --i-have-investigated", now_utc());
                 eprintln!("ACCEPTED BY THE OWNER and logged: {line}");
                 w.rollback_acceptances.get_or_insert_with(Vec::new).push(line);
                 w.last_seen_seq = Some(seq);
                 std::fs::write(&rec_path, serde_json::to_string_pretty(&w)?)?;
                 seq_seen = seq;
             }
-            let boot_challenge = <[u8; 32]>::try_from(hex::decode(&challenge_hex)?.as_slice()).map_err(|_| anyhow!("boot challenge is not 32 bytes"))?;
+            let boot_challenge = <[u8; 32]>::try_from(hex::decode(&challenge_hex)?.as_slice())
+                .map_err(|_| anyhow!("boot challenge is not 32 bytes"))?;
             let okey = open_locator(key)?;
-            let mut msg = Message::Anchor { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, boot_challenge, ak_pk, nv_name, counter, seq_seen, sig: [0; 64] };
+            let mut msg = Message::Anchor {
+                enclave_id: sd.enclave_id()?,
+                nonce: sd.nonce()? + 1,
+                boot_challenge,
+                ak_pk,
+                nv_name,
+                counter,
+                seq_seen,
+                sig: [0; 64],
+            };
             sign_message(&okey, &mut msg)?;
             submit_message(&sd, &msg)?;
             if sd.out.is_some() {
@@ -1793,7 +2077,8 @@ fn main() -> Result<()> {
         Cmd::RecoveryVerify { wallet, recovery_key, print_mnemonic } => {
             let w: WalletRecord = serde_json::from_str(&std::fs::read_to_string(wallet)?)?;
             let rkey = open_key(recovery_key)?;
-            let fp = <[u8; 4]>::try_from(hex::decode(&w.fingerprint)?.as_slice()).map_err(|_| anyhow!("fingerprint"))?;
+            let fp =
+                <[u8; 4]>::try_from(hex::decode(&w.fingerprint)?.as_slice()).map_err(|_| anyhow!("fingerprint"))?;
             let xpub = Xpub::from_str(&w.xpub)?.encode();
             let sk_bytes = rkey.scalar()?;
             let entropy = recovery_decrypt(&sk_bytes, &fp, &xpub, &hex::decode(&w.recovery_blob_hex)?)?;
@@ -1829,7 +2114,20 @@ fn main() -> Result<()> {
         }
         Cmd::PsbtBuild { wallet, esplora, prev_tx_hex, utxo, branch, index, to, amount, fee, change_index } => {
             let w: WalletRecord = serde_json::from_str(&std::fs::read_to_string(wallet)?)?;
-            let b64 = psbt::build(&w.xpub, &w.fingerprint, network_of(&w.network)?, esplora, prev_tx_hex.as_deref(), utxo, *branch, *index, to, *amount, *fee, *change_index)?;
+            let b64 = psbt::build(
+                &w.xpub,
+                &w.fingerprint,
+                network_of(&w.network)?,
+                esplora,
+                prev_tx_hex.as_deref(),
+                utxo,
+                *branch,
+                *index,
+                to,
+                *amount,
+                *fee,
+                *change_index,
+            )?;
             println!("{b64}");
         }
         Cmd::Sign { psbt } => {
@@ -1881,7 +2179,9 @@ fn recovery_decrypt(recovery_sk: &[u8; 32], fingerprint: &[u8; 4], xpub: &[u8; 7
     let mut aad = Vec::with_capacity(82);
     aad.extend_from_slice(fingerprint);
     aad.extend_from_slice(xpub);
-    let pt = cipher.decrypt(Nonce::from_slice(&[0u8; 12]), Payload { msg: &blob[65..], aad: &aad }).map_err(|_| anyhow!("the blob does not open with this key for this wallet"))?;
+    let pt = cipher
+        .decrypt(Nonce::from_slice(&[0u8; 12]), Payload { msg: &blob[65..], aad: &aad })
+        .map_err(|_| anyhow!("the blob does not open with this key for this wallet"))?;
     key.zeroize();
     let mut out = [0u8; 32];
     if pt.len() != 32 {
@@ -1924,7 +2224,18 @@ fn attest(
     nonce_hex: Option<String>,
 ) -> Result<()> {
     let mut w: WalletRecord = serde_json::from_str(&std::fs::read_to_string(wallet)?)?;
-    let (_rec, out) = attest_record(sd, &mut w, expect_mrenclave, expect_mrsigner, signing_key_label, accept, pccs, pin, replay, nonce_hex)?;
+    let (_rec, out) = attest_record(
+        sd,
+        &mut w,
+        expect_mrenclave,
+        expect_mrsigner,
+        signing_key_label,
+        accept,
+        pccs,
+        pin,
+        replay,
+        nonce_hex,
+    )?;
     if pin {
         std::fs::write(wallet, serde_json::to_string_pretty(&w)?)?;
         println!("wallet record updated (pinned MRSIGNER, ProdID, SVN; attestation recorded)");
@@ -1969,15 +2280,25 @@ fn attest_record(
 
     // the nonce the quote must bind: fresh here (live), or the one the owner chose for a carried quote
     let nonce: [u8; 32] = match &nonce_hex {
-        Some(h) => <[u8; 32]>::try_from(hex::decode(h)?.as_slice()).map_err(|_| anyhow!("--nonce must be 32 bytes hex"))?,
+        Some(h) => {
+            <[u8; 32]>::try_from(hex::decode(h)?.as_slice()).map_err(|_| anyhow!("--nonce must be 32 bytes hex"))?
+        }
         None => rand::random(),
     };
     let r = match &replay {
         Some(path) => {
             if nonce_hex.is_some() {
-                println!("NO TUNNEL: verifying the quote carried in {} against the nonce you chose, {}", path.display(), hex::encode(nonce));
+                println!(
+                    "NO TUNNEL: verifying the quote carried in {} against the nonce you chose, {}",
+                    path.display(),
+                    hex::encode(nonce)
+                );
             } else {
-                println!("REPLAY VECTOR: verifying the quote saved in {} against the fresh nonce {}", path.display(), hex::encode(nonce));
+                println!(
+                    "REPLAY VECTOR: verifying the quote saved in {} against the fresh nonce {}",
+                    path.display(),
+                    hex::encode(nonce)
+                );
             }
             unwrap_server_file(serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(path)?)?)?
         }
@@ -2008,9 +2329,9 @@ fn attest_record(
         }
     })?;
     // the verifier crate's own embedded root must agree with ours (two independent pins of one CA)
-    QuoteVerifier::new_prod()
-        .verify(&quote_bytes, &collateral, now)
-        .map_err(|e| anyhow!("step 1 refused: the verifier crate's embedded Intel root disagrees with the pinned one: {e}"))?;
+    QuoteVerifier::new_prod().verify(&quote_bytes, &collateral, now).map_err(|e| {
+        anyhow!("step 1 refused: the verifier crate's embedded Intel root disagrees with the pinned one: {e}")
+    })?;
     println!("step 1 ok: quote chain verifies to the pinned Intel SGX Root CA (sha256 {INTEL_SGX_ROOT_CA_SHA256}); collateral from {pccs}");
 
     // 2. DEBUG == 0, before anything else about the enclave is believed
@@ -2032,25 +2353,45 @@ fn attest_record(
     // 4. MRSIGNER / ProdID / SVN
     let q_ms = hex::encode(body.mr_signer);
     let ceremony = CEREMONY_MRSIGNER.trim().to_lowercase();
-    let expected = expect_mrsigner.as_deref().map(|s| s.to_lowercase()).or_else(|| w.mrsigner.clone()).unwrap_or_else(|| ceremony.clone());
+    let expected = expect_mrsigner
+        .as_deref()
+        .map(|s| s.to_lowercase())
+        .or_else(|| w.mrsigner.clone())
+        .unwrap_or_else(|| ceremony.clone());
     if expected != q_ms {
         bail!(
             "step 4 refused: MRSIGNER {q_ms}, expected {expected}{}",
-            if expected == ceremony { " (the pinned ceremony key; a dev-key enclave must be named explicitly with --expect-mrsigner and labeled)" } else { "" }
+            if expected == ceremony {
+                " (the pinned ceremony key; a dev-key enclave must be named explicitly with --expect-mrsigner and labeled)"
+            } else {
+                ""
+            }
         );
     }
     if q_ms == ceremony {
         println!("step 4: MRSIGNER is the pinned ceremony key");
     } else if w.mrsigner.is_none() {
-        println!("step 4: MRSIGNER {q_ms} named explicitly ({})", signing_key_label.clone().unwrap_or_else(|| "UNLABELED".into()));
+        println!(
+            "step 4: MRSIGNER {q_ms} named explicitly ({})",
+            signing_key_label.clone().unwrap_or_else(|| "UNLABELED".into())
+        );
     }
     if let Some(p) = w.isv_prod_id {
-        if p != body.isv_prod_id { bail!("step 4 refused: ISV ProdID {} != pinned {p}", body.isv_prod_id) }
+        if p != body.isv_prod_id {
+            bail!("step 4 refused: ISV ProdID {} != pinned {p}", body.isv_prod_id)
+        }
     }
     if let Some(v) = w.isv_svn {
-        if body.isv_svn < v { bail!("step 4 refused: ISV SVN {} below pinned {v}", body.isv_svn) }
+        if body.isv_svn < v {
+            bail!("step 4 refused: ISV SVN {} below pinned {v}", body.isv_svn)
+        }
     }
-    println!("step 4 ok: MRSIGNER {q_ms} ({}), ProdID {}, SVN {}", signing_key_label.clone().or(w.signing_key_label.clone()).unwrap_or_else(|| "label pending".into()), body.isv_prod_id, body.isv_svn);
+    println!(
+        "step 4 ok: MRSIGNER {q_ms} ({}), ProdID {}, SVN {}",
+        signing_key_label.clone().or(w.signing_key_label.clone()).unwrap_or_else(|| "label pending".into()),
+        body.isv_prod_id,
+        body.isv_svn
+    );
 
     // 5. the card is the one INIT signed, under the identity key, and says T2
     let rec_card = hex::decode(&w.card_hex)?;
@@ -2088,7 +2429,11 @@ fn attest_record(
                 .iter()
                 .map(|e| {
                     let mut it = e.splitn(3, ':');
-                    (it.next().unwrap_or("").to_string(), it.next().unwrap_or("").to_string(), it.next().unwrap_or("").to_string())
+                    (
+                        it.next().unwrap_or("").to_string(),
+                        it.next().unwrap_or("").to_string(),
+                        it.next().unwrap_or("").to_string(),
+                    )
                 })
                 .collect();
             for adv in &vr.advisory_ids {
@@ -2126,7 +2471,9 @@ fn attest_record(
     );
     if pin {
         w.mrsigner = Some(q_ms.clone());
-        if signing_key_label.is_some() { w.signing_key_label = signing_key_label.clone(); }
+        if signing_key_label.is_some() {
+            w.signing_key_label = signing_key_label.clone();
+        }
         w.isv_prod_id = Some(body.isv_prod_id);
         w.isv_svn = Some(body.isv_svn);
         w.attested = Some(rec.clone());

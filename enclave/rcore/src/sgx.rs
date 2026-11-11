@@ -77,7 +77,8 @@ pub fn read_rand(buf: &mut [u8]) {
         static CTR: AtomicU64 = AtomicU64::new(0x5eed);
         if !SEEDED.swap(true, Ordering::AcqRel) {
             let marker = 0u8;
-            let aslr = core::ptr::addr_of!(marker) as usize as u64 ^ (core::ptr::addr_of!(CTR) as usize as u64).rotate_left(17);
+            let aslr = core::ptr::addr_of!(marker) as usize as u64
+                ^ (core::ptr::addr_of!(CTR) as usize as u64).rotate_left(17);
             CTR.store(0x5eed ^ aslr.wrapping_mul(0x9E37_79B9_7F4A_7C15), Ordering::Release);
         }
         let mut off = 0usize;
@@ -204,7 +205,10 @@ pub fn unseal(sealed: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
 /// (REQ-r5 §3). `None` if the SDK refuses (a malformed target). Under `nosgx` the stand-in is a
 /// zero report with `report_data` at its offset, so a host test can check the binding; it is
 /// labeled by the tier and attests nothing.
-pub fn report_for(target_info: &[u8; signer_core::proto::quote::TARGET_INFO_LEN], report_data: &[u8; 64]) -> Option<[u8; signer_core::proto::quote::REPORT_LEN]> {
+pub fn report_for(
+    target_info: &[u8; signer_core::proto::quote::TARGET_INFO_LEN],
+    report_data: &[u8; 64],
+) -> Option<[u8; signer_core::proto::quote::REPORT_LEN]> {
     #[cfg(not(feature = "nosgx"))]
     {
         let mut report = [0u8; ffi::REPORT_SIZE];

@@ -299,10 +299,7 @@ fn classify_inner<C: bitcoin::secp256k1::Verification>(
         }
         let spk = &txout.script_pubkey;
         let amount = txout.value.to_sat();
-        base = base
-            .saturating_add(8)
-            .saturating_add(varint_len(spk.len() as u64))
-            .saturating_add(spk.len() as u64);
+        base = base.saturating_add(8).saturating_add(varint_len(spk.len() as u64)).saturating_add(spk.len() as u64);
 
         if spk.is_op_return() {
             if mandate.rules.op_return != OpReturnRule::ZeroValue || amount != 0 {

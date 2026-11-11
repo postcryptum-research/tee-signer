@@ -84,11 +84,7 @@ impl Account {
     }
 
     /// The P2WPKH script of the key at `branch/index`.
-    pub fn p2wpkh_at<C: bitcoin::secp256k1::Verification>(
-        &self,
-        secp: &Secp256k1<C>,
-        p: OwnPath,
-    ) -> Option<ScriptBuf> {
+    pub fn p2wpkh_at<C: bitcoin::secp256k1::Verification>(&self, secp: &Secp256k1<C>, p: OwnPath) -> Option<ScriptBuf> {
         let pk = self.pubkey_at(secp, p)?;
         Some(ScriptBuf::new_p2wpkh(&pk.wpubkey_hash()))
     }

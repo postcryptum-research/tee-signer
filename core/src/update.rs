@@ -209,7 +209,13 @@ impl Message {
                 (domain::ARM, e.finish())
             }
             Message::Anchor { enclave_id, nonce, boot_challenge, ak_pk, nv_name, counter, seq_seen, .. } => {
-                e.fixed(enclave_id).u64(*nonce).fixed(boot_challenge).fixed(ak_pk).fixed(nv_name).u64(*counter).u64(*seq_seen);
+                e.fixed(enclave_id)
+                    .u64(*nonce)
+                    .fixed(boot_challenge)
+                    .fixed(ak_pk)
+                    .fixed(nv_name)
+                    .u64(*counter)
+                    .u64(*seq_seen);
                 (domain::ANCHOR, e.finish())
             }
             Message::RotateOwner { enclave_id, nonce, new_owner_pk, .. } => {
@@ -288,7 +294,15 @@ impl Message {
                 e.u8(TAG_ARM).fixed(enclave_id).u64(*nonce).fixed(boot_challenge).u64(*seq_seen).fixed(sig);
             }
             Message::Anchor { enclave_id, nonce, boot_challenge, ak_pk, nv_name, counter, seq_seen, sig } => {
-                e.u8(TAG_ANCHOR).fixed(enclave_id).u64(*nonce).fixed(boot_challenge).fixed(ak_pk).fixed(nv_name).u64(*counter).u64(*seq_seen).fixed(sig);
+                e.u8(TAG_ANCHOR)
+                    .fixed(enclave_id)
+                    .u64(*nonce)
+                    .fixed(boot_challenge)
+                    .fixed(ak_pk)
+                    .fixed(nv_name)
+                    .u64(*counter)
+                    .u64(*seq_seen)
+                    .fixed(sig);
             }
             Message::RotateOwner { enclave_id, nonce, new_owner_pk, sig } => {
                 e.u8(TAG_ROTATE_OWNER).fixed(enclave_id).u64(*nonce).fixed(new_owner_pk).fixed(sig);
@@ -320,15 +334,8 @@ impl Message {
                 sig: d.fixed()?,
             },
             TAG_CANCEL => Message::Cancel { enclave_id: d.fixed()?, nonce: d.u64()?, sig: d.fixed()? },
-            TAG_UNFREEZE => {
-                Message::Unfreeze { enclave_id: d.fixed()?, nonce: d.u64()?, sig: d.fixed()? }
-            }
-            TAG_REARM => Message::Rearm {
-                enclave_id: d.fixed()?,
-                nonce: d.u64()?,
-                seq: d.u64()?,
-                sig: d.fixed()?,
-            },
+            TAG_UNFREEZE => Message::Unfreeze { enclave_id: d.fixed()?, nonce: d.u64()?, sig: d.fixed()? },
+            TAG_REARM => Message::Rearm { enclave_id: d.fixed()?, nonce: d.u64()?, seq: d.u64()?, sig: d.fixed()? },
             TAG_ARM => Message::Arm {
                 enclave_id: d.fixed()?,
                 nonce: d.u64()?,
@@ -352,12 +359,9 @@ impl Message {
                 new_owner_pk: d.fixed()?,
                 sig: d.fixed()?,
             },
-            TAG_RECOVER => Message::Recover {
-                enclave_id: d.fixed()?,
-                nonce: d.u64()?,
-                new_owner_pk: d.fixed()?,
-                sig: d.fixed()?,
-            },
+            TAG_RECOVER => {
+                Message::Recover { enclave_id: d.fixed()?, nonce: d.u64()?, new_owner_pk: d.fixed()?, sig: d.fixed()? }
+            }
             TAG_WITNESS => Message::WitnessToken {
                 enclave_id: d.fixed()?,
                 tip_hash: d.fixed()?,

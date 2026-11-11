@@ -146,8 +146,20 @@ pub fn base_mandate(w: &Wallet, cold: &Wallet) -> Mandate {
             own_index_gap: 100,
             max_reorg: 6,
         },
-        rules: Rules { sighash: SighashRule::All, payjoin: PayjoinRule::None, op_return: OpReturnRule::None, rbf: true },
-        checkpoint: Checkpoint { hash: header_hash(250_000), height: 250_000, time: 250_000 * 600, bits: 0x207f_ffff, period_start_time: 249_984 * 600, period_bits: 0x207f_ffff },
+        rules: Rules {
+            sighash: SighashRule::All,
+            payjoin: PayjoinRule::None,
+            op_return: OpReturnRule::None,
+            rbf: true,
+        },
+        checkpoint: Checkpoint {
+            hash: header_hash(250_000),
+            height: 250_000,
+            time: 250_000 * 600,
+            bits: 0x207f_ffff,
+            period_start_time: 249_984 * 600,
+            period_bits: 0x207f_ffff,
+        },
         freshness: Freshness { required: false, witness_pk: None, max_tip_lag: 6 },
         not_after_height: 300_000,
         timelock_blocks: 144,
@@ -248,7 +260,9 @@ pub fn build_psbt(w: &Wallet, ins: &[In], outs: &[Out], version: i32, rbf: bool)
     let mut psbt_inputs_meta = Vec::new();
     for (i, spec) in ins.iter().enumerate() {
         let (spk, amount, own) = match spec {
-            In::Own { branch, index, amount, hint } => (w.spk(*branch, *index), *amount, Some((*branch, *index, *hint))),
+            In::Own { branch, index, amount, hint } => {
+                (w.spk(*branch, *index), *amount, Some((*branch, *index, *hint)))
+            }
             In::Foreign { spk, amount } => (spk.clone(), *amount, None),
         };
         let prev = funding_tx(&[(spk, amount)], 1000 + i as u32);
@@ -266,7 +280,10 @@ pub fn build_psbt(w: &Wallet, ins: &[In], outs: &[Out], version: i32, rbf: bool)
         version: Version(version),
         lock_time: LockTime::ZERO,
         input: txins,
-        output: outs.iter().map(|o| TxOut { value: Amount::from_sat(o.amount), script_pubkey: o.spk.clone() }).collect(),
+        output: outs
+            .iter()
+            .map(|o| TxOut { value: Amount::from_sat(o.amount), script_pubkey: o.spk.clone() })
+            .collect(),
     };
     let mut psbt = Psbt::from_unsigned_tx(tx).unwrap();
     for (i, meta) in psbt_inputs_meta.iter().enumerate() {

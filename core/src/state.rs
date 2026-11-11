@@ -282,8 +282,7 @@ impl State {
                 activation_height: d.u32()?,
             })
         })?;
-        let pending_owner =
-            d.option(|d| Ok(PendingOwner { new_owner_pk: d.fixed()?, activation_height: d.u32()? }))?;
+        let pending_owner = d.option(|d| Ok(PendingOwner { new_owner_pk: d.fixed()?, activation_height: d.u32()? }))?;
         let frozen = d.bool()?;
         let armed = d.bool()?;
         let rec = |d: &mut Dec| -> Result<HeaderRec, DecodeError> {
@@ -300,9 +299,7 @@ impl State {
             outflow: d.u64()?,
             unlisted: d.u64()?,
             fees: d.u64()?,
-            trusted: d.list(MAX_TRUSTED_USAGE, |d| {
-                Ok((d.str(mandate::bounds::MAX_LABEL)?, d.u64()?))
-            })?,
+            trusted: d.list(MAX_TRUSTED_USAGE, |d| Ok((d.str(mandate::bounds::MAX_LABEL)?, d.u64()?)))?,
         };
         let own_index_bound = [d.u32()?, d.u32()?];
         let seq = d.u64()?;
@@ -325,7 +322,14 @@ impl State {
             pending_owner,
             frozen,
             armed,
-            chain: ChainState { best, recent, period_start_time, prev_period_start_time, period_bits, frozen: chain_frozen },
+            chain: ChainState {
+                best,
+                recent,
+                period_start_time,
+                prev_period_start_time,
+                period_bits,
+                frozen: chain_frozen,
+            },
             window,
             own_index_bound,
             seq,
@@ -417,7 +421,11 @@ impl State {
                 // itself, or — only while the chain is frozen by a deep reorg — a fresh re-pin
                 let mut repin = false;
                 if new.checkpoint != s.mandate.checkpoint {
-                    let known = s.chain.recent.iter().any(|r| r.hash == new.checkpoint.hash && r.height == new.checkpoint.height);
+                    let known = s
+                        .chain
+                        .recent
+                        .iter()
+                        .any(|r| r.hash == new.checkpoint.hash && r.height == new.checkpoint.height);
                     if s.chain.frozen {
                         repin = true;
                     } else if !known || new.checkpoint.height > best {
@@ -447,12 +455,7 @@ impl State {
                         let activation_height = best
                             .checked_add(s.mandate.timelock_blocks)
                             .ok_or_else(|| Refusal::one(Reason::Overflow))?;
-                        s.pending = Some(Pending {
-                            mandate: new,
-                            sig: *msg.sig(),
-                            nonce: next,
-                            activation_height,
-                        });
+                        s.pending = Some(Pending { mandate: new, sig: *msg.sig(), nonce: next, activation_height });
                     }
                 }
                 Ok(s)
@@ -499,9 +502,8 @@ impl State {
                 if parse_p256_pubkey(new_owner_pk).is_none() || new_owner_pk == &s.recovery_pk {
                     return Err(Reason::PolicyInvalid.into());
                 }
-                let activation_height = best
-                    .checked_add(s.mandate.timelock_blocks)
-                    .ok_or_else(|| Refusal::one(Reason::Overflow))?;
+                let activation_height =
+                    best.checked_add(s.mandate.timelock_blocks).ok_or_else(|| Refusal::one(Reason::Overflow))?;
                 s.nonce = next;
                 s.pending_owner = Some(PendingOwner { new_owner_pk: *new_owner_pk, activation_height });
                 Ok(s)
@@ -535,7 +537,9 @@ impl State {
     /// state), and the sequence the owner last saw, which an enclave that was rolled back cannot
     /// reach. Whether the process is then armed is the shell's volatile fact, never sealed.
     pub fn apply_arm(&self, msg: &Message, boot_challenge: &[u8; 32]) -> Result<State, Refusal> {
-        let Message::Arm { nonce, boot_challenge: c, seq_seen, .. } = msg else { return Err(Reason::PolicyInvalid.into()) };
+        let Message::Arm { nonce, boot_challenge: c, seq_seen, .. } = msg else {
+            return Err(Reason::PolicyInvalid.into());
+        };
         if msg.enclave_id() != &self.enclave_id || !msg.verify(&self.owner_pk) {
             return Err(Reason::PolicySig.into());
         }
