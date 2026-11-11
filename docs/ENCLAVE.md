@@ -151,7 +151,13 @@ public point and the index Name must match what sits at the named handles — a 
 resolves its exact target, RESP-r9 Q8) and only if they also match `tpm-setup`'s templates.
 `SIGNERD_TPM_AUTH=<any string>` (optional; SHA-256 → the authValue of both objects) keeps a co-tenant of a
 shared TPM from incrementing the counter (a liveness denial, never a rollback) or asking for certifies —
-set it on the product path. Two TPM facts the operator sees: a new counter does **not** start at 0 (the
+set it on the product path. The T2 build recipe carries it since 2026-11-11 (`docker/Dockerfile.enclave-build`:
+`libtss2-dev`, daemon built with `--features sgx,tss`; `Dockerfile.signerd-t2`: the libtss2 runtime libraries;
+the opt-in compose overlay `opt-add-tee-signer-tpm.custom`): gate 5 on the Hetzner box, same sources under the
+old and the new build image → `enclave.so` byte-identical, MRENCLAVE `c7c5d8ef…` — nothing of libtss2 enters
+the enclave. That measurement is the current `main` with R9 inside; the live T2 enclave `ca5c1a6a…` predates
+R9, so the product path is a new, ceremony-signed build and therefore a new wallet (FAQ "How do I move to a
+new enclave build"). Two TPM facts the operator sees: a new counter does **not** start at 0 (the
 TPM seeds it above the last value of any counter ever deleted on it — only equality with the sealed
 expectation matters), and a hybrid counter **jumps forward** after an unorderly shutdown (power loss, a
 hard reset of the VM), which the enclave reports as `STATE_STALE` until the owner re-anchors — a virtual
