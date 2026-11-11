@@ -8,9 +8,10 @@
 //!   every out-buffer is copied and freed before returning);
 //! * the **setup** (`tpm-setup` / `tpm-teardown`): a restricted P-256 attestation key under the owner
 //!   hierarchy persisted at `--ak-handle`, and a `TPMA_NV_COUNTER` index at `--nv-index`. Setup
-//!   refuses an occupied handle or index; teardown removes exactly the two handles it is given and
-//!   only if what sits there matches this module's own templates (another project's key or index
-//!   is refused, not touched).
+//!   refuses an occupied handle or index; teardown removes exactly the two objects `tpm-setup`
+//!   recorded in its `--out` file (the key's public point and the index Name must match — a
+//!   destructive operation resolves its exact target, RESP-r9 Q8) and only if they also match this
+//!   module's own templates (another project's key or index is refused, not touched).
 //!
 //! Authorization: `SIGNERD_TPM_AUTH` (any string) becomes the authValue of both objects
 //! (SHA-256 of the string, so the length is free). Unset = empty auth: fine for an isolated test
@@ -493,6 +494,16 @@ mod setup {
             .map_err(|e| anyhow!("ak template: {e}"))
     }
 
+    /// The uncompressed point `04 ‖ x ‖ y` of an ECC public area (`None` for anything else).
+    fn public_point(public: &Public) -> Option<Vec<u8>> {
+        let Public::Ecc { unique, .. } = public else { return None };
+        let (x, y) = (pad32(unique.x().value()).ok()?, pad32(unique.y().value()).ok()?);
+        let mut pk = vec![0x04u8];
+        pk.extend_from_slice(&x);
+        pk.extend_from_slice(&y);
+        Some(pk)
+    }
+
     /// Does a public area match `ak_template` (so the object is one of ours)?
     fn is_our_ak(public: &Public) -> bool {
         match public {
@@ -602,10 +613,19 @@ mod setup {
         t.info()
     }
 
-    /// `signerd tpm-teardown`: remove exactly the two named objects, each only if it matches this
-    /// module's template. Destroys the anchor of any state bound to them (the owner re-anchors).
-    pub fn teardown(spec: &TssSpec) -> Result<Vec<String>> {
+    /// `signerd tpm-teardown`: remove exactly the two objects `tpm-setup` recorded in `setup_file`
+    /// (its `--out`: the key's public point and the index Name), each only if the object at the named
+    /// handle IS that object and matches this module's template. Destroys the anchor of any state
+    /// bound to them (the owner re-anchors).
+    pub fn teardown(spec: &TssSpec, setup_file: &std::path::Path) -> Result<Vec<String>> {
         spec.check_ranges()?;
+        let recorded: TpmInfo = serde_json::from_str(
+            &std::fs::read_to_string(setup_file)
+                .with_context(|| format!("reading {} (tpm-setup's --out)", setup_file.display()))?,
+        )
+        .with_context(|| format!("{}: not a tpm-setup/tpm-info record", setup_file.display()))?;
+        let want_pk = hex::decode(&recorded.ak_pk_hex).context("setup file: ak_pk_hex")?;
+        let want_name = hex::decode(&recorded.nv_name_hex).context("setup file: nv_name_hex")?;
         let mut ctx = connect(&spec.tcti)?;
         let mut done = Vec::new();
         // the index first (it is the one with a state behind it)
@@ -615,8 +635,15 @@ mod setup {
                 .execute_without_session(|c| c.tr_from_tpm_public(TpmHandle::NvIndex(h)))
                 .map_err(|e| anyhow!("nv 0x{:08x}: {e}", spec.nv))?;
             let nv: NvIndexHandle = obj.into();
-            let (public, _) =
+            let (public, name) =
                 ctx.execute_without_session(|c| c.nv_read_public(nv)).map_err(|e| anyhow!("NV_ReadPublic: {e}"))?;
+            if name.value() != want_name.as_slice() {
+                bail!(
+                    "REFUSED: the index at 0x{:08x} is not the one {} records (its Name differs) — not the object tpm-setup created, not touched",
+                    spec.nv,
+                    setup_file.display()
+                );
+            }
             if !is_our_counter(&public) {
                 bail!("REFUSED: NV index 0x{:08x} is not a tee-signer counter (attributes/size differ) — someone else's, not touched", spec.nv);
             }
@@ -634,6 +661,13 @@ mod setup {
             let key: KeyHandle = obj.into();
             let (public, _, _) =
                 ctx.execute_without_session(|c| c.read_public(key)).map_err(|e| anyhow!("ReadPublic: {e}"))?;
+            if public_point(&public).as_deref() != Some(want_pk.as_slice()) {
+                bail!(
+                    "REFUSED: the key at 0x{:08x} is not the one {} records (public key differs) — not the object tpm-setup created, not touched",
+                    spec.ak,
+                    setup_file.display()
+                );
+            }
             if !is_our_ak(&public) {
                 bail!("REFUSED: the key at 0x{:08x} is not a tee-signer attestation key (template differs) — someone else's, not touched", spec.ak);
             }

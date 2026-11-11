@@ -179,9 +179,10 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
-    /// REQ-r9 (`--features tss`): remove EXACTLY the two named objects, each only if it matches
-    /// `tpm-setup`'s template (someone else's key or index is refused). Any state anchored to them
-    /// becomes STATE_STALE until the owner anchors again.
+    /// REQ-r9 (`--features tss`): remove EXACTLY the two objects `tpm-setup` recorded in its `--out`
+    /// file — the key's public point and the index Name must match what sits at the named handles,
+    /// and both must match `tpm-setup`'s templates (someone else's key or index is refused). Any
+    /// state anchored to them becomes STATE_STALE until the owner anchors again.
     #[cfg(feature = "tss")]
     TpmTeardown {
         #[arg(long, default_value = tpm_tss::DEFAULT_TCTI)]
@@ -190,6 +191,9 @@ enum Cmd {
         ak_handle: u32,
         #[arg(long, value_parser = parse_tpm_handle)]
         nv_index: u32,
+        /// The file `tpm-setup --out` wrote (or a later `tpm-info` of the same objects).
+        #[arg(long)]
+        setup_file: PathBuf,
     },
     /// Serve the API (the daemon).
     Run {
@@ -1291,9 +1295,9 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         #[cfg(feature = "tss")]
-        Cmd::TpmTeardown { tcti, ak_handle, nv_index } => {
+        Cmd::TpmTeardown { tcti, ak_handle, nv_index, setup_file } => {
             let spec = tpm_tss::TssSpec { tcti: tcti.clone(), ak: *ak_handle, nv: *nv_index };
-            for line in tpm_tss::teardown(&spec)? {
+            for line in tpm_tss::teardown(&spec, setup_file)? {
                 println!("{line}");
             }
             return Ok(());

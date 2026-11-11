@@ -32,7 +32,7 @@ SDPID=
 cleanup() {
   [ -n "$SDPID" ] && { kill "$SDPID" 2>/dev/null || true; wait "$SDPID" 2>/dev/null || true; }
   echo "--- teardown by the explicit handles ---"
-  "$SD" tpm-teardown --tcti "$TCTI" --ak-handle "$AK" --nv-index "$NV" 2>/dev/null || echo "TEARDOWN FAILED — remove by hand: tpm2_nvundefine $NV; tpm2_evictcontrol -C o -c $AK"
+  "$SD" tpm-teardown --tcti "$TCTI" --ak-handle "$AK" --nv-index "$NV" --setup-file "$S/tpm-setup.json" 2>/dev/null || echo "TEARDOWN FAILED — remove by hand: tpm2_nvundefine $NV; tpm2_evictcontrol -C o -c $AK"
   tpm2_getcap handles-persistent > "$S/handles-after.txt"; tpm2_getcap handles-nv-index >> "$S/handles-after.txt"
   if diff -u "$S/handles-before.txt" "$S/handles-after.txt" >/dev/null; then echo "  TPM handle lists: identical to before ✓"; else echo "  TPM HANDLE LISTS DIFFER:"; diff -u "$S/handles-before.txt" "$S/handles-after.txt" || true; exit 1; fi
 }
@@ -53,9 +53,16 @@ python3 -c "import json;d=json.load(open('$S/tpm-setup.json'));assert d['counter
 if out=$("$SD" tpm-setup --tcti "$TCTI" --ak-handle "$AK" --nv-index "$NV" --out "$S/never.json" 2>&1); then echo "UNEXPECTED: a second setup on our own handles accepted: $out"; exit 1; fi
 [ ! -e "$S/never.json" ] || { echo "UNEXPECTED: a refused setup wrote its --out"; exit 1; }
 echo "  a second setup on the same handles → refused (occupied) ✓"
-echo "=== teardown's template guard: a foreign key at the ak handle is refused, not touched ==="
-if out=$("$SD" tpm-teardown --tcti "$TCTI" --ak-handle 0x81000100 --nv-index 0x01800201 2>&1); then echo "UNEXPECTED: teardown of a foreign key accepted: $out"; exit 1; fi
-case "$out" in *REFUSED*"not a tee-signer attestation key"*) echo "  foreign key → refused ✓";; *) echo "UNEXPECTED: $out"; exit 1;; esac
+echo "=== teardown resolves its EXACT target (RESP-r9 Q8): a foreign key at the ak handle, a wrong record, no record — all refused, nothing touched ==="
+if out=$("$SD" tpm-teardown --tcti "$TCTI" --ak-handle 0x81000100 --nv-index 0x01800201 --setup-file "$S/tpm-setup.json" 2>&1); then echo "UNEXPECTED: teardown of a foreign key accepted: $out"; exit 1; fi
+case "$out" in *REFUSED*"public key differs"*) echo "  foreign key (the owner's 0x81000100) → refused: not the recorded key ✓";; *) echo "UNEXPECTED: $out"; exit 1;; esac
+python3 -c "import json;d=json.load(open('$S/tpm-setup.json'));d['nv_name_hex']='000b'+'ab'*32;json.dump(d,open('$S/tpm-setup-wrong.json','w'))"
+if out=$("$SD" tpm-teardown --tcti "$TCTI" --ak-handle "$AK" --nv-index "$NV" --setup-file "$S/tpm-setup-wrong.json" 2>&1); then echo "UNEXPECTED: teardown with a wrong record accepted: $out"; exit 1; fi
+case "$out" in *REFUSED*"its Name differs"*) echo "  our handles but a record naming another index → refused ✓";; *) echo "UNEXPECTED: $out"; exit 1;; esac
+if out=$("$SD" tpm-teardown --tcti "$TCTI" --ak-handle "$AK" --nv-index "$NV" --setup-file "$S/does-not-exist.json" 2>&1); then echo "UNEXPECTED: teardown without a record accepted: $out"; exit 1; fi
+echo "  no record file → refused ✓"
+tpm2_getcap handles-persistent > "$S/h2.txt"; tpm2_getcap handles-nv-index >> "$S/h2.txt"
+grep -qi "^- $(norm "$AK")$" "$S/h2.txt" && grep -qi "^- $(norm "$NV")$" "$S/h2.txt" && echo "  our two objects still there ✓"
 
 echo "=== the daemon with SIGNERD_TPM=tss:… from the first start ==="
 export SIGNERD_TPM="tss:$TCTI?ak=$AK&nv=$NV"

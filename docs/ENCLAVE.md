@@ -146,7 +146,9 @@ the TPM's machine, at handles the operator names**: `signerd tpm-setup --ak-hand
 generated itself — no host can get this key's signature over a forged `TPMS_ATTEST`) and a
 `TPMA_NV_COUNTER` index (8 bytes, auth-read/write, `NO_DA`, hybrid `ORDERLY` by default, `--no-orderly`
 for a plain one). An occupied handle or index is **refused, never evicted** (C-R9-E); `signerd
-tpm-teardown` removes exactly the two named objects and only if they match `tpm-setup`'s templates.
+tpm-teardown --setup-file tpm-setup.json` removes exactly the two objects that file records (the key's
+public point and the index Name must match what sits at the named handles — a destructive operation
+resolves its exact target, RESP-r9 Q8) and only if they also match `tpm-setup`'s templates.
 `SIGNERD_TPM_AUTH=<any string>` (optional; SHA-256 → the authValue of both objects) keeps a co-tenant of a
 shared TPM from incrementing the counter (a liveness denial, never a rollback) or asking for certifies —
 set it on the product path. Two TPM facts the operator sees: a new counter does **not** start at 0 (the

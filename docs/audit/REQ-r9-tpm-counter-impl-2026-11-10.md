@@ -240,6 +240,11 @@ libtss2 or the `tss` feature — that change goes with the vTPM (issue #1) so th
 rebuilt for nothing; `deploy/README.md` lists the exact packages and flags. The remote agent for the
 +1-VM option stays unwritten.
 
-**Q8:** is the teardown template guard sufficient as the "ours" test, or do you want teardown to also
-require the index Name / key to match a `tpm-setup.json` the operator hands it (one more file to carry)?
+**Q8 — answered by the auditor the same day (Name/pubkey match required) and done before the merge:**
+`tpm-teardown` now takes `--setup-file` (the JSON `tpm-setup --out` wrote, or a later `tpm-info`) and
+refuses unless the key at `--ak-handle` has exactly the recorded public point and the index at
+`--nv-index` has exactly the recorded Name — then the template guard, then the removal. No file →
+refuse. Probed in the laptop run: the owner's key under `--ak-handle` ("public key differs"), a record
+with another Name on our own handles ("its Name differs"), a missing record — each refused with our two
+objects still present; the real record then removed them and the handle lists matched the snapshot.
 
