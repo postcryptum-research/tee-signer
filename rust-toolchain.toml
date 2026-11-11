@@ -1,0 +1,6 @@
+# The toolchain every gate in CLAUDE.md is run with — the same version the pinned enclave build
+# container uses (docker/Dockerfile.enclave-build RUST_TOOLCHAIN=1.92.0). A newer rustfmt/clippy
+# reformats TCB files and raises new lints; the TCB is edited only for REQs, not for a toolchain drift.
+[toolchain]
+channel = "1.92.0"
+components = ["rustfmt", "clippy"]

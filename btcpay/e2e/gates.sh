@@ -116,6 +116,25 @@ SEQ=$(curl -s -H "Authorization: Bearer $SIGNER_TOKEN" http://127.0.0.1:7390/v1/
 RTX=$(curl -s -H "Authorization: Bearer $SIGNER_TOKEN" http://127.0.0.1:7390/v1/receipts | j "d[-1]['txid']")
 [ "$RTX" = "$PROOF" ] && pass "the tx BTCPay broadcast is the one the enclave signed (receipt seq $SEQ, txid $RTX)" || fail "receipt txid $RTX != payout proof $PROOF"
 docker exec btcpayserver_bitcoind bitcoin-cli -datadir=/data -signet getmempoolentry "$RTX" >/dev/null 2>&1 && pass "node holds $RTX in its mempool" || echo "  (tx not in the local mempool yet/already mined)"
+echo "== gate (d.1b): the plugin's fee floor — the signed transaction pays at least 1 sat/vB (2026-11-10 fix: a quiet signet estimate equal to the node's minrelay lost to rounding)"
+FEEINFO=$(docker exec btcpayserver_bitcoind bitcoin-cli -datadir=/data -signet getmempoolentry "$RTX" 2>/dev/null)
+if [ -n "$FEEINFO" ]; then
+  RATE=$(echo "$FEEINFO" | python3 -c "import sys,json;d=json.load(sys.stdin);print(round(d['fees']['base']*1e8/d['vsize'],2))")
+  python3 -c "import sys; sys.exit(0 if float('$RATE')>=1.0 else 1)" && pass "fee rate $RATE sat/vB >= 1.0 (floor)" || fail "fee rate $RATE sat/vB below the 1 sat/vB floor"
+else
+  echo "  (mempool entry gone; fee-floor gate skipped — the tx was mined)"
+fi
+
+echo "== gate (d.1c): a refusal that can never clear is COUNTED (CAP_UNLISTED_TX > maxPerTx); the batch poison is cancelled afterwards (2026-11-10 fix)"
+PAYEE_BIG=$(throwaway_addr)
+POB=$(curl -s "${H[@]}" -X POST "$BT/api/v1/stores/$STORE/pull-payments" -d '{"name":"e2e-cap","amount":"0.003","currency":"BTC","payoutMethods":["BTC-CHAIN"],"autoApproveClaims":true}' | j "d['id']")
+POBIG=$(curl -s "${H[@]}" -X POST "$BT/api/v1/pull-payments/$POB/payouts" -d "{\"destination\":\"$PAYEE_BIG\",\"amount\":\"0.002\",\"payoutMethodId\":\"BTC-CHAIN\"}" | j "d['id']")
+echo "  payout $POBIG created (200000 sat > unlisted maxPerTx 100000)"; sleep 75
+docker logs --since 2m generated_btcpayserver_1 2>&1 | grep -q "enclave refused the payout batch: CAP_UNLISTED_TX" && pass "refused by name: CAP_UNLISTED_TX (not transient — counted)" || fail "no CAP_UNLISTED_TX refusal logged"
+BLOBBIG=$(docker exec generated_postgres_1 psql -U postgres -d btcpayserversignet -tAc "select \"Blob\"::text from \"Payouts\" where \"Id\"='$POBIG'")
+echo "$BLOBBIG" | grep -q '"ErrorCount": *[1-9]' && pass "ErrorCount advanced for the poison payout ($(echo "$BLOBBIG" | grep -o '"ErrorCount": *[0-9]*'))" || fail "ErrorCount did not advance: $BLOBBIG"
+SEQB=$(curl -s -H "Authorization: Bearer $SIGNER_TOKEN" http://127.0.0.1:7390/v1/status | j "d['seq']"); [ "$SEQB" = "$SEQ" ] && pass "no signature for the refused batch (seq $SEQB)" || fail "seq moved on a refusal: $SEQ -> $SEQB"
+curl -s -o /dev/null -w "  poison payout cancelled: [%{http_code}]\n" "${H[@]}" -X DELETE "$BT/api/v1/stores/$STORE/payouts/$POBIG"
 
 echo "== gate (d.2): a frozen signer refuses, charges nothing, the payout waits"
 curl -s -X POST -H "Authorization: Bearer $SIGNER_TOKEN" http://127.0.0.1:7390/v1/freeze >/dev/null
@@ -128,6 +147,12 @@ SEQ2=$(curl -s -H "Authorization: Bearer $SIGNER_TOKEN" http://127.0.0.1:7390/v1
 [ "$ST2" = "AwaitingPayment" ] && [ "$SEQ2" = "$SEQ" ] && pass "frozen: payout $PO2 stays AwaitingPayment, seq unchanged ($SEQ2)" || fail "frozen path: state $ST2 seq $SEQ2"
 docker logs --since 2m generated_btcpayserver_1 2>&1 | grep -i "tee-signer" | tail -3 | sed 's/^/  btcpay: /'
 docker logs --since 2m generated_btcpayserver_1 2>&1 | grep -q "refused the payout batch: FROZEN" && pass "BTCPay logged the refusal by name (FROZEN)" || fail "no FROZEN refusal in the BTCPay log"
+echo "== gate (d.2b): a TRANSIENT refusal (FROZEN) is retried and never counted — the processor is not switched off for the payout (2026-11-10 fix; the T2 stall)"
+sleep 70   # a second tick while still frozen
+docker logs --since 3m generated_btcpayserver_1 2>&1 | grep -q "FROZEN (transient, will retry)" && pass "the retry is labeled transient in the log" || fail "no 'transient, will retry' label for FROZEN"
+BLOB2=$(docker exec generated_postgres_1 psql -U postgres -d btcpayserversignet -tAc "select \"Blob\"::text from \"Payouts\" where \"Id\"='$PO2'")
+echo "$BLOB2" | grep -q "DisabledProcessors" && fail "processor disabled for a transient refusal: $BLOB2" || pass "no DisabledProcessors after repeated FROZEN refusals"
+echo "$BLOB2" | grep -q '"ErrorCount": *[1-9]' && fail "ErrorCount advanced on a transient refusal: $BLOB2" || pass "ErrorCount not advanced by a transient refusal"
 
 echo "== gate (d.3): a store whose wallet is not the signer's is refused by the plugin before any PSBT (C-R3-4)"
 foreign_tpub() { python3 - <<'PY'
