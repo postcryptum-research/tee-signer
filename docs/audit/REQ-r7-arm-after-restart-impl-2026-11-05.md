@@ -222,6 +222,16 @@ for rebroadcast, the payout stays InProgress`, and the following ticks found **n
 same transaction is left to BTCPay's delayed broadcaster (it needs its parent confirmed first); the
 node's policy was then restored.
 
+**Product path live on T2 — 2026-11-11 16:52 UTC (the fixed plugin installed on the node the day before):**
+a 2 000 sat payout created through BTCPay's API (pull payment `product-path-2026-11-11`, payout
+`4Hokbs1z…`) was picked up by the plugin's processor within 10 s: `payout batch signed in the enclave
+(seq 2, session 1ef8c603…) and broadcast as 1d6b9483…`; the payout went `InProgress` with that
+`TransactionId`; the enclave's receipt #2 names the same txid; `window_outflow 2141 = unlisted 2000 +
+fees 141` (1 sat/vB on 141 vB — the fee floor at work); `seq` 1 → 2, exactly one signature. The same
+armed load (`1ef8c603…`) that the owner armed on 2026-11-10 signed it — "sign accepted after the arm"
+now holds on the product path too, not only on the dev path. Log on the node:
+`~/tee-signer-exchange/payout-product-path-2026-11-11.log`.
+
 ## 5. Conditions
 
 | Condition | Where discharged |
