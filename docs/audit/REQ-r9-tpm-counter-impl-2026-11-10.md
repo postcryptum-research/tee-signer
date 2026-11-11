@@ -284,6 +284,12 @@ build** — ceremony-signed (`SIGN=ceremony PHASE=gendata/catsig`, as on 2026-11
 (the sealed state does not cross MRENCLAVEs; FAQ "How do I move to a new enclave build"; the owner's
 `t2-r7-redeploy.sh` is the worked example). Nothing was loaded on the node; the live stack is untouched.
 
-**For your review:** the image/compose diff above (`git diff main..t2-tss-image -- docker btcpay/docker`).
-Merge of `t2-tss-image` waits for your ack, as the build recipe is part of the pinned, reproducible build.
+**Auditor's verdict, same day (verbatim excerpt):** «T2 tss-recipe — ACK / IMPL-PASS firsthand @e9400db. diff
+трогает ТОЛЬКО docker/ + btcpay/docker/ + docs — ни одного enclave/core/signerd-source. Строка сборки
+ЭНКЛАВА не изменена; изменена только сборка демона (`--features sgx` → `sgx,tss`); libtss2-dev — host build-dep
+⇒ enclave.so обязан быть байт-идентичен ⇒ MRENCLAVE неизменен; compare-builds.sh — эмпирическое подтверждение
+необходимого свойства. Оверлей fail-closed (`:?` на gid и auth, device-gated). Consequence AFFIRM: vTPM-путь =
+новая ceremony-signed сборка + новый кошелёк. Не верил firsthand: сам прогон gate 5 и item 1 — беру на отчёт.
+ВЕРДИКТ: мерж t2-tss-image — ACK. Деплоя нет до owner vTPM-шага + моей image/compose-проверки в тот момент.»
+Merged to `main` on that ack.
 
