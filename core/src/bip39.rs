@@ -27,9 +27,11 @@ pub fn mnemonic(entropy: &[u8; 32]) -> String {
         }
     }
     let mut out = String::new();
-    for i in 0..24 {
+    // 264 bits = 24 groups of 11; `chunks_exact` walks them without index arithmetic (the crate
+    // denies arithmetic that could wrap; this was the one site the lint flagged).
+    for (i, chunk) in bits.chunks_exact(11).enumerate() {
         let mut idx: usize = 0;
-        for bit in &bits[i * 11..i * 11 + 11] {
+        for bit in chunk {
             idx = (idx << 1) | (*bit as usize);
         }
         if i > 0 {
