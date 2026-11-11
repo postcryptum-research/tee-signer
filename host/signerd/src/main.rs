@@ -15,6 +15,8 @@
 mod enclave;
 mod replay;
 mod tpm;
+#[cfg(feature = "tss")]
+mod tpm_tss;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -152,6 +154,42 @@ enum Cmd {
         nonce_file: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
+    },
+    /// REQ-r9 (`--features tss`, run ON the TPM's machine, once): create the attestation key and the
+    /// counter index at EXPLICIT handles. Refuses an occupied handle or index (C-R9-E: never
+    /// evicts, never reuses another project's objects). `SIGNERD_TPM_AUTH` (optional) becomes the
+    /// authValue of both — set it on a shared TPM.
+    #[cfg(feature = "tss")]
+    TpmSetup {
+        /// TCTI, e.g. `device:/dev/tpmrm0` (the default).
+        #[arg(long, default_value = tpm_tss::DEFAULT_TCTI)]
+        tcti: String,
+        /// Persistent handle for the attestation key, hex: `0x81......` — mandatory, must be free.
+        #[arg(long, value_parser = parse_tpm_handle)]
+        ak_handle: u32,
+        /// NV index for the counter, hex: `0x01......` — mandatory, must be free.
+        #[arg(long, value_parser = parse_tpm_handle)]
+        nv_index: u32,
+        /// Plain (non-hybrid) counter: every increment writes NV. Default is a hybrid
+        /// (`TPMA_NV_ORDERLY`) index, the design's allocation default (RESP-r9 Q1); a virtual TPM has
+        /// no flash to save and may prefer `--no-orderly` (no forward jump after a hard reset).
+        #[arg(long)]
+        no_orderly: bool,
+        /// Where to write the key, the index Name and the counter (the same JSON as `tpm-info`).
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// REQ-r9 (`--features tss`): remove EXACTLY the two named objects, each only if it matches
+    /// `tpm-setup`'s template (someone else's key or index is refused). Any state anchored to them
+    /// becomes STATE_STALE until the owner anchors again.
+    #[cfg(feature = "tss")]
+    TpmTeardown {
+        #[arg(long, default_value = tpm_tss::DEFAULT_TCTI)]
+        tcti: String,
+        #[arg(long, value_parser = parse_tpm_handle)]
+        ak_handle: u32,
+        #[arg(long, value_parser = parse_tpm_handle)]
+        nv_index: u32,
     },
     /// Serve the API (the daemon).
     Run {
@@ -508,6 +546,12 @@ enum OwnerStep {
 }
 
 /// A value given directly, or read (trimmed) from a carried file.
+/// `0x81000200` → a TPM handle (hex with `0x` only — a handle is never a decimal).
+#[cfg(feature = "tss")]
+fn parse_tpm_handle(s: &str) -> Result<u32, String> {
+    tpm_tss::parse_handle(s, "handle").map_err(|e| e.to_string())
+}
+
 fn value_or_file(value: &Option<String>, file: &Option<PathBuf>, what: &str) -> Result<String> {
     match (value, file) {
         (Some(v), _) => Ok(v.trim().to_string()),
@@ -1234,6 +1278,26 @@ async fn main() -> Result<()> {
             return owner_step(state_dir, url, out, OwnerStep::TpmCertify(nonce)).await;
         }
         Cmd::Policy { state_dir, url, out } => return owner_step(state_dir, url, out, OwnerStep::Policy).await,
+        #[cfg(feature = "tss")]
+        Cmd::TpmSetup { tcti, ak_handle, nv_index, no_orderly, out } => {
+            let spec = tpm_tss::TssSpec { tcti: tcti.clone(), ak: *ak_handle, nv: *nv_index };
+            let info = tpm_tss::setup(&spec, !*no_orderly)?;
+            std::fs::write(out, serde_json::to_string_pretty(&info)?)?;
+            eprintln!(
+                "created: attestation key 0x{ak_handle:08x}, counter 0x{nv_index:08x} ({}); run the daemon with SIGNERD_TPM={}",
+                if *no_orderly { "plain" } else { "hybrid/orderly" },
+                spec.describe()
+            );
+            return Ok(());
+        }
+        #[cfg(feature = "tss")]
+        Cmd::TpmTeardown { tcti, ak_handle, nv_index } => {
+            let spec = tpm_tss::TssSpec { tcti: tcti.clone(), ak: *ak_handle, nv: *nv_index };
+            for line in tpm_tss::teardown(&spec)? {
+                println!("{line}");
+            }
+            return Ok(());
+        }
         _ => {}
     }
     let mut enclave = load_enclave(&args)?;

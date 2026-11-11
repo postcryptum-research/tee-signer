@@ -146,7 +146,8 @@ already on `main` (286 diffs); the two new core files are rustfmt-clean.
   [issue #1](https://github.com/77ph/BTCPayTEE/issues/1) (a vTPM via Azure Trusted Launch on `sgx-node-3`,
   or a +1 counter VM) or the operator's own server with a physical TPM. The `RemoteTpm` client stays for
   the +1-VM option; must-hold E and Q6 apply to that agent when it is written.
-- The `tss` transport for a local `/dev/tpmrm0` (the product path) — when a node has a TPM.
+- ~~The `tss` transport for a local `/dev/tpmrm0` (the product path) — when a node has a TPM.~~ **Written
+  2026-11-11, §7 below** (the owner's «делай на свой выбор», item 2); it waits for a node with a TPM.
 - Hardware builds of this `rcore` (T1 build box; the ceremony signing) and any deployment: the
   project's node has no TPM, so the product claim stays deployment-gated (design §4/§6).
 - Operator docs beyond the FAQ note: written when the agent bench has run.
@@ -164,3 +165,81 @@ already on `main` (286 diffs); the two new core files are rustfmt-clean.
 3. The state-version-as-anchor-presence encoding (v1/v2) instead of an `Option` field: keeps the R1
    vectors valid and one encoding per value; acceptable, or do you want a version bump with
    regenerated vectors?
+
+## 7. Addendum 2026-11-11 — the `tss` transport (host side, branch `r9-tss`; your Q6 / C-R9-E lens)
+
+**What:** `host/signerd/src/tpm_tss.rs` (new, ~620 lines incl. tests), `tpm.rs` (`from_env`: the `tss:`
+prefix), `main.rs` (`tpm-setup`, `tpm-teardown`, a hex-handle parser), `Cargo.toml` (feature `tss` →
+optional `tss-esapi = "7.7"` with the crate's bundled x86_64 bindings, so the build image needs no clang;
+links the system libtss2), `scripts/e2e-tss-local.sh` (the laptop run). No `core/` or `enclave/` change.
+
+**Spec:** `SIGNERD_TPM=tss:<tcti>?ak=0x81……&nv=0x01……` — both handles **mandatory** (no default, no probing),
+each range-checked (`0x81…` persistent, `0x01…` NV), hex with `0x` only; `<tcti>` empty = `device:/dev/tpmrm0`.
+
+**Handle isolation (your must-hold E, line by line):**
+- `tpm-setup --ak-handle --nv-index --out` lists the TPM's handles (`TPM2_GetCapability(HANDLES)` over the
+  persistent range, then the NV range) **before creating anything** and refuses either one that is listed
+  — `REFUSED: persistent handle 0x81000100 is already in use by another key — never evicted …`. The run
+  probed the owner's key `0x81000100` and the EK certificate index `0x01c00002`: both refused, the handle
+  lists unchanged (the script diffs them).
+- the objects: a `CreatePrimary` under the **owner hierarchy** persisted at `--ak-handle` via
+  `EvictControl`, and an `NV_DefineSpace` at `--nv-index`; the first `NV_Increment` initialises the counter
+  (an unwritten index can be neither read nor certified).
+- `tpm-teardown --ak-handle --nv-index` removes exactly the two named objects, each **only if its public
+  area matches `tpm-setup`'s template** (`is_our_ak`: restricted ∧ sign ∧ ¬decrypt ∧ fixedTPM ∧ fixedParent
+  ∧ sensitiveDataOrigin ∧ userWithAuth ∧ P-256 ∧ ECDSA/SHA-256; `is_our_counter`: `COUNTER`, 8 bytes,
+  authRead ∧ authWrite ∧ noDA ∧ ¬ownerWrite ∧ ¬policyWrite ∧ ¬ppWrite ∧ ¬platformCreate). Probed against the
+  owner's key: `REFUSED: the key at 0x81000100 is not a tee-signer attestation key (template differs)`.
+  Nothing in the binary knows the laptop's other handles — the guard is the template, not a list.
+- the daemon never creates, never evicts: `TssTpm::open` only resolves the two handles
+  (`Esys_TR_FromTPMPublic`) and fails with "run `signerd tpm-setup`" when one is missing.
+
+**Your two product notes, implemented:** `SIGNERD_TPM_AUTH=<any string>` → SHA-256 → the authValue of
+*both* the key and the index (`CreatePrimary` auth, `NV_DefineSpace` auth; the runtime sets it with
+`Esys_TR_SetAuth` and uses password sessions). Unset = empty auth, the isolated-test configuration. The
+attestation key is **restricted** on top: a restricted signing key signs only TPM-generated structures
+(`TPM_GENERATED` magic), so even with its auth a host cannot obtain its signature over a forged
+`TPMS_ATTEST` (`TPM2_Sign` of arbitrary digests is refused by the TPM).
+
+**Why raw ESAPI for the runtime:** `tss-esapi` 7.7.0 has no `nv_certify` (`non_volatile_storage.rs:232`
+"Missing function: NV_Certify"). The runtime (`certify`, `increment`, the three reads behind `tpm-info`)
+therefore calls `Esys_NV_Certify` / `Esys_NV_Increment` / `Esys_ReadPublic` / `Esys_NV_ReadPublic` /
+`Esys_NV_Read` through the crate's `tss2_esys` bindings on an ESAPI context this module owns
+(`Tss2_TctiLdr_Initialize` → `Esys_Initialize`, finalized in `Drop`). Every `unsafe` block is annotated;
+every ESAPI out-buffer is copied and `Esys_Free`d before the function returns; the `ecdsa` union member is
+read only after `sigAlg == TPM2_ALG_ECDSA` and `hash == SHA256` are checked; `r`/`s` are left-padded to 32
+and the signature is low-s normalised (the enclave verifier accepts only that half). The one-shot setup /
+teardown use the safe `tss_esapi::Context` API (the same idiom as `owner-cli`'s TPM keygen). The
+alternative — shelling out to `tpm2_nvcertify` — was rejected: temp files per call and auth values on a
+command line.
+
+**`ORDERLY` (your Q1 default, pinned):** the index is hybrid by default, `--no-orderly` makes it plain. On
+the laptop's Intel PTT both define fine. Two facts the run surfaced, both now in the docs: (1) a **new
+counter does not start at 0** — the TPM seeds it above the last value of any counter ever deleted on it
+(the runs saw 1 → 2 → 3 → 6 → 12 → …; only `counter == expected` matters, the absolute value is opaque);
+(2) a hybrid counter jumps *forward* after an unorderly shutdown → `STATE_STALE` → owner re-anchor. On a
+**virtual** TPM there is no flash to spare and a hard reset of a VM is not rare, so the operator doc
+recommends `--no-orderly` there. **Q7 for you:** should `--no-orderly` be the default when the TCTI is a
+vTPM, or stay the operator's explicit choice as now? (I prefer explicit: one flag, documented.)
+
+**T0 evidence — `scripts/e2e-tss-local.sh` on the laptop (Intel PTT, `/dev/tpmrm0`, 2026-11-11):**
+refusals for an occupied handle and an occupied index (nothing created) → setup at `0x81000200` /
+`0x01800200` → a second setup refused → teardown's template guard refused on the owner's key → the nosgx
+daemon with `SIGNERD_TPM=tss:…` from the first start, init + install → `tpm-info`, owner nonce,
+`tpm-certify` → **a real `TPMS_ATTEST` (149 bytes, magic `ff544347`, type `8014`) through the
+fixed-layout parser**, `anchor` accepted (`attested counter: 12 … the state expects counter 13`) →
+freeze + unfreeze → `tpm_expected 15 == TPM counter 15` (read back independently through `tpm-info`) →
+unattended restart → `boot_armed false` → one call → `boot_armed true, tpm_last_fresh true` → an older
+state file restored + restart → `STATE_STALE`, not armed → owner re-anchor (`attested counter: 19 … expects
+20`) → teardown → `tpm2_getcap handles-persistent` + `handles-nv-index` **identical to the snapshot taken
+before the run**. The script refuses to start when its two handles are occupied and tears down in its exit
+trap. Run with `E2E_DIR` in the session scratchpad; nothing left in `/tmp`.
+
+**Not in this addendum:** the T2 image (`btcpay/docker/Dockerfile.signerd-t2`) does not yet carry
+libtss2 or the `tss` feature — that change goes with the vTPM (issue #1) so the live T2 stack is not
+rebuilt for nothing; `deploy/README.md` lists the exact packages and flags. The remote agent for the
++1-VM option stays unwritten.
+
+**Q8:** is the teardown template guard sufficient as the "ours" test, or do you want teardown to also
+require the index Name / key to match a `tpm-setup.json` the operator hands it (one more file to carry)?
+

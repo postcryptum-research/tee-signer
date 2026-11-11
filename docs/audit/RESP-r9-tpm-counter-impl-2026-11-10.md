@@ -29,3 +29,5 @@ the product path for the counter is a vTPM for the SGX node — [issue #1](https
 (Azure Trusted Launch on `sgx-node-3`, or a +1 counter VM) — or the operator's own server with a physical TPM.
 Must-hold E (agent handle isolation) therefore applies to whichever agent is written for that path, not to the laptop.
 Merged to `main` after this pass.
+
+**Dev's note 2026-11-11:** the product-path transport `tss` (a local TPM through libtss2) was written on branch `r9-tss` under the owner's «делай на свой выбор» and the auditor's same-day ack of the handle plan (AK `0x81000200`, NV `0x01800200`, explicit setup, refuse-if-occupied, delete by explicit handle); REQ-r9 impl §7 is the addendum, review pending.

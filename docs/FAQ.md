@@ -247,12 +247,14 @@ docker exec tee-btcpay-tee-signer-1 signerd submit --state-dir /var/lib/signerd 
 
 Payouts resume. A reboot at night is a pause until your morning, never a loss.
 
-*In development (R9, not on the project's node yet):* with a TPM in front of the enclave — a physical
-one on your own server, or the virtual TPM of a Trusted-Launch VM — the enclave checks the TPM's
-counter against the value it sealed last and arms itself when they agree, so a restart no longer
-waits for you; the pause above stays the fallback whenever the counter disagrees. Against root inside
-the server the counter cannot be turned back; against the cloud provider, who owns a virtual TPM, the
-protection is the same as without one.
+*With a TPM in front of the enclave (R9; built and tested, waiting for a server that has one — the
+project's node does not yet):* a physical TPM on your own server, or the virtual TPM of a
+Trusted-Launch VM. The enclave checks the TPM's counter against the value it sealed last and arms
+itself when they agree, so a restart no longer waits for you; the pause above stays the fallback
+whenever the counter disagrees. Against root inside the server the counter cannot be turned back;
+against the cloud provider, who owns a virtual TPM, the protection is the same as without one. How to
+set it up: ["How do I put a TPM in front of the signer?"](#how-do-i-put-a-tpm-in-front-of-the-signer-r9)
+below.
 
 **What you get:** the seed is never a file; a stolen admin login, a bad plugin or a hacked BTCPay
 container can at most spend the current window's unlisted budget, to destinations capped per
@@ -547,6 +549,50 @@ It copies the DLL into the BTCPay container's `Plugins/` directory and restarts 
 sidecar and the enclave are untouched: no pause, no `arm`. To roll back, copy the saved DLL back and
 run the same command.
 
+
+### How do I put a TPM in front of the signer (R9)?
+
+You need a TPM 2.0 the signer's machine can reach as `/dev/tpmrm0`: a physical one on your own server,
+or the virtual TPM of a cloud VM with Trusted Launch (on Azure this is a property of the VM; the
+project's own node is waiting for it — issue #1). The signer build must carry the `tss` feature (the
+packaged image says so in its manifest). Then, **once, on the server**:
+
+```sh
+tpm2_getcap handles-persistent; tpm2_getcap handles-nv-index      # pick two handles nobody uses
+docker exec tee-btcpay-tee-signer-1 signerd tpm-setup --ak-handle 0x81000200 --nv-index 0x01800200 --no-orderly --out /exchange/tpm-setup.json
+```
+
+`tpm-setup` creates two objects inside the TPM: an attestation key (it can only sign what the TPM
+itself attests — nobody can make it sign a forged counter reading) and a monotonic counter. It
+**refuses** a handle that is already in use — it never evicts another program's key — so a typo cannot
+hurt anything; pick another handle. Add to the sidecar's environment
+`SIGNERD_TPM=tss:device:/dev/tpmrm0?ak=0x81000200&nv=0x01800200` and `SIGNERD_TPM_AUTH=<a secret of
+yours>` (the password of the two objects; without it any process on the server could advance the
+counter and pause your signer — never spend anything, but pause it), map `/dev/tpmrm0` into the
+container, restart the sidecar. Do not start with the counter: `--no-orderly` makes a plain counter;
+the default hybrid one saves a physical TPM's flash but jumps forward after a power loss, which the
+enclave treats as "unknown state" until you re-anchor.
+
+Then **you anchor** — tell the enclave which TPM and which counter value it must trust, with your
+owner key, from an attested reading (the counter value never comes from the server's say-so):
+
+```sh
+# server: the key and the counter index                 → carry tpm-info.json to your machine
+docker exec tee-btcpay-tee-signer-1 signerd tpm-info --state-dir /var/lib/signerd --out /exchange/tpm-info.json
+# your machine: a nonce only you know                  → carry nonce.txt to the server
+openssl rand -hex 32 > ~/tee-owner/exchange/nonce.txt
+# server: the TPM certifies the counter over YOUR nonce → carry anchor-proof.json back
+docker exec tee-btcpay-tee-signer-1 signerd tpm-certify --state-dir /var/lib/signerd --nonce-file /exchange/nonce.txt --out /exchange/anchor-proof.json
+# your machine: verify the proof yourself and sign the anchor
+./owner-cli --status-file ~/tee-owner/exchange/status.json --wallet-record ~/tee-owner/wallet.json --out ~/tee-owner/exchange/anchor.msg anchor --key piv:9a --tpm-info-file ~/tee-owner/exchange/tpm-info.json --proof-file ~/tee-owner/exchange/anchor-proof.json --proof-nonce-file ~/tee-owner/exchange/nonce.txt
+# server
+docker exec tee-btcpay-tee-signer-1 signerd submit --state-dir /var/lib/signerd --file /exchange/anchor.msg --out /exchange/anchor.result.json
+```
+
+From now on every payout and every state change carries a fresh counter proof, and a restart arms
+itself when the counter agrees — no `arm` at night. When it does not agree (the counter jumped, the
+state was restored from a backup, someone replaced the TPM) the signer pauses with `STATE_STALE` and
+the plugin page tells you; you repeat the four anchor steps — the pause is the protection working.
 
 ### Why does the enclave have two keys?
 

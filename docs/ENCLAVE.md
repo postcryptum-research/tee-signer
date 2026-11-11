@@ -120,7 +120,7 @@ no-monotonic-counter limit of Q3 in its sharpest form.
   it does not prevent it. Prevention needs a monotonic counter SGX1 does not have; a counter
   service or an external anchor on T2 is a later REQ.
 
-## 4c. The TPM counter — freshness without the owner (R9, branch `r9-tpm`, IMPL review pending)
+## 4c. The TPM counter — freshness without the owner (R9, merged 2026-11-10; no node of the project has a TPM yet)
 
 When the sealed state carries a `TpmAnchor` (an attestation key, a `TPMA_NV_COUNTER` index Name and the
 counter value this blob expects — set by the owner's `Anchor` message), every ecall that changes state or
@@ -135,6 +135,25 @@ counter instead of the owner): an unattended restart with the bound kept. The pu
 the one message that opens a blob without a proof: a rolled-back or desynchronised blob can be re-anchored
 only by the owner (signature, next nonce, this load's challenge, `seq_seen`). Honest scope: the bound holds
 against root inside the VM; against the provider who owns a virtual TPM it reverts to the hot float.
+
+**Host side (untrusted plumbing, `host/signerd/src/tpm.rs`, `tpm_tss.rs`).** `SIGNERD_TPM` selects the
+transport: `software:<file>` (the T0 bench, with `SIGNERD_TPM_LIE=` switches for the negative vectors),
+`remote:<http://…>` (a two-operation agent on a private network — the +1-VM option of issue #1), or
+`tss:<tcti>?ak=0x81……&nv=0x01……` (a local TPM 2.0 through libtss2, build feature `tss`; written and run
+against a real TPM on 2026-11-11, `scripts/e2e-tss-local.sh`). The `tss` objects are created **once, on
+the TPM's machine, at handles the operator names**: `signerd tpm-setup --ak-handle 0x… --nv-index 0x…
+--out tpm-setup.json` makes a *restricted* P-256 attestation key (the TPM signs only structures it
+generated itself — no host can get this key's signature over a forged `TPMS_ATTEST`) and a
+`TPMA_NV_COUNTER` index (8 bytes, auth-read/write, `NO_DA`, hybrid `ORDERLY` by default, `--no-orderly`
+for a plain one). An occupied handle or index is **refused, never evicted** (C-R9-E); `signerd
+tpm-teardown` removes exactly the two named objects and only if they match `tpm-setup`'s templates.
+`SIGNERD_TPM_AUTH=<any string>` (optional; SHA-256 → the authValue of both objects) keeps a co-tenant of a
+shared TPM from incrementing the counter (a liveness denial, never a rollback) or asking for certifies —
+set it on the product path. Two TPM facts the operator sees: a new counter does **not** start at 0 (the
+TPM seeds it above the last value of any counter ever deleted on it — only equality with the sealed
+expectation matters), and a hybrid counter **jumps forward** after an unorderly shutdown (power loss, a
+hard reset of the VM), which the enclave reports as `STATE_STALE` until the owner re-anchors — a virtual
+TPM has no flash to spare and may prefer `--no-orderly`.
 
 ## 4b. The boot-arm — no signature after a restart until the owner arms this load (R7)
 
