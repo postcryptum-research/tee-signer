@@ -116,26 +116,53 @@ fn classifier_fails_toward_loosening() {
     let cases: Vec<Case> = vec![
         ("identical", Box::new(|_| {}), Change::Tightening),
         ("remove trusted", Box::new(|m| m.destinations.trusted.clear()), Change::Tightening),
-        ("add trusted", Box::new(|m| {
-            m.destinations.trusted.push(TrustedDest {
-                label: "exch".into(),
-                matcher: Matcher::Address { script_pubkey: foreign_spk(1).to_bytes() },
-                max_per_tx: 1,
-                max_per_window: 1,
-            })
-        }), Change::Loosening),
-        ("trusted matcher gap lowered", Box::new(|m| {
-            if let Matcher::Descriptor { gap, .. } = &mut m.destinations.trusted[0].matcher { *gap = 5 }
-        }), Change::Tightening),
-        ("trusted matcher gap raised", Box::new(|m| {
-            if let Matcher::Descriptor { gap, .. } = &mut m.destinations.trusted[0].matcher { *gap = 50 }
-        }), Change::Loosening),
-        ("trusted matcher branch added", Box::new(|m| {
-            if let Matcher::Descriptor { branches, .. } = &mut m.destinations.trusted[0].matcher { branches.push(1) }
-        }), Change::Loosening),
-        ("trusted matcher key changed", Box::new(|m| {
-            m.destinations.trusted[0].matcher = Matcher::Descriptor { xpub: wallet(0x03).xpub_bytes(), branches: vec![0], gap: 20 }
-        }), Change::Loosening),
+        (
+            "add trusted",
+            Box::new(|m| {
+                m.destinations.trusted.push(TrustedDest {
+                    label: "exch".into(),
+                    matcher: Matcher::Address { script_pubkey: foreign_spk(1).to_bytes() },
+                    max_per_tx: 1,
+                    max_per_window: 1,
+                })
+            }),
+            Change::Loosening,
+        ),
+        (
+            "trusted matcher gap lowered",
+            Box::new(|m| {
+                if let Matcher::Descriptor { gap, .. } = &mut m.destinations.trusted[0].matcher {
+                    *gap = 5
+                }
+            }),
+            Change::Tightening,
+        ),
+        (
+            "trusted matcher gap raised",
+            Box::new(|m| {
+                if let Matcher::Descriptor { gap, .. } = &mut m.destinations.trusted[0].matcher {
+                    *gap = 50
+                }
+            }),
+            Change::Loosening,
+        ),
+        (
+            "trusted matcher branch added",
+            Box::new(|m| {
+                if let Matcher::Descriptor { branches, .. } = &mut m.destinations.trusted[0].matcher {
+                    branches.push(1)
+                }
+            }),
+            Change::Loosening,
+        ),
+        (
+            "trusted matcher key changed",
+            Box::new(|m| {
+                m.destinations.trusted[0].matcher =
+                    Matcher::Descriptor { xpub: wallet(0x03).xpub_bytes(), branches: vec![0], gap: 20 }
+            }),
+            Change::Loosening,
+        ),
         ("trusted cap lowered", Box::new(|m| m.destinations.trusted[0].max_per_tx = 1), Change::Tightening),
         ("trusted cap raised", Box::new(|m| m.destinations.trusted[0].max_per_window = 10 * BTC), Change::Loosening),
         ("window longer", Box::new(|m| m.limits.window_blocks = 288), Change::Tightening),
@@ -146,15 +173,43 @@ fn classifier_fails_toward_loosening() {
         ("payjoin opened", Box::new(|m| m.rules.payjoin = PayjoinRule::OutflowAllowed), Change::Loosening),
         ("rbf off", Box::new(|m| m.rules.rbf = false), Change::Tightening),
         ("opreturn allowed", Box::new(|m| m.rules.op_return = OpReturnRule::ZeroValue), Change::Loosening),
-        ("checkpoint forward", Box::new(|m| { m.checkpoint.height = 250_050; m.checkpoint.hash = header_hash(250_050) }), Change::Tightening),
-        ("checkpoint backward", Box::new(|m| { m.checkpoint.height = 249_999; m.checkpoint.hash = header_hash(249_999) }), Change::Loosening),
-        ("freshness enabled (a precondition added)", Box::new(|m| { m.freshness.required = true; m.freshness.witness_pk = Some(p256_key(0xc3).pk) }), Change::Tightening),
+        (
+            "checkpoint forward",
+            Box::new(|m| {
+                m.checkpoint.height = 250_050;
+                m.checkpoint.hash = header_hash(250_050)
+            }),
+            Change::Tightening,
+        ),
+        (
+            "checkpoint backward",
+            Box::new(|m| {
+                m.checkpoint.height = 249_999;
+                m.checkpoint.hash = header_hash(249_999)
+            }),
+            Change::Loosening,
+        ),
+        (
+            "freshness enabled (a precondition added)",
+            Box::new(|m| {
+                m.freshness.required = true;
+                m.freshness.witness_pk = Some(p256_key(0xc3).pk)
+            }),
+            Change::Tightening,
+        ),
         ("tip lag lowered", Box::new(|m| m.freshness.max_tip_lag = 1), Change::Tightening),
         ("validity shortened", Box::new(|m| m.not_after_height = 260_000), Change::Tightening),
         ("validity extended", Box::new(|m| m.not_after_height = 400_000), Change::Loosening),
         ("timelock raised", Box::new(|m| m.timelock_blocks = 1000), Change::Tightening),
         ("timelock lowered", Box::new(|m| m.timelock_blocks = 1), Change::Loosening),
-        ("tighten one loosen another", Box::new(|m| { m.limits.max_per_tx = 1; m.limits.max_fee_abs = 1_000_000 }), Change::Loosening),
+        (
+            "tighten one loosen another",
+            Box::new(|m| {
+                m.limits.max_per_tx = 1;
+                m.limits.max_fee_abs = 1_000_000
+            }),
+            Change::Loosening,
+        ),
     ];
     for (name, f, want) in cases {
         let mut m = base.clone();
@@ -373,7 +428,10 @@ fn judge_charges_before_signing_second_spend_hits_window() {
     let psbt = build_psbt(
         &w,
         &[In::Own { branch: 0, index: 5, amount: 2_000_000, hint: true }],
-        &[Out { spk: foreign_spk(1), amount: 900_000, hint: None }, Out { spk: w.spk(1, 0), amount: 1_098_000, hint: Some((1, 0)) }],
+        &[
+            Out { spk: foreign_spk(1), amount: 900_000, hint: None },
+            Out { spk: w.spk(1, 0), amount: 1_098_000, hint: Some((1, 0)) },
+        ],
         2,
         false,
     )
@@ -405,7 +463,10 @@ mod hollow {
         let mut psbt = build_psbt(
             &w,
             &[In::Own { branch: 0, index: 5, amount: 2_000_000, hint: true }],
-            &[Out { spk: foreign_spk(1), amount: 900_000, hint: None }, Out { spk: w.spk(1, 0), amount: 98_000, hint: Some((1, 0)) }],
+            &[
+                Out { spk: foreign_spk(1), amount: 900_000, hint: None },
+                Out { spk: w.spk(1, 0), amount: 98_000, hint: Some((1, 0)) },
+            ],
             2,
             false,
         )
@@ -416,7 +477,10 @@ mod hollow {
         assert!(classify(&secp, &bytes, &w.account, &s.mandate, s.own_index_bound).is_err(), "guard on: refused");
         let g = ClassifyGuards { require_prevtx: false, ..Default::default() };
         let c = classify_with_guards(&secp, &bytes, &w.account, &s.mandate, s.own_index_bound, g).unwrap();
-        assert!(matches!(judge(&s, &c, None), Verdict::Accept { .. }), "guard off: the lie signs (fee 1_002_000 hidden)");
+        assert!(
+            matches!(judge(&s, &c, None), Verdict::Accept { .. }),
+            "guard off: the lie signs (fee 1_002_000 hidden)"
+        );
     }
 
     #[test]
@@ -427,7 +491,10 @@ mod hollow {
         let mut psbt = build_psbt(
             &w,
             &[In::Own { branch: 0, index: 5, amount: 2_000_000, hint: true }],
-            &[Out { spk: foreign_spk(1), amount: 900_000, hint: None }, Out { spk: w.spk(1, 0), amount: 1_098_000, hint: Some((1, 0)) }],
+            &[
+                Out { spk: foreign_spk(1), amount: 900_000, hint: None },
+                Out { spk: w.spk(1, 0), amount: 1_098_000, hint: Some((1, 0)) },
+            ],
             2,
             false,
         )
@@ -437,7 +504,10 @@ mod hollow {
         assert!(classify(&secp, &bytes, &w.account, &s.mandate, s.own_index_bound).is_err(), "guard on: refused");
         let g = ClassifyGuards { verify_own_output_script: false, ..Default::default() };
         let c = classify_with_guards(&secp, &bytes, &w.account, &s.mandate, s.own_index_bound, g).unwrap();
-        assert!(matches!(judge(&s, &c, None), Verdict::Accept { .. }), "guard off: 1_098_000 to a foreign key signs as 'change'");
+        assert!(
+            matches!(judge(&s, &c, None), Verdict::Accept { .. }),
+            "guard off: 1_098_000 to a foreign key signs as 'change'"
+        );
     }
 
     #[test]
@@ -450,7 +520,10 @@ mod hollow {
         let psbt = build_psbt(
             &w,
             &[In::Own { branch: 0, index: 5, amount: 2_000_000, hint: true }],
-            &[Out { spk: foreign_spk(1), amount: 900_000, hint: None }, Out { spk: w.spk(1, 0), amount: 1_098_000, hint: Some((1, 0)) }],
+            &[
+                Out { spk: foreign_spk(1), amount: 900_000, hint: None },
+                Out { spk: w.spk(1, 0), amount: 1_098_000, hint: Some((1, 0)) },
+            ],
             2,
             false,
         )
@@ -459,7 +532,10 @@ mod hollow {
         let g = Guards { commit_before_sign: false, ..Default::default() };
         let Verdict::Accept { state: s1, .. } = judge_with_guards(&s0, &c, None, g) else { panic!() };
         assert_eq!(s1.window.outflow, 0, "guard off: nothing charged");
-        assert!(matches!(judge_with_guards(&s1, &c, None, g), Verdict::Accept { .. }), "guard off: signs again past the window");
+        assert!(
+            matches!(judge_with_guards(&s1, &c, None, g), Verdict::Accept { .. }),
+            "guard off: signs again past the window"
+        );
     }
 
     #[test]
@@ -471,7 +547,10 @@ mod hollow {
         let psbt = build_psbt(
             &w,
             &[In::Own { branch: 0, index: 5, amount: 2_000_000, hint: true }],
-            &[Out { spk: foreign_spk(1), amount: 900_000, hint: None }, Out { spk: w.spk(1, 0), amount: 1_098_000, hint: Some((1, 0)) }],
+            &[
+                Out { spk: foreign_spk(1), amount: 900_000, hint: None },
+                Out { spk: w.spk(1, 0), amount: 1_098_000, hint: Some((1, 0)) },
+            ],
             2,
             false,
         )

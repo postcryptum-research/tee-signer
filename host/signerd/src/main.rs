@@ -435,7 +435,10 @@ async fn feed_once(shared: &Shared) -> Result<u32> {
             if r.ok {
                 let accepted = hr.map(|h| h.accepted).unwrap_or(0);
                 total += accepted;
-                warn!(fork_depth = k + 1, accepted, "header feed: the node forked from the enclave's best; fork accepted");
+                warn!(
+                    fork_depth = k + 1,
+                    accepted, "header feed: the node forked from the enclave's best; fork accepted"
+                );
                 resume = Some(probe_top.saturating_add(1));
                 break;
             }
@@ -446,7 +449,11 @@ async fn feed_once(shared: &Shared) -> Result<u32> {
         }
         match resume {
             Some(f) => f,
-            None => return Err(anyhow!("fork below the enclave's known headers (checkpoint..best): the owner must re-pin the checkpoint")),
+            None => {
+                return Err(anyhow!(
+                    "fork below the enclave's known headers (checkpoint..best): the owner must re-pin the checkpoint"
+                ))
+            }
         }
     };
     while from <= tip {
@@ -504,13 +511,16 @@ enum OwnerStep {
 fn value_or_file(value: &Option<String>, file: &Option<PathBuf>, what: &str) -> Result<String> {
     match (value, file) {
         (Some(v), _) => Ok(v.trim().to_string()),
-        (None, Some(f)) => Ok(std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?.trim().to_string()),
+        (None, Some(f)) => {
+            Ok(std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?.trim().to_string())
+        }
         (None, None) => anyhow::bail!("{what}"),
     }
 }
 
 async fn owner_step(state_dir: &Path, url: &str, out: &Path, step: OwnerStep) -> Result<()> {
-    let token = std::fs::read_to_string(state_dir.join("token")).with_context(|| format!("reading {}/token (is the daemon initialised here?)", state_dir.display()))?;
+    let token = std::fs::read_to_string(state_dir.join("token"))
+        .with_context(|| format!("reading {}/token (is the daemon initialised here?)", state_dir.display()))?;
     let token = token.trim().to_string();
     let http = reqwest::Client::new();
     let base = url.trim_end_matches('/');
@@ -518,9 +528,13 @@ async fn owner_step(state_dir: &Path, url: &str, out: &Path, step: OwnerStep) ->
         OwnerStep::Status => http.get(format!("{base}/v1/status")).bearer_auth(&token).send().await?,
         OwnerStep::Freeze => http.post(format!("{base}/v1/freeze")).bearer_auth(&token).send().await?,
         OwnerStep::Policy => http.get(format!("{base}/v1/policy")).bearer_auth(&token).send().await?,
-        OwnerStep::Quote(nonce) => http.get(format!("{base}/v1/quote")).query(&[("nonce", nonce)]).bearer_auth(&token).send().await?,
+        OwnerStep::Quote(nonce) => {
+            http.get(format!("{base}/v1/quote")).query(&[("nonce", nonce)]).bearer_auth(&token).send().await?
+        }
         OwnerStep::TpmInfo => http.get(format!("{base}/v1/tpm/info")).bearer_auth(&token).send().await?,
-        OwnerStep::TpmCertify(nonce) => http.get(format!("{base}/v1/tpm/certify")).query(&[("nonce", nonce)]).bearer_auth(&token).send().await?,
+        OwnerStep::TpmCertify(nonce) => {
+            http.get(format!("{base}/v1/tpm/certify")).query(&[("nonce", nonce)]).bearer_auth(&token).send().await?
+        }
         OwnerStep::Init { network, owner_pk, recovery_pk } => {
             let net: u8 = match network.as_str() {
                 "mainnet" => 0,
@@ -538,15 +552,23 @@ async fn owner_step(state_dir: &Path, url: &str, out: &Path, step: OwnerStep) ->
         OwnerStep::Submit(file) => {
             let hex_text = std::fs::read_to_string(&file).with_context(|| format!("reading {}", file.display()))?;
             let bytes = hex::decode(hex_text.trim()).context("the message file is not hex")?;
-            let msg = signer_core::update::Message::decode(&bytes).map_err(|_| anyhow::anyhow!("the file does not decode as an owner message"))?;
+            let msg = signer_core::update::Message::decode(&bytes)
+                .map_err(|_| anyhow::anyhow!("the file does not decode as an owner message"))?;
             match &msg {
-                signer_core::update::Message::PolicyUpdate { nonce: 0, mandate, sig, .. } => http
-                    .post(format!("{base}/v1/install"))
-                    .bearer_auth(&token)
-                    .json(&serde_json::json!({"mandate_hex": hex::encode(mandate), "sig_hex": hex::encode(sig)}))
-                    .send()
-                    .await?,
-                _ => http.post(format!("{base}/v1/message")).bearer_auth(&token).json(&serde_json::json!({"message_hex": hex_text.trim()})).send().await?,
+                signer_core::update::Message::PolicyUpdate { nonce: 0, mandate, sig, .. } => {
+                    http.post(format!("{base}/v1/install"))
+                        .bearer_auth(&token)
+                        .json(&serde_json::json!({"mandate_hex": hex::encode(mandate), "sig_hex": hex::encode(sig)}))
+                        .send()
+                        .await?
+                }
+                _ => {
+                    http.post(format!("{base}/v1/message"))
+                        .bearer_auth(&token)
+                        .json(&serde_json::json!({"message_hex": hex_text.trim()}))
+                        .send()
+                        .await?
+                }
             }
         }
     };
@@ -684,7 +706,11 @@ fn fixed<const N: usize>(hex_s: &str) -> Result<[u8; N]> {
     <[u8; N]>::try_from(v.as_slice()).map_err(|_| anyhow!("expected {N} bytes"))
 }
 
-async fn h_init(AxState(s): AxState<Shared>, headers: HeaderMap, Json(req): Json<InitJson>) -> axum::response::Response {
+async fn h_init(
+    AxState(s): AxState<Shared>,
+    headers: HeaderMap,
+    Json(req): Json<InitJson>,
+) -> axum::response::Response {
     let mut d = s.lock().await;
     if !authorized(&headers, &d.token) {
         return err(StatusCode::UNAUTHORIZED, "token", vec![]);
@@ -703,7 +729,9 @@ async fn h_init(AxState(s): AxState<Shared>, headers: HeaderMap, Json(req): Json
     if !r.ok {
         return err(StatusCode::UNPROCESSABLE_ENTITY, "init refused", r.reasons);
     }
-    let Ok(ir) = proto::InitResponse::decode(&r.payload) else { return err(StatusCode::INTERNAL_SERVER_ERROR, "init decode", vec![]) };
+    let Ok(ir) = proto::InitResponse::decode(&r.payload) else {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "init decode", vec![]);
+    };
     if let Err(e) = d.persist(ir.sealed.clone()) {
         return err(StatusCode::INTERNAL_SERVER_ERROR, format!("persist: {e}"), vec![]);
     }
@@ -724,7 +752,11 @@ struct InstallJson {
     sig_hex: String,
 }
 
-async fn h_install(AxState(s): AxState<Shared>, headers: HeaderMap, Json(req): Json<InstallJson>) -> axum::response::Response {
+async fn h_install(
+    AxState(s): AxState<Shared>,
+    headers: HeaderMap,
+    Json(req): Json<InstallJson>,
+) -> axum::response::Response {
     let mut d = s.lock().await;
     if !authorized(&headers, &d.token) {
         return err(StatusCode::UNAUTHORIZED, "token", vec![]);
@@ -741,7 +773,9 @@ async fn h_install(AxState(s): AxState<Shared>, headers: HeaderMap, Json(req): J
     if !r.ok {
         return err(StatusCode::UNPROCESSABLE_ENTITY, "install refused", r.reasons);
     }
-    let Ok(sr) = proto::SealedResponse::decode(&r.payload) else { return err(StatusCode::INTERNAL_SERVER_ERROR, "decode", vec![]) };
+    let Ok(sr) = proto::SealedResponse::decode(&r.payload) else {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "decode", vec![]);
+    };
     if let Err(e) = d.persist(sr.sealed) {
         return err(StatusCode::INTERNAL_SERVER_ERROR, format!("persist: {e}"), vec![]);
     }
@@ -775,7 +809,11 @@ struct MessageJson {
     message_hex: String,
 }
 
-async fn h_message(AxState(s): AxState<Shared>, headers: HeaderMap, Json(req): Json<MessageJson>) -> axum::response::Response {
+async fn h_message(
+    AxState(s): AxState<Shared>,
+    headers: HeaderMap,
+    Json(req): Json<MessageJson>,
+) -> axum::response::Response {
     let mut d = s.lock().await;
     if !authorized(&headers, &d.token) {
         return err(StatusCode::UNAUTHORIZED, "token", vec![]);
@@ -794,7 +832,9 @@ async fn h_message(AxState(s): AxState<Shared>, headers: HeaderMap, Json(req): J
     if !r.ok {
         return err(StatusCode::UNPROCESSABLE_ENTITY, "message refused", r.reasons);
     }
-    let Ok(sr) = proto::SealedResponse::decode(&r.payload) else { return err(StatusCode::INTERNAL_SERVER_ERROR, "decode", vec![]) };
+    let Ok(sr) = proto::SealedResponse::decode(&r.payload) else {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "decode", vec![]);
+    };
     if let Err(e) = d.persist(sr.sealed) {
         return err(StatusCode::INTERNAL_SERVER_ERROR, format!("persist: {e}"), vec![]);
     }
@@ -815,7 +855,9 @@ async fn h_freeze(AxState(s): AxState<Shared>, headers: HeaderMap) -> axum::resp
         // REQ-r9: a freeze is a state change too — a stale or unproven blob is refused by name
         return err(StatusCode::UNPROCESSABLE_ENTITY, "freeze refused", r.reasons);
     }
-    let Ok(sr) = proto::SealedResponse::decode(&r.payload) else { return err(StatusCode::INTERNAL_SERVER_ERROR, "decode", vec![]) };
+    let Ok(sr) = proto::SealedResponse::decode(&r.payload) else {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "decode", vec![]);
+    };
     if let Err(e) = d.persist(sr.sealed) {
         return err(StatusCode::INTERNAL_SERVER_ERROR, format!("persist: {e}"), vec![]);
     }
@@ -846,14 +888,20 @@ struct QuoteJson {
 /// `REPORT` ecall — target_info out, report in, quote out — because the quoting library cannot
 /// share a process with the loaded enclave and loses its attestation key between processes.
 /// Untrusted plumbing: the verifier (owner-cli attest) decides, and only from the quote.
-async fn h_quote(AxState(s): AxState<Shared>, headers: HeaderMap, Query(q): Query<QuoteQuery>) -> axum::response::Response {
-    use std::io::{Read, Write};
+async fn h_quote(
+    AxState(s): AxState<Shared>,
+    headers: HeaderMap,
+    Query(q): Query<QuoteQuery>,
+) -> axum::response::Response {
     use signer_core::proto::quote;
+    use std::io::{Read, Write};
     let mut d = s.lock().await;
     if !authorized(&headers, &d.token) {
         return err(StatusCode::UNAUTHORIZED, "token", vec![]);
     }
-    let Some(helper) = d.quote_helper.clone() else { return err(StatusCode::NOT_IMPLEMENTED, "no quote helper configured (T1 cannot attest)", vec![]) };
+    let Some(helper) = d.quote_helper.clone() else {
+        return err(StatusCode::NOT_IMPLEMENTED, "no quote helper configured (T1 cannot attest)", vec![]);
+    };
     let nonce = match hex::decode(&q.nonce) {
         Ok(n) if n.len() == quote::NONCE_LEN => n,
         _ => return err(StatusCode::BAD_REQUEST, "nonce: 32 bytes hex", vec![]),
@@ -901,7 +949,9 @@ async fn h_quote(AxState(s): AxState<Shared>, headers: HeaderMap, Query(q): Quer
     if let Err(e) = stdout.read_exact(&mut len) {
         let _ = child.kill();
         let mut es = String::new();
-        if let Some(mut se) = child.stderr.take() { let _ = se.read_to_string(&mut es); }
+        if let Some(mut se) = child.stderr.take() {
+            let _ = se.read_to_string(&mut es);
+        }
         return err(StatusCode::BAD_GATEWAY, format!("quote helper quote: {e}; helper said: {}", es.trim()), vec![]);
     }
     let n = u32::from_le_bytes(len) as usize;
@@ -956,13 +1006,19 @@ fn psbt_bytes(s: &str) -> Result<Vec<u8>> {
     Ok(b)
 }
 
-async fn h_sign(AxState(s): AxState<Shared>, headers: HeaderMap, Json(req): Json<SignJson>) -> axum::response::Response {
+async fn h_sign(
+    AxState(s): AxState<Shared>,
+    headers: HeaderMap,
+    Json(req): Json<SignJson>,
+) -> axum::response::Response {
     let mut d = s.lock().await;
     if !authorized(&headers, &d.token) {
         return err(StatusCode::UNAUTHORIZED, "token", vec![]);
     }
     let Ok(sealed) = d.sealed() else { return err(StatusCode::CONFLICT, "not initialised", vec![]) };
-    let Ok(psbt) = psbt_bytes(&req.psbt) else { return err(StatusCode::BAD_REQUEST, "psbt: not base64/hex or not a PSBT", vec![]) };
+    let Ok(psbt) = psbt_bytes(&req.psbt) else {
+        return err(StatusCode::BAD_REQUEST, "psbt: not base64/hex or not a PSBT", vec![]);
+    };
     let witness = match &req.witness_hex {
         Some(h) => match hex::decode(h) {
             Ok(b) => Some(b),
@@ -986,7 +1042,9 @@ async fn h_sign(AxState(s): AxState<Shared>, headers: HeaderMap, Json(req): Json
         }
         return err(StatusCode::UNPROCESSABLE_ENTITY, "refused", r.reasons);
     }
-    let Ok(jr) = proto::JudgeResponse::decode(&r.payload) else { return err(StatusCode::INTERNAL_SERVER_ERROR, "judge decode", vec![]) };
+    let Ok(jr) = proto::JudgeResponse::decode(&r.payload) else {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "judge decode", vec![]);
+    };
     // persist the CHARGED blob before asking for a signature (two-phase)
     if let Err(e) = d.persist(jr.sealed.clone()) {
         return err(
@@ -1001,9 +1059,15 @@ async fn h_sign(AxState(s): AxState<Shared>, headers: HeaderMap, Json(req): Json
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), vec![]),
     };
     if !r.ok {
-        return err(StatusCode::UNPROCESSABLE_ENTITY, "sign refused after a successful judge (persisted charge stands)", r.reasons);
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "sign refused after a successful judge (persisted charge stands)",
+            r.reasons,
+        );
     }
-    let Ok(sr) = proto::SignResponse::decode(&r.payload) else { return err(StatusCode::INTERNAL_SERVER_ERROR, "sign decode", vec![]) };
+    let Ok(sr) = proto::SignResponse::decode(&r.payload) else {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "sign decode", vec![]);
+    };
     let (seq, txid) = signer_core::receipt::Receipt::decode(&sr.receipt)
         .map(|r| (r.seq, display_hash(r.txid)))
         .unwrap_or((0, String::new()));
@@ -1035,7 +1099,11 @@ struct HeadersJson {
     headers_hex: Vec<String>,
 }
 
-async fn h_headers(AxState(s): AxState<Shared>, headers: HeaderMap, Json(req): Json<HeadersJson>) -> axum::response::Response {
+async fn h_headers(
+    AxState(s): AxState<Shared>,
+    headers: HeaderMap,
+    Json(req): Json<HeadersJson>,
+) -> axum::response::Response {
     let mut d = s.lock().await;
     if !authorized(&headers, &d.token) {
         return err(StatusCode::UNAUTHORIZED, "token", vec![]);
@@ -1083,7 +1151,9 @@ async fn h_tpm_info(AxState(s): AxState<Shared>, headers: HeaderMap) -> axum::re
     if !authorized(&headers, &d.token) {
         return err(StatusCode::UNAUTHORIZED, "token", vec![]);
     }
-    let Some(t) = d.tpm.as_mut() else { return err(StatusCode::NOT_IMPLEMENTED, "no TPM transport (SIGNERD_TPM unset)", vec![]) };
+    let Some(t) = d.tpm.as_mut() else {
+        return err(StatusCode::NOT_IMPLEMENTED, "no TPM transport (SIGNERD_TPM unset)", vec![]);
+    };
     match t.info() {
         Ok(i) => Json(i).into_response(),
         Err(e) => err(StatusCode::BAD_GATEWAY, format!("tpm: {e}"), vec![]),
@@ -1097,13 +1167,19 @@ struct TpmCertifyQuery {
 }
 
 /// `GET /v1/tpm/certify?nonce=<hex32>`: `TPM2_NV_Certify` over the owner's nonce, as a file-able JSON.
-async fn h_tpm_certify(AxState(s): AxState<Shared>, headers: HeaderMap, Query(q): Query<TpmCertifyQuery>) -> axum::response::Response {
+async fn h_tpm_certify(
+    AxState(s): AxState<Shared>,
+    headers: HeaderMap,
+    Query(q): Query<TpmCertifyQuery>,
+) -> axum::response::Response {
     let mut d = s.lock().await;
     if !authorized(&headers, &d.token) {
         return err(StatusCode::UNAUTHORIZED, "token", vec![]);
     }
     let Ok(nonce) = fixed::<32>(&q.nonce) else { return err(StatusCode::BAD_REQUEST, "nonce: 32 bytes hex", vec![]) };
-    let Some(t) = d.tpm.as_mut() else { return err(StatusCode::NOT_IMPLEMENTED, "no TPM transport (SIGNERD_TPM unset)", vec![]) };
+    let Some(t) = d.tpm.as_mut() else {
+        return err(StatusCode::NOT_IMPLEMENTED, "no TPM transport (SIGNERD_TPM unset)", vec![]);
+    };
     match t.certify(&nonce) {
         Ok(p) => Json(serde_json::json!({
             "nonce": q.nonce,
@@ -1133,11 +1209,19 @@ async fn main() -> Result<()> {
     // R8: the file commands talk to the running daemon on this machine; no enclave is loaded here
     match &args.cmd {
         Cmd::Status { state_dir, url, out } => return owner_step(state_dir, url, out, OwnerStep::Status).await,
-        Cmd::Submit { state_dir, url, file, out } => return owner_step(state_dir, url, out, OwnerStep::Submit(file.clone())).await,
+        Cmd::Submit { state_dir, url, file, out } => {
+            return owner_step(state_dir, url, out, OwnerStep::Submit(file.clone())).await
+        }
         Cmd::Init { state_dir, url, network, owner_pk, owner_pk_file, recovery_pk, recovery_pk_file, out } => {
             let owner_pk = value_or_file(owner_pk, owner_pk_file, "--owner-pk or --owner-pk-file")?;
             let recovery_pk = value_or_file(recovery_pk, recovery_pk_file, "--recovery-pk or --recovery-pk-file")?;
-            return owner_step(state_dir, url, out, OwnerStep::Init { network: network.clone(), owner_pk, recovery_pk }).await;
+            return owner_step(
+                state_dir,
+                url,
+                out,
+                OwnerStep::Init { network: network.clone(), owner_pk, recovery_pk },
+            )
+            .await;
         }
         Cmd::Quote { state_dir, url, nonce, nonce_file, out } => {
             let nonce = value_or_file(nonce, nonce_file, "--nonce or --nonce-file")?;
@@ -1168,7 +1252,9 @@ async fn main() -> Result<()> {
         Cmd::Run { .. } => {}
         _ => unreachable!("the file commands returned above"),
     }
-    let Cmd::Run { state_dir, listen, bitcoind_rpc, bitcoind_cookie, headers_interval } = args.cmd else { unreachable!() };
+    let Cmd::Run { state_dir, listen, bitcoind_rpc, bitcoind_cookie, headers_interval } = args.cmd else {
+        unreachable!()
+    };
     std::fs::create_dir_all(&state_dir)?;
 
     let token_path = state_dir.join("token");
@@ -1196,7 +1282,16 @@ async fn main() -> Result<()> {
     if let Some(t) = tpm_transport.as_ref() {
         info!(transport = t.describe(), "tpm counter transport configured (REQ-r9)");
     }
-    let daemon = Daemon { enclave, state_dir, sealed, token, last_witness: None, bitcoind, quote_helper: args.quote_helper.clone(), tpm: tpm_transport };
+    let daemon = Daemon {
+        enclave,
+        state_dir,
+        sealed,
+        token,
+        last_witness: None,
+        bitcoind,
+        quote_helper: args.quote_helper.clone(),
+        tpm: tpm_transport,
+    };
     let shared: Shared = Arc::new(Mutex::new(daemon));
 
     if bitcoind_rpc.is_some() {

@@ -4,9 +4,7 @@
 
 use p256::ecdsa::signature::hazmat::PrehashSigner;
 use signer_core::reason::Reason;
-use signer_core::tpm_attest::{
-    build_nv_attest, parse_nv_attest, verify_nv_certify, TpmAnchor, NV_NAME_LEN,
-};
+use signer_core::tpm_attest::{build_nv_attest, parse_nv_attest, verify_nv_certify, TpmAnchor, NV_NAME_LEN};
 
 struct Ak {
     sk: p256::ecdsa::SigningKey,
@@ -40,11 +38,7 @@ fn name(tag: u8) -> [u8; NV_NAME_LEN] {
 
 fn setup() -> (Ak, TpmAnchor, [u8; 32], Vec<u8>, [u8; 64]) {
     let a = ak(1);
-    let anchor = TpmAnchor {
-        ak_pk: a.pk,
-        nv_name: name(0x11),
-        expected: 42,
-    };
+    let anchor = TpmAnchor { ak_pk: a.pk, nv_name: name(0x11), expected: 42 };
     let nonce = [0xA5u8; 32];
     let attest = build_nv_attest(&name(0x22), &nonce, &anchor.nv_name, 42);
     let sig = sign(&a, &attest);
@@ -64,28 +58,19 @@ fn stale_value_is_state_stale() {
     // the blob expects 42, the TPM certifies 43 (a spurious increment or a rolled-back blob)
     let attest = build_nv_attest(&name(0x22), &nonce, &anchor.nv_name, 43);
     let sig = sign(&a, &attest);
-    assert_eq!(
-        verify_nv_certify(&attest, &sig, &anchor, &nonce),
-        Err(Reason::StateStale)
-    );
+    assert_eq!(verify_nv_certify(&attest, &sig, &anchor, &nonce), Err(Reason::StateStale));
     // and the other way round: a blob restored from before, expecting 41
     anchor.expected = 41;
     let attest = build_nv_attest(&name(0x22), &nonce, &anchor.nv_name, 42);
     let sig = sign(&a, &attest);
-    assert_eq!(
-        verify_nv_certify(&attest, &sig, &anchor, &nonce),
-        Err(Reason::StateStale)
-    );
+    assert_eq!(verify_nv_certify(&attest, &sig, &anchor, &nonce), Err(Reason::StateStale));
 }
 
 #[test]
 fn replayed_proof_is_tpm_nonce() {
     let (_, anchor, _, attest, sig) = setup();
     let other = [0x5Au8; 32];
-    assert_eq!(
-        verify_nv_certify(&attest, &sig, &anchor, &other),
-        Err(Reason::TpmNonce)
-    );
+    assert_eq!(verify_nv_certify(&attest, &sig, &anchor, &other), Err(Reason::TpmNonce));
 }
 
 #[test]
@@ -93,10 +78,7 @@ fn foreign_index_is_tpm_index() {
     let (a, anchor, nonce, _, _) = setup();
     let attest = build_nv_attest(&name(0x22), &nonce, &name(0x33), 42);
     let sig = sign(&a, &attest);
-    assert_eq!(
-        verify_nv_certify(&attest, &sig, &anchor, &nonce),
-        Err(Reason::TpmIndex)
-    );
+    assert_eq!(verify_nv_certify(&attest, &sig, &anchor, &nonce), Err(Reason::TpmIndex));
 }
 
 #[test]
@@ -104,18 +86,12 @@ fn foreign_key_is_tpm_sig() {
     let (_, anchor, nonce, attest, _) = setup();
     let other = ak(2);
     let sig = sign(&other, &attest);
-    assert_eq!(
-        verify_nv_certify(&attest, &sig, &anchor, &nonce),
-        Err(Reason::TpmSig)
-    );
+    assert_eq!(verify_nv_certify(&attest, &sig, &anchor, &nonce), Err(Reason::TpmSig));
     // a flipped bit in a genuine signature
     let (a, _, _, _, mut sig) = setup();
     let _ = a;
     sig[10] ^= 1;
-    assert_eq!(
-        verify_nv_certify(&attest, &sig, &anchor, &nonce),
-        Err(Reason::TpmSig)
-    );
+    assert_eq!(verify_nv_certify(&attest, &sig, &anchor, &nonce), Err(Reason::TpmSig));
 }
 
 #[test]
@@ -164,35 +140,17 @@ fn every_structural_mutation_is_tpm_parse_and_never_panics() {
     let last = v.len() - 1;
     v[last] ^= 1; // counter byte
     let sig = sign(&a, &attest);
-    assert_eq!(
-        verify_nv_certify(&v, &sig, &anchor, &nonce),
-        Err(Reason::TpmSig)
-    );
+    assert_eq!(verify_nv_certify(&v, &sig, &anchor, &nonce), Err(Reason::TpmSig));
 }
 
 #[test]
 fn anchor_well_formedness() {
     let a = ak(3);
     let mut n = name(0x44);
-    assert!(TpmAnchor {
-        ak_pk: a.pk,
-        nv_name: n,
-        expected: 0
-    }
-    .well_formed());
+    assert!(TpmAnchor { ak_pk: a.pk, nv_name: n, expected: 0 }.well_formed());
     n[1] = 0x04; // SHA-1 Name
-    assert!(!TpmAnchor {
-        ak_pk: a.pk,
-        nv_name: n,
-        expected: 0
-    }
-    .well_formed());
+    assert!(!TpmAnchor { ak_pk: a.pk, nv_name: n, expected: 0 }.well_formed());
     let mut bad = a.pk;
     bad[0] = 0x02;
-    assert!(!TpmAnchor {
-        ak_pk: bad,
-        nv_name: name(0x44),
-        expected: 0
-    }
-    .well_formed());
+    assert!(!TpmAnchor { ak_pk: bad, nv_name: name(0x44), expected: 0 }.well_formed());
 }

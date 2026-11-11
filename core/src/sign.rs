@@ -6,8 +6,8 @@
 //! decision is made and recorded.
 
 use bitcoin::bip32::{ChildNumber, Xpriv};
-use bitcoin::secp256k1::{Message, Secp256k1, SecretKey, Signing, Verification};
 use bitcoin::hashes::Hash;
+use bitcoin::secp256k1::{Message, Secp256k1, SecretKey, Signing, Verification};
 use bitcoin::sighash::{EcdsaSighashType, SighashCache};
 use bitcoin::{Psbt, Witness};
 

@@ -176,8 +176,8 @@ pub fn apply_headers(state: &mut State, raw: &[[u8; 80]]) -> Result<u32, Refusal
         if h.time <= median_time(&chain) {
             return Err(Reason::HeaderInvalid.into());
         }
-        let work = add_work_le(&parent.work, &target.to_work().to_le_bytes())
-            .ok_or_else(|| Refusal::one(Reason::Overflow))?;
+        let work =
+            add_work_le(&parent.work, &target.to_work().to_le_bytes()).ok_or_else(|| Refusal::one(Reason::Overflow))?;
         let rec = HeaderRec { hash: *h.block_hash().as_ref(), height, time: h.time, bits, work };
         if height.checked_rem(INTERVAL) == Some(0) {
             prev_period_start_time = period_start_time;

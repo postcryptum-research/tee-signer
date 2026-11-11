@@ -15,7 +15,9 @@ use signer_core::reason::Reason;
 use signer_core::state::State;
 
 fn load_signet() -> Vec<[u8; 80]> {
-    let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../vectors/headers/signet-322560-324700.hex")).unwrap();
+    let text =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../vectors/headers/signet-322560-324700.hex"))
+            .unwrap();
     text.lines()
         .filter(|l| !l.trim().is_empty())
         .map(|l| {
@@ -77,7 +79,11 @@ fn signet_real_chain_accepts_across_retarget() {
     // the crate's own computation from the last header of the period and the period's first time
     let last = header(&hs[(324_575 - 322_560) as usize]);
     let first = header(&hs[0]);
-    let expected = CompactTarget::from_next_work_required(last.bits, u64::from(last.time - first.time), bitcoin::params::Params::SIGNET);
+    let expected = CompactTarget::from_next_work_required(
+        last.bits,
+        u64::from(last.time - first.time),
+        bitcoin::params::Params::SIGNET,
+    );
     assert_eq!(header(&hs[(324_576 - 322_560) as usize]).bits, expected);
     // recent is bounded by maxReorg + 12 and ends at best
     assert!(s.chain.recent.len() <= 6 + 12);
@@ -87,7 +93,11 @@ fn signet_real_chain_accepts_across_retarget() {
     // an empty batch is a no-op; replaying the last batch is a fork with equal work → not adopted
     assert_eq!(apply_headers(&mut s, &[]).unwrap(), 0);
     let last = *hs.last().unwrap();
-    assert_eq!(apply_headers(&mut s, &[last]).unwrap(), 0, "the tip again: a fork of equal work from the tip's parent ⇒ not adopted");
+    assert_eq!(
+        apply_headers(&mut s, &[last]).unwrap(),
+        0,
+        "the tip again: a fork of equal work from the tip's parent ⇒ not adopted"
+    );
     assert_eq!(s.chain.best.unwrap().height, 324_700);
 }
 
@@ -131,7 +141,11 @@ fn signet_tampered_headers_refuse() {
     if h.bits != prev_bits {
         h.bits = prev_bits;
         let raw: [u8; 80] = serialize(&h).try_into().unwrap();
-        assert_eq!(apply_headers(&mut s, &[raw]).unwrap_err().0, vec![Reason::HeaderInvalid], "boundary header must carry the retargeted bits");
+        assert_eq!(
+            apply_headers(&mut s, &[raw]).unwrap_err().0,
+            vec![Reason::HeaderInvalid],
+            "boundary header must carry the retargeted bits"
+        );
     }
     // the real boundary header is accepted
     assert_eq!(apply_headers(&mut s, &[hs[boundary]]).unwrap(), 1);
@@ -223,7 +237,11 @@ fn regtest_fork_choice_and_deep_reorg_freeze() {
     // a fork from main[3] with 3 blocks: more work, depth 2 ≤ maxReorg 3 → adopted
     let fork3 = chain_from(&main[3], 3, main[3].time, 300);
     let mut s3 = s.clone();
-    assert_eq!(apply_headers(&mut s3, &fork3.iter().map(raw).collect::<Vec<_>>()).unwrap(), 3, "three headers now on the main chain that were not: (107 − 106) + depth 2");
+    assert_eq!(
+        apply_headers(&mut s3, &fork3.iter().map(raw).collect::<Vec<_>>()).unwrap(),
+        3,
+        "three headers now on the main chain that were not: (107 − 106) + depth 2"
+    );
     assert_eq!(s3.chain.best.unwrap().height, 107);
     assert_eq!(s3.chain.best.unwrap().hash, hash32(&fork3[2]));
     assert!(!s3.chain.frozen);

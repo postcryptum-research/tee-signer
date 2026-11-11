@@ -457,11 +457,8 @@ impl Mandate {
             period_start_time: d.u32()?,
             period_bits: d.u32()?,
         };
-        let freshness = Freshness {
-            required: d.bool()?,
-            witness_pk: d.option(|d| d.fixed::<65>())?,
-            max_tip_lag: d.u32()?,
-        };
+        let freshness =
+            Freshness { required: d.bool()?, witness_pk: d.option(|d| d.fixed::<65>())?, max_tip_lag: d.u32()? };
         let not_after_height = d.u32()?;
         let timelock_blocks = d.u32()?;
         d.finish()?;
@@ -521,11 +518,7 @@ impl Mandate {
             match &t.matcher {
                 Matcher::Address { script_pubkey } => {
                     let s = bitcoin::Script::from_bytes(script_pubkey);
-                    let standard = s.is_p2wpkh()
-                        || s.is_p2wsh()
-                        || s.is_p2tr()
-                        || s.is_p2pkh()
-                        || s.is_p2sh();
+                    let standard = s.is_p2wpkh() || s.is_p2wsh() || s.is_p2tr() || s.is_p2pkh() || s.is_p2sh();
                     if !standard {
                         return Err(Invalid::AddressScript);
                     }

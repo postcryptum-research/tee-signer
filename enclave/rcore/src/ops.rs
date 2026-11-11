@@ -89,7 +89,11 @@ fn derive_keys(secp: &Secp256k1<All>, network: Network, seed: &[u8; 32]) -> Opti
     let mut fingerprint = [0u8; 4];
     fingerprint.copy_from_slice(master.fingerprint(secp).as_bytes());
     let xpub = xpub_obj.encode();
-    let account = Account { fingerprint, path: AccountPath { purpose: 84, coin: network.coin_type(), account: 0 }, xpub: xpub_obj };
+    let account = Account {
+        fingerprint,
+        path: AccountPath { purpose: 84, coin: network.coin_type(), account: 0 },
+        xpub: xpub_obj,
+    };
     Some(Keys { account_xpriv, account, xpub, fingerprint })
 }
 
@@ -115,7 +119,9 @@ fn clock_label(n: Network) -> &'static str {
     match n {
         Network::Mainnet => "",
         Network::Testnet4 => "testnet4: min-difficulty blocks allowed; the block clock is weaker than mainnet",
-        Network::Signet => "signet: proof-of-work is cheap; the block clock is a correctness device here, not a security one",
+        Network::Signet => {
+            "signet: proof-of-work is cheap; the block clock is a correctness device here, not a security one"
+        }
         Network::Regtest => "regtest: no proof of work; windows and timelocks are not a defence",
     }
 }
@@ -254,7 +260,10 @@ fn init(input: &[u8]) -> Response {
         Err(_) => return refuse(Reason::PolicyInvalid.into()),
     };
     let Some(network) = network_from(req.network) else { return refuse(Reason::PolicyNetwork.into()) };
-    if parse_p256_pubkey(&req.owner_pk).is_none() || parse_p256_pubkey(&req.recovery_pk).is_none() || req.owner_pk == req.recovery_pk {
+    if parse_p256_pubkey(&req.owner_pk).is_none()
+        || parse_p256_pubkey(&req.recovery_pk).is_none()
+        || req.owner_pk == req.recovery_pk
+    {
         return refuse(Reason::PolicyInvalid.into());
     }
     let secp = secp();
@@ -306,7 +315,8 @@ fn build_init(
     };
     let Ok(id_sk) = SecretKey::from_slice(&identity_sk) else { return refuse_code("KEY_DERIVATION") };
     let card_sig = sign_digest_secp(&secp, &id_sk, &card.digest());
-    let mut env = Envelope { network: network as u8, seed, identity_sk, owner_pk, recovery_pk, state, last_judged: None };
+    let mut env =
+        Envelope { network: network as u8, seed, identity_sk, owner_pk, recovery_pk, state, last_judged: None };
     let sealed = match seal_or(&mut env) {
         Ok(s) => s,
         Err(r) => return r,
@@ -580,11 +590,15 @@ fn headers(input: &[u8]) -> Response {
     if !session::check_seq(s.seq) {
         return refuse(Reason::SeqBehindSession.into());
     }
-    let hs: Vec<[u8; 80]> = req.data.chunks_exact(80).map(|c| {
-        let mut a = [0u8; 80];
-        a.copy_from_slice(c);
-        a
-    }).collect();
+    let hs: Vec<[u8; 80]> = req
+        .data
+        .chunks_exact(80)
+        .map(|c| {
+            let mut a = [0u8; 80];
+            a.copy_from_slice(c);
+            a
+        })
+        .collect();
     let res = apply_headers(&mut s, &hs);
     let best_height = s.chain.best.map(|b| b.height).unwrap_or(0);
     env.state = Some(s);
@@ -703,7 +717,12 @@ fn sign_op(input: &[u8]) -> Response {
     let Ok(id_sk) = SecretKey::from_slice(&env.identity_sk) else { return refuse_code("KEY_DERIVATION") };
     let Ok(receipt) = Receipt::decode(&lj.receipt) else { return refuse(Reason::StateUnsealable.into()) };
     let receipt_sig = sign_digest_secp(&secp, &id_sk, &receipt.digest());
-    let r = proto::SignResponse { psbt: psbt.serialize(), receipt: lj.receipt.clone(), receipt_sig, session_id: session::id() };
+    let r = proto::SignResponse {
+        psbt: psbt.serialize(),
+        receipt: lj.receipt.clone(),
+        receipt_sig,
+        session_id: session::id(),
+    };
     Response::ok(r.encode())
 }
 
@@ -766,11 +785,12 @@ mod tests {
         // the ops that change state or sign are all Fresh; the pure reads are Stale
         for (c, f) in FRESHNESS {
             match *c {
-                op::INSTALL | op::APPLY_MESSAGE | op::FREEZE | op::HEADERS | op::JUDGE | op::SIGN => assert_eq!(*f, Freshness::Fresh),
+                op::INSTALL | op::APPLY_MESSAGE | op::FREEZE | op::HEADERS | op::JUDGE | op::SIGN => {
+                    assert_eq!(*f, Freshness::Fresh)
+                }
                 op::STATUS | op::POLICY | op::REPORT => assert_eq!(*f, Freshness::Stale),
                 _ => assert_eq!(*f, Freshness::NoBlob),
             }
         }
     }
 }
-

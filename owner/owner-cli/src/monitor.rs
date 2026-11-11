@@ -95,7 +95,10 @@ impl Esplora {
     fn new(base: &str, delay_ms: u64) -> Self {
         Esplora {
             base: base.trim_end_matches('/').to_string(),
-            http: reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_default(),
+            http: reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_default(),
             delay: std::time::Duration::from_millis(delay_ms),
         }
     }
@@ -129,12 +132,19 @@ impl Esplora {
     /// Every transaction touching `addr`: one call returns the mempool ones plus the first 25
     /// confirmed; the chain part is paged by 25 until a short page — complete for the address.
     fn address_txs(&self, addr: &str) -> Result<Vec<serde_json::Value>> {
-        let mut out: Vec<serde_json::Value> = self.json(&format!("/address/{addr}/txs"))?.as_array().cloned().unwrap_or_default();
+        let mut out: Vec<serde_json::Value> =
+            self.json(&format!("/address/{addr}/txs"))?.as_array().cloned().unwrap_or_default();
         let mut confirmed_in_page = out.iter().filter(|t| t["status"]["confirmed"].as_bool() == Some(true)).count();
-        let mut last = out.iter().rev().find(|t| t["status"]["confirmed"].as_bool() == Some(true)).and_then(|t| t["txid"].as_str()).map(String::from);
+        let mut last = out
+            .iter()
+            .rev()
+            .find(|t| t["status"]["confirmed"].as_bool() == Some(true))
+            .and_then(|t| t["txid"].as_str())
+            .map(String::from);
         while confirmed_in_page >= 25 {
             let Some(l) = last.clone() else { break };
-            let page: Vec<serde_json::Value> = self.json(&format!("/address/{addr}/txs/chain/{l}"))?.as_array().cloned().unwrap_or_default();
+            let page: Vec<serde_json::Value> =
+                self.json(&format!("/address/{addr}/txs/chain/{l}"))?.as_array().cloned().unwrap_or_default();
             confirmed_in_page = page.len();
             last = page.last().and_then(|t| t["txid"].as_str()).map(String::from);
             out.extend(page);
@@ -144,16 +154,28 @@ impl Esplora {
 }
 
 /// Receipts from the (untrusted) host, each believed only after its identity signature verifies.
-fn verified_receipts(sd: &Signerd, w: &WalletRecord, codes: &mut Vec<String>, notes: &mut Vec<String>) -> Result<Vec<Verified>> {
+fn verified_receipts(
+    sd: &Signerd,
+    w: &WalletRecord,
+    codes: &mut Vec<String>,
+    notes: &mut Vec<String>,
+) -> Result<Vec<Verified>> {
     let lines = sd.get("/v1/receipts")?;
     verify_receipt_lines(&lines, &w.identity_pk, &w.enclave_id, codes, notes)
 }
 
 /// The pure part: host-supplied receipt lines → the verified subset, with a code per rejected line.
-fn verify_receipt_lines(lines: &serde_json::Value, identity_pk_hex: &str, enclave_id_hex: &str, codes: &mut Vec<String>, notes: &mut Vec<String>) -> Result<Vec<Verified>> {
+fn verify_receipt_lines(
+    lines: &serde_json::Value,
+    identity_pk_hex: &str,
+    enclave_id_hex: &str,
+    codes: &mut Vec<String>,
+    notes: &mut Vec<String>,
+) -> Result<Vec<Verified>> {
     let secp = bitcoin::secp256k1::Secp256k1::new();
     let idpk = <[u8; 33]>::try_from(hex::decode(identity_pk_hex)?.as_slice()).map_err(|_| anyhow!("identity pk"))?;
-    let enclave_id = <[u8; 32]>::try_from(hex::decode(enclave_id_hex)?.as_slice()).map_err(|_| anyhow!("enclave id"))?;
+    let enclave_id =
+        <[u8; 32]>::try_from(hex::decode(enclave_id_hex)?.as_slice()).map_err(|_| anyhow!("enclave id"))?;
     let mut out = Vec::new();
     for (i, l) in lines.as_array().cloned().unwrap_or_default().iter().enumerate() {
         let rh = l["receipt_hex"].as_str().unwrap_or("");
@@ -189,10 +211,18 @@ fn verify_receipt_lines(lines: &serde_json::Value, identity_pk_hex: &str, enclav
         // the host's line must describe the receipt it carries; a mismatch is the host lying
         if l["seq"].as_u64() != Some(r.seq) || l["txid"].as_str() != Some(txid.as_str()) {
             codes.push("RECEIPT_SIG".into());
-            notes.push(format!("receipt line {i}: line fields disagree with the signed receipt (seq {} txid {txid})", r.seq));
+            notes.push(format!(
+                "receipt line {i}: line fields disagree with the signed receipt (seq {} txid {txid})",
+                r.seq
+            ));
             continue;
         }
-        out.push(Verified { session_id: l["session_id"].as_str().unwrap_or("").to_string(), seq: r.seq, txid, net_outflow: r.net_outflow });
+        out.push(Verified {
+            session_id: l["session_id"].as_str().unwrap_or("").to_string(),
+            seq: r.seq,
+            txid,
+            net_outflow: r.net_outflow,
+        });
     }
     Ok(out)
 }
@@ -209,13 +239,21 @@ fn check_sequence(v: &[Verified], hwm: &Hwm, codes: &mut Vec<String>, notes: &mu
     for (seq, txids) in &by_seq {
         if txids.len() > 1 {
             codes.push("SEQ_FORK".into());
-            notes.push(format!("seq {seq} carries {} different txids: {:?} (sessions {:?})", txids.len(), txids, session_of.get(seq)));
+            notes.push(format!(
+                "seq {seq} carries {} different txids: {:?} (sessions {:?})",
+                txids.len(),
+                txids,
+                session_of.get(seq)
+            ));
         }
     }
     let max_seq = by_seq.keys().next_back().copied().unwrap_or(0);
     if max_seq < hwm.seq {
         codes.push("SEQ_REGRESSION".into());
-        notes.push(format!("highest verified seq {max_seq} is below the stored high-water mark {} — the receipt log shrank", hwm.seq));
+        notes.push(format!(
+            "highest verified seq {max_seq} is below the stored high-water mark {} — the receipt log shrank",
+            hwm.seq
+        ));
     }
     for t in &hwm.txids {
         if !v.iter().any(|r| &r.txid == t) {
@@ -227,14 +265,21 @@ fn check_sequence(v: &[Verified], hwm: &Hwm, codes: &mut Vec<String>, notes: &mu
     let mut expected = 1u64;
     for seq in by_seq.keys() {
         if *seq > expected {
-            notes.push(format!("receipt gap: seq {} to {} missing (withheld by the host? the chain check covers their spends)", expected, seq - 1));
+            notes.push(format!(
+                "receipt gap: seq {} to {} missing (withheld by the host? the chain check covers their spends)",
+                expected,
+                seq - 1
+            ));
             codes.push("RECEIPT_GAP".into());
         }
         expected = seq + 1;
     }
     let last_session = v.iter().filter(|r| r.seq == max_seq).map(|r| r.session_id.clone()).next().unwrap_or_default();
     if !hwm.session_id.is_empty() && last_session != hwm.session_id && max_seq >= hwm.seq {
-        notes.push(format!("session changed {} → {} with seq continuity (benign restart)", hwm.session_id, last_session));
+        notes.push(format!(
+            "session changed {} → {} with seq continuity (benign restart)",
+            hwm.session_id, last_session
+        ));
     }
     (last_session, max_seq)
 }
@@ -258,9 +303,18 @@ struct ScanCache {
 /// Every on-chain spend of the wallet's scripts within the signer's reachable range (C-R4-1):
 /// `(hwm_seq + 1) × (ownIndexGap + 1)` per branch, from zero. `full` reads every address of the
 /// range; otherwise the addresses with history plus `gap + 1` after the highest used index.
-fn scan_chain(es: &Esplora, w: &WalletRecord, gap: u32, hwm_seq: u64, max_addresses: u32, cache: &mut ScanCache, full: bool) -> Result<Chain> {
+fn scan_chain(
+    es: &Esplora,
+    w: &WalletRecord,
+    gap: u32,
+    hwm_seq: u64,
+    max_addresses: u32,
+    cache: &mut ScanCache,
+    full: bool,
+) -> Result<Chain> {
     let net = crate::network_of(&w.network)?;
-    let range = ((hwm_seq.saturating_add(1)).saturating_mul(u64::from(gap).saturating_add(1))).min(u64::from(max_addresses)) as u32;
+    let range = ((hwm_seq.saturating_add(1)).saturating_mul(u64::from(gap).saturating_add(1)))
+        .min(u64::from(max_addresses)) as u32;
     let mut ours: HashSet<String> = HashSet::new();
     let mut addrs: Vec<(u32, u32, String)> = Vec::new();
     for branch in 0..2u32 {
@@ -337,7 +391,12 @@ impl NodeRpc {
         })
     }
     fn rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
-        let r = self.http.post(&self.url).header("Authorization", format!("Basic {}", self.auth)).json(&serde_json::json!({ "jsonrpc": "1.0", "id": "monitor", "method": method, "params": params })).send()?;
+        let r = self
+            .http
+            .post(&self.url)
+            .header("Authorization", format!("Basic {}", self.auth))
+            .json(&serde_json::json!({ "jsonrpc": "1.0", "id": "monitor", "method": method, "params": params }))
+            .send()?;
         let v: serde_json::Value = r.json()?;
         if !v["error"].is_null() {
             return Err(anyhow!("{method}: {}", v["error"]));
@@ -365,9 +424,20 @@ struct NodeCache {
 /// since the last pass (every spend of ours, and every new output), plus `gettxspendingprevout`
 /// for the mempool. The first pass walks the last `window` blocks so the cap accounting starts full.
 #[allow(clippy::too_many_arguments)]
-fn scan_node(node: &NodeRpc, w: &WalletRecord, gap: u32, hwm_seq: u64, max_addresses: u32, window: u32, cache: &mut NodeCache, utxo_scan: bool, receipt_txids: &[String]) -> Result<(Chain, (u32, String))> {
+fn scan_node(
+    node: &NodeRpc,
+    w: &WalletRecord,
+    gap: u32,
+    hwm_seq: u64,
+    max_addresses: u32,
+    window: u32,
+    cache: &mut NodeCache,
+    utxo_scan: bool,
+    receipt_txids: &[String],
+) -> Result<(Chain, (u32, String))> {
     let net = crate::network_of(&w.network)?;
-    let range = ((hwm_seq.saturating_add(1)).saturating_mul(u64::from(gap).saturating_add(1))).min(u64::from(max_addresses)) as u32;
+    let range = ((hwm_seq.saturating_add(1)).saturating_mul(u64::from(gap).saturating_add(1)))
+        .min(u64::from(max_addresses)) as u32;
     let mut ours: HashSet<String> = HashSet::new();
     for branch in 0..2u32 {
         for index in 0..range {
@@ -392,7 +462,8 @@ fn scan_node(node: &NodeRpc, w: &WalletRecord, gap: u32, hwm_seq: u64, max_addre
             let op = format!("{}:{}", u["txid"].as_str().unwrap_or(""), u["vout"].as_u64().unwrap_or(0));
             let sat = (u["amount"].as_f64().unwrap_or(0.0) * 1e8).round() as u64;
             let spk = u["scriptPubKey"].as_str().unwrap_or("");
-            let addr = node.rpc("decodescript", serde_json::json!([spk]))?["address"].as_str().unwrap_or("").to_string();
+            let addr =
+                node.rpc("decodescript", serde_json::json!([spk]))?["address"].as_str().unwrap_or("").to_string();
             cache.outputs.entry(op).or_insert((sat, addr));
         }
     }
@@ -422,7 +493,14 @@ fn scan_node(node: &NodeRpc, w: &WalletRecord, gap: u32, hwm_seq: u64, max_addre
     //     us could be spent by a thief before it confirms; every mempool transaction not read
     //     before is read once and its outputs to our addresses noted (cheap on signet; on mainnet
     //     this is the per-pass cost the operator pays for closing that one-pass window)
-    let mempool: Vec<String> = node.rpc("getrawmempool", serde_json::json!([]))?.as_array().cloned().unwrap_or_default().iter().filter_map(|v| v.as_str().map(String::from)).collect();
+    let mempool: Vec<String> = node
+        .rpc("getrawmempool", serde_json::json!([]))?
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
     let current: HashSet<String> = mempool.iter().cloned().collect();
     cache.mempool_seen.retain(|t| current.contains(t));
     for t in &mempool {
@@ -435,10 +513,14 @@ fn scan_node(node: &NodeRpc, w: &WalletRecord, gap: u32, hwm_seq: u64, max_addre
         cache.mempool_seen.insert(t.clone());
     }
     // 3. the mempool: anything spending an output of ours right now
-    let outpoints: Vec<serde_json::Value> = cache.outputs.keys().filter_map(|op| {
-        let (t, v) = op.split_once(':')?;
-        Some(serde_json::json!({ "txid": t, "vout": v.parse::<u32>().ok()? }))
-    }).collect();
+    let outpoints: Vec<serde_json::Value> = cache
+        .outputs
+        .keys()
+        .filter_map(|op| {
+            let (t, v) = op.split_once(':')?;
+            Some(serde_json::json!({ "txid": t, "vout": v.parse::<u32>().ok()? }))
+        })
+        .collect();
     for chunk in outpoints.chunks(100) {
         let r = node.rpc("gettxspendingprevout", serde_json::json!([chunk]))?;
         for e in r.as_array().cloned().unwrap_or_default() {
@@ -451,14 +533,21 @@ fn scan_node(node: &NodeRpc, w: &WalletRecord, gap: u32, hwm_seq: u64, max_addre
             }
         }
     }
-    let mut spends: Vec<(String, bool, Option<u32>, u64)> = cache.spends.iter().map(|(t, (c, h, n))| (t.clone(), *c, *h, *n)).collect();
+    let mut spends: Vec<(String, bool, Option<u32>, u64)> =
+        cache.spends.iter().map(|(t, (c, h, n))| (t.clone(), *c, *h, *n)).collect();
     spends.sort_by(|a, b| a.2.cmp(&b.2).then(a.0.cmp(&b.0)));
     Ok((Chain { spends, scanned: range.saturating_mul(2), complete: true }, (tip, tip_hash)))
 }
 
 /// Record a transaction's effect on us: outputs to our addresses become known outputs; inputs
 /// from our known outputs make it a spend with a net outflow.
-fn note_tx(tx: &serde_json::Value, ours: &HashSet<String>, cache: &mut NodeCache, confirmed: bool, height: Option<u32>) {
+fn note_tx(
+    tx: &serde_json::Value,
+    ours: &HashSet<String>,
+    cache: &mut NodeCache,
+    confirmed: bool,
+    height: Option<u32>,
+) {
     let txid = tx["txid"].as_str().unwrap_or("").to_string();
     let mut our_in = 0u64;
     for vin in tx["vin"].as_array().cloned().unwrap_or_default() {
@@ -473,7 +562,10 @@ fn note_tx(tx: &serde_json::Value, ours: &HashSet<String>, cache: &mut NodeCache
         if ours.contains(addr) {
             let sat = (vout["value"].as_f64().unwrap_or(0.0) * 1e8).round() as u64;
             our_out = our_out.saturating_add(sat);
-            cache.outputs.entry(format!("{txid}:{}", vout["n"].as_u64().unwrap_or(0))).or_insert((sat, addr.to_string()));
+            cache
+                .outputs
+                .entry(format!("{txid}:{}", vout["n"].as_u64().unwrap_or(0)))
+                .or_insert((sat, addr.to_string()));
         }
     }
     if our_in > 0 {
@@ -485,7 +577,11 @@ fn note_tx(tx: &serde_json::Value, ours: &HashSet<String>, cache: &mut NodeCache
 }
 
 fn journal(path: &PathBuf, line: &PassLine) -> Result<()> {
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).with_context(|| format!("journal {}", path.display()))?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("journal {}", path.display()))?;
     writeln!(f, "{}", serde_json::to_string(line)?)?;
     Ok(())
 }
@@ -501,7 +597,8 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
     let w: WalletRecord = serde_json::from_str(&std::fs::read_to_string(&cfg.wallet)?)?;
     let m: MandateJson = serde_json::from_str(&std::fs::read_to_string(&cfg.mandate)?).context("mandate JSON")?;
     let es = Esplora::new(&cfg.esplora, cfg.esplora_delay_ms);
-    let mut hwm: Hwm = std::fs::read_to_string(hwm_path(cfg)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    let mut hwm: Hwm =
+        std::fs::read_to_string(hwm_path(cfg)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
     let mut codes: Vec<String> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
     let mut alarm = false;
@@ -538,14 +635,28 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
 
     // 2. chain — the ground truth, from the owner's source; a source failure is a WARN (the
     //    checks below are skipped for this pass and the heartbeat says so), never a dead monitor
-    let range = ((hwm.seq.saturating_add(1)).saturating_mul(u64::from(m.limits.own_index_gap).saturating_add(1))).min(u64::from(cfg.max_addresses));
+    let range = ((hwm.seq.saturating_add(1)).saturating_mul(u64::from(m.limits.own_index_gap).saturating_add(1)))
+        .min(u64::from(cfg.max_addresses));
     let mut cache_path = cfg.journal.clone();
     cache_path.set_extension("cache.json");
     let (chain, (tip_height, tip_hash)) = if let (Some(url), Some(cookie)) = (&cfg.node_rpc, &cfg.node_cookie) {
-        let mut cache: NodeCache = std::fs::read_to_string(&cache_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let mut cache: NodeCache =
+            std::fs::read_to_string(&cache_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         let utxo_scan = cache.last_block == 0 || cfg.full_every <= 1 || hwm.passes % cfg.full_every.max(1) == 1;
         let receipt_txids: Vec<String> = receipts.iter().map(|r| r.txid.clone()).collect();
-        let r = NodeRpc::new(url, cookie).and_then(|node| scan_node(&node, &w, m.limits.own_index_gap, hwm.seq, cfg.max_addresses, m.limits.window.blocks, &mut cache, utxo_scan, &receipt_txids));
+        let r = NodeRpc::new(url, cookie).and_then(|node| {
+            scan_node(
+                &node,
+                &w,
+                m.limits.own_index_gap,
+                hwm.seq,
+                cfg.max_addresses,
+                m.limits.window.blocks,
+                &mut cache,
+                utxo_scan,
+                &receipt_txids,
+            )
+        });
         match r {
             Ok((c, tip)) => {
                 std::fs::write(&cache_path, serde_json::to_string(&cache)?)?;
@@ -561,7 +672,8 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
         }
     } else {
         let tip = es.tip().context("chain tip")?;
-        let mut cache: ScanCache = std::fs::read_to_string(&cache_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let mut cache: ScanCache =
+            std::fs::read_to_string(&cache_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         let full = cache.full_passes == 0 || cfg.full_every <= 1 || hwm.passes % cfg.full_every.max(1) == 1;
         let c = match scan_chain(&es, &w, m.limits.own_index_gap, hwm.seq, cfg.max_addresses, &mut cache, full) {
             Ok(c) => c,
@@ -573,7 +685,12 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
             }
         };
         std::fs::write(&cache_path, serde_json::to_string(&cache)?)?;
-        notes.push(format!("chain source: Esplora {} — {} ({} addresses read; reachable range {range} per branch)", cfg.esplora, if full { "FULL" } else { "incremental" }, c.scanned));
+        notes.push(format!(
+            "chain source: Esplora {} — {} ({} addresses read; reachable range {range} per branch)",
+            cfg.esplora,
+            if full { "FULL" } else { "incremental" },
+            c.scanned
+        ));
         (c, tip)
     };
     if tip_height == 0 {
@@ -582,7 +699,8 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
     }
     let mut ack_path = cfg.journal.clone();
     ack_path.set_extension("ack.json");
-    let mut acked: Vec<String> = std::fs::read_to_string(&ack_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    let mut acked: Vec<String> =
+        std::fs::read_to_string(&ack_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
     for a in &cfg.acknowledge {
         if !acked.contains(a) {
             acked.push(a.clone());
@@ -604,7 +722,10 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
             Some(r) if r.net_outflow != *net => {
                 warn = true;
                 codes.push("RECEIPT_AMOUNT".into());
-                notes.push(format!("{txid}: the receipt (seq {}) claims net outflow {} sat, the chain shows {net} sat", r.seq, r.net_outflow));
+                notes.push(format!(
+                    "{txid}: the receipt (seq {}) claims net outflow {} sat, the chain shows {net} sat",
+                    r.seq, r.net_outflow
+                ));
             }
             _ => {}
         }
@@ -618,11 +739,19 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
     }
     // 3. cap accounting from the chain, independently of the enclave
     let window_from = tip_height.saturating_sub(m.limits.window.blocks.saturating_sub(1));
-    let outflow: u64 = chain.spends.iter().filter(|(_, c, h, _)| !*c || h.map(|h| h >= window_from).unwrap_or(true)).map(|(_, _, _, n)| *n).fold(0u64, |a, b| a.saturating_add(b));
+    let outflow: u64 = chain
+        .spends
+        .iter()
+        .filter(|(_, c, h, _)| !*c || h.map(|h| h >= window_from).unwrap_or(true))
+        .map(|(_, _, _, n)| *n)
+        .fold(0u64, |a, b| a.saturating_add(b));
     if outflow > m.limits.window.max_outflow {
         alarm = true;
         codes.push("CAP_EXCEEDED".into());
-        notes.push(format!("chain outflow in the last {} blocks = {outflow} sat > mandate maxOutflow {}", m.limits.window.blocks, m.limits.window.max_outflow));
+        notes.push(format!(
+            "chain outflow in the last {} blocks = {outflow} sat > mandate maxOutflow {}",
+            m.limits.window.blocks, m.limits.window.max_outflow
+        ));
     }
 
     // 4. the feed, and the enclave's own freeze state
@@ -666,8 +795,16 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
         match &cfg.witness_key {
             Some(k) => {
                 let key = open_locator(k)?;
-                let enclave_id = <[u8; 32]>::try_from(hex::decode(&w.enclave_id)?.as_slice()).map_err(|_| anyhow!("enclave id"))?;
-                let mut msg = Message::WitnessToken { enclave_id, tip_hash: hash_of(&tip_hash)?, tip_height, last_seen_seq: hwm.seq, issued: now(), sig: [0; 64] };
+                let enclave_id =
+                    <[u8; 32]>::try_from(hex::decode(&w.enclave_id)?.as_slice()).map_err(|_| anyhow!("enclave id"))?;
+                let mut msg = Message::WitnessToken {
+                    enclave_id,
+                    tip_hash: hash_of(&tip_hash)?,
+                    tip_height,
+                    last_seen_seq: hwm.seq,
+                    issued: now(),
+                    sig: [0; 64],
+                };
                 sign_message(&key, &mut msg)?;
                 match submit_message(sd, &msg) {
                     Ok(()) => notes.push(format!("witness token issued: tip {tip_height}, last_seen_seq {}", hwm.seq)),
@@ -692,12 +829,22 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
         match sd.post("/v1/freeze", serde_json::json!({})) {
             Ok(_) => {
                 froze = true;
-                notes.push("FREEZE sent (unsigned, tightening); un-freezing needs the owner's key after a human looks".into());
+                notes.push(
+                    "FREEZE sent (unsigned, tightening); un-freezing needs the owner's key after a human looks".into(),
+                );
             }
-            Err(e) => notes.push(format!("FREEZE failed: {e} — the signer host may be gone; the enclave is not signing for you either way")),
+            Err(e) => notes.push(format!(
+                "FREEZE failed: {e} — the signer host may be gone; the enclave is not signing for you either way"
+            )),
         }
     }
-    let verdict = if alarm { "ALARM" } else if warn { "WARN" } else { "OK" };
+    let verdict = if alarm {
+        "ALARM"
+    } else if warn {
+        "WARN"
+    } else {
+        "OK"
+    };
     codes.sort();
     codes.dedup();
     let line = PassLine {
@@ -717,14 +864,29 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
         notes: notes.clone(),
     };
     journal(&cfg.journal, &line)?;
-    println!("{verdict} pass {} tip {tip_height} enclave {enclave_best} hwm {}:{} receipts {} spends {} outflow {} sat{}", hwm.passes, hwm.session_id, hwm.seq, receipts.len(), chain.spends.len(), outflow, if froze { " — FROZE" } else { "" });
+    println!(
+        "{verdict} pass {} tip {tip_height} enclave {enclave_best} hwm {}:{} receipts {} spends {} outflow {} sat{}",
+        hwm.passes,
+        hwm.session_id,
+        hwm.seq,
+        receipts.len(),
+        chain.spends.len(),
+        outflow,
+        if froze { " — FROZE" } else { "" }
+    );
     for c in &codes {
         println!("  {c}");
     }
     for n in &notes {
         println!("  - {n}");
     }
-    Ok(if alarm { 2 } else if warn { 1 } else { 0 })
+    Ok(if alarm {
+        2
+    } else if warn {
+        1
+    } else {
+        0
+    })
 }
 
 pub fn run(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
@@ -755,7 +917,15 @@ mod tests {
         (sk, hex::encode(pk), hex::encode(signer_core::sha256(&pk)))
     }
 
-    fn receipt_line(sk: &SecretKey, enclave_id_hex: &str, session: &str, seq: u64, txid_byte: u8, net: u64, tamper: bool) -> serde_json::Value {
+    fn receipt_line(
+        sk: &SecretKey,
+        enclave_id_hex: &str,
+        session: &str,
+        seq: u64,
+        txid_byte: u8,
+        net: u64,
+        tamper: bool,
+    ) -> serde_json::Value {
         let secp = Secp256k1::new();
         let mut txid = [0u8; 32];
         txid[0] = txid_byte;
@@ -785,7 +955,11 @@ mod tests {
     #[test]
     fn genuine_receipts_verify_and_sequence() {
         let (sk, pk, eid) = identity();
-        let lines = serde_json::json!([receipt_line(&sk, &eid, "s1", 1, 1, 5000, false), receipt_line(&sk, &eid, "s1", 2, 2, 2000, false), receipt_line(&sk, &eid, "s2", 3, 3, 1000, false)]);
+        let lines = serde_json::json!([
+            receipt_line(&sk, &eid, "s1", 1, 1, 5000, false),
+            receipt_line(&sk, &eid, "s1", 2, 2, 2000, false),
+            receipt_line(&sk, &eid, "s2", 3, 3, 1000, false)
+        ]);
         let (mut codes, mut notes) = (Vec::new(), Vec::new());
         let v = verify_receipt_lines(&lines, &pk, &eid, &mut codes, &mut notes).unwrap();
         assert_eq!(v.len(), 3);
@@ -822,13 +996,19 @@ mod tests {
     fn same_seq_different_txid_is_a_fork_but_same_txid_is_idempotent() {
         let (sk, pk, eid) = identity();
         // idempotent re-sign: same seq, same txid, twice
-        let lines = serde_json::json!([receipt_line(&sk, &eid, "s1", 1, 1, 5000, false), receipt_line(&sk, &eid, "s1", 1, 1, 5000, false)]);
+        let lines = serde_json::json!([
+            receipt_line(&sk, &eid, "s1", 1, 1, 5000, false),
+            receipt_line(&sk, &eid, "s1", 1, 1, 5000, false)
+        ]);
         let (mut codes, mut notes) = (Vec::new(), Vec::new());
         let v = verify_receipt_lines(&lines, &pk, &eid, &mut codes, &mut notes).unwrap();
         check_sequence(&v, &Hwm::default(), &mut codes, &mut notes);
         assert!(codes.is_empty(), "{codes:?}");
         // the fork: same seq, different txid, across sessions
-        let lines = serde_json::json!([receipt_line(&sk, &eid, "s1", 1, 1, 5000, false), receipt_line(&sk, &eid, "s2", 1, 9, 5000, false)]);
+        let lines = serde_json::json!([
+            receipt_line(&sk, &eid, "s1", 1, 1, 5000, false),
+            receipt_line(&sk, &eid, "s2", 1, 9, 5000, false)
+        ]);
         let (mut codes, mut notes) = (Vec::new(), Vec::new());
         let v = verify_receipt_lines(&lines, &pk, &eid, &mut codes, &mut notes).unwrap();
         check_sequence(&v, &Hwm::default(), &mut codes, &mut notes);

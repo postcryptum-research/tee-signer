@@ -24,7 +24,8 @@ impl Enclave for InProcess {
         let mut out = vec![0u8; OUT_CAP];
         let mut out_len = 0usize;
         // SAFETY: buffers are valid for the lengths given; rcore copies into `out` within cap.
-        let rc = unsafe { rcore::rcore_call(op, input.as_ptr(), input.len(), out.as_mut_ptr(), out.len(), &mut out_len) };
+        let rc =
+            unsafe { rcore::rcore_call(op, input.as_ptr(), input.len(), out.as_mut_ptr(), out.len(), &mut out_len) };
         if rc != 0 {
             return Err(anyhow!("rcore_call status {rc}"));
         }
@@ -79,7 +80,14 @@ pub mod sgx {
             let mut eid: sgx_enclave_id_t = 0;
             // SAFETY: all pointers are to valid locals; the SDK fills them.
             let rc = unsafe {
-                sgx_create_enclave(c.as_ptr(), i32::from(debug), &mut token, &mut updated, &mut eid, std::ptr::null_mut())
+                sgx_create_enclave(
+                    c.as_ptr(),
+                    i32::from(debug),
+                    &mut token,
+                    &mut updated,
+                    &mut eid,
+                    std::ptr::null_mut(),
+                )
             };
             if rc != 0 {
                 return Err(anyhow!("sgx_create_enclave failed: 0x{rc:x}"));
@@ -104,10 +112,21 @@ pub mod sgx {
             let mut retval = 0i32;
             // SAFETY: buffers valid for their lengths; the bridge copies in/out.
             let rc = unsafe {
-                ecall_call(self.eid, &mut retval, op, input.as_ptr(), input.len(), out.as_mut_ptr(), out.len(), &mut out_len)
+                ecall_call(
+                    self.eid,
+                    &mut retval,
+                    op,
+                    input.as_ptr(),
+                    input.len(),
+                    out.as_mut_ptr(),
+                    out.len(),
+                    &mut out_len,
+                )
             };
             if rc != 0 {
-                return Err(anyhow!("ecall failed: sgx status 0x{rc:x} (0x1006 = enclave crashed: a panic inside; nothing was charged)"));
+                return Err(anyhow!(
+                    "ecall failed: sgx status 0x{rc:x} (0x1006 = enclave crashed: a panic inside; nothing was charged)"
+                ));
             }
             if retval != 0 {
                 return Err(anyhow!("rcore_call status {retval}"));

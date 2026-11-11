@@ -68,7 +68,13 @@ pub fn verify(slot_der: &[u8], f9_der: &[u8], expect_serial: u32, expect_pk: &[u
     // --- what the slot certificate says
     let spki = &slot.tbs_certificate().subject_public_key_info();
     if spki.algorithm.oid.to_string() != OID_EC_PUBLIC_KEY
-        || spki.algorithm.parameters.as_ref().and_then(|p| p.decode_as::<der::oid::ObjectIdentifier>().ok()).map(|o| o.to_string()).as_deref()
+        || spki
+            .algorithm
+            .parameters
+            .as_ref()
+            .and_then(|p| p.decode_as::<der::oid::ObjectIdentifier>().ok())
+            .map(|o| o.to_string())
+            .as_deref()
             != Some(OID_P256)
     {
         bail!("REFUSED: the attested key is not P-256");
@@ -77,17 +83,22 @@ pub fn verify(slot_der: &[u8], f9_der: &[u8], expect_serial: u32, expect_pk: &[u
     if pk != expect_pk {
         bail!("REFUSED: the attestation certificate carries a different public key than the slot reports");
     }
-    let serial = ext(&slot, OID_YK_SERIAL).and_then(der_integer_u32).ok_or_else(|| anyhow!("REFUSED: attestation without a serial-number extension"))?;
+    let serial = ext(&slot, OID_YK_SERIAL)
+        .and_then(der_integer_u32)
+        .ok_or_else(|| anyhow!("REFUSED: attestation without a serial-number extension"))?;
     if serial != expect_serial {
         bail!("REFUSED: the attestation names device serial {serial}, the key answered as {expect_serial}");
     }
-    let policy = ext(&slot, OID_YK_POLICY).ok_or_else(|| anyhow!("REFUSED: attestation without a PIN/touch policy extension"))?;
+    let policy = ext(&slot, OID_YK_POLICY)
+        .ok_or_else(|| anyhow!("REFUSED: attestation without a PIN/touch policy extension"))?;
     if policy.len() != 2 {
         bail!("REFUSED: malformed policy extension ({} bytes)", policy.len());
     }
     let (pin, touch) = (pin_policy_name(policy[0]), touch_policy_name(policy[1]));
     if policy != [3, 2] {
-        bail!("REFUSED: the attestation says PIN {pin} / touch {touch}; the owner role needs PIN ALWAYS / touch ALWAYS");
+        bail!(
+            "REFUSED: the attestation says PIN {pin} / touch {touch}; the owner role needs PIN ALWAYS / touch ALWAYS"
+        );
     }
     let firmware = ext(&slot, OID_YK_FIRMWARE)
         .filter(|v| v.len() == 3)
@@ -136,7 +147,13 @@ fn build_chain(leaf: &Certificate, pool: &[&Certificate], root: &Certificate) ->
         let issuer = pool
             .iter()
             .find(|c| c.tbs_certificate().subject().to_der().map(|s| s == issuer_name).unwrap_or(false))
-            .ok_or_else(|| anyhow!("REFUSED: no pinned issuer for {:?} (issuer {})", cur.tbs_certificate().subject().to_string(), cur.tbs_certificate().issuer()))?;
+            .ok_or_else(|| {
+                anyhow!(
+                    "REFUSED: no pinned issuer for {:?} (issuer {})",
+                    cur.tbs_certificate().subject().to_string(),
+                    cur.tbs_certificate().issuer()
+                )
+            })?;
         if !is_ca(issuer) {
             bail!("REFUSED: {} is not a CA certificate", issuer.tbs_certificate().subject());
         }
@@ -152,15 +169,21 @@ fn verify_signature(cert: &Certificate, issuer: &Certificate) -> Result<()> {
     use rsa::pkcs8::DecodePublicKey;
     let subject = cert.tbs_certificate().subject().to_string();
     if cert.signature_algorithm().oid.to_string() != OID_SHA256_WITH_RSA {
-        bail!("REFUSED: {subject}: signature algorithm {} is not sha256WithRSAEncryption", cert.signature_algorithm().oid);
+        bail!(
+            "REFUSED: {subject}: signature algorithm {} is not sha256WithRSAEncryption",
+            cert.signature_algorithm().oid
+        );
     }
     let tbs = cert.tbs_certificate().to_der()?;
     let sig = cert.signature().as_bytes().ok_or_else(|| anyhow!("{subject}: signature with unused bits"))?;
     let spki = issuer.tbs_certificate().subject_public_key_info().to_der()?;
-    let pk = rsa::RsaPublicKey::from_public_key_der(&spki).map_err(|e| anyhow!("{}: issuer key: {e}", issuer.tbs_certificate().subject()))?;
+    let pk = rsa::RsaPublicKey::from_public_key_der(&spki)
+        .map_err(|e| anyhow!("{}: issuer key: {e}", issuer.tbs_certificate().subject()))?;
     let vk = rsa::pkcs1v15::VerifyingKey::<Sha256>::new(pk);
     let sig = rsa::pkcs1v15::Signature::try_from(sig).map_err(|e| anyhow!("{subject}: signature: {e}"))?;
-    vk.verify(&tbs, &sig).map_err(|_| anyhow!("REFUSED: {subject}: signature does not verify under {}", issuer.tbs_certificate().subject()))
+    vk.verify(&tbs, &sig).map_err(|_| {
+        anyhow!("REFUSED: {subject}: signature does not verify under {}", issuer.tbs_certificate().subject())
+    })
 }
 
 fn is_ca(cert: &Certificate) -> bool {
@@ -216,7 +239,8 @@ pub fn pem_certs(pem: &str) -> Result<Vec<Certificate>> {
     use base64::Engine as _;
     let mut out = Vec::new();
     for block in pem.split("-----BEGIN CERTIFICATE-----").skip(1) {
-        let body = block.split("-----END CERTIFICATE-----").next().ok_or_else(|| anyhow!("PEM: unterminated certificate"))?;
+        let body =
+            block.split("-----END CERTIFICATE-----").next().ok_or_else(|| anyhow!("PEM: unterminated certificate"))?;
         let b64: String = body.chars().filter(|c| !c.is_whitespace()).collect();
         let der = base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| anyhow!("PEM base64: {e}"))?;
         out.push(Certificate::from_der(&der).map_err(|e| anyhow!("PEM certificate: {e}"))?);
@@ -260,7 +284,10 @@ mod tests {
     fn an_unpinned_issuer_is_refused() {
         let (root, inters) = pinned().unwrap();
         // a PIV intermediate presented with an EMPTY pool: its issuer (Intermediate B 1) is not the root
-        let piv_b2 = inters.iter().find(|c| c.tbs_certificate().subject().to_string() == "CN=Yubico PIV Attestation B2 1").unwrap();
+        let piv_b2 = inters
+            .iter()
+            .find(|c| c.tbs_certificate().subject().to_string() == "CN=Yubico PIV Attestation B2 1")
+            .unwrap();
         let err = build_chain(piv_b2, &[], &root).unwrap_err().to_string();
         assert!(err.contains("no pinned issuer"), "{err}");
     }

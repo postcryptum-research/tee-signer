@@ -91,19 +91,43 @@ fn vectors() -> Vec<Vector> {
     let refuse = |codes: &[&'static str]| Expect::Refuse(codes.to_vec());
 
     // ---------------- accept ----------------
-    push("accept-payout-unlisted-within-cap", state_with(&f, base.clone()), simple_payout(&f, 900_000, 2_000), None, Expect::Accept, false);
-    push("accept-unlisted-at-cap-boundary", state_with(&f, base.clone()), simple_payout(&f, 1_000_000, 2_000), None, Expect::Accept, false);
+    push(
+        "accept-payout-unlisted-within-cap",
+        state_with(&f, base.clone()),
+        simple_payout(&f, 900_000, 2_000),
+        None,
+        Expect::Accept,
+        false,
+    );
+    push(
+        "accept-unlisted-at-cap-boundary",
+        state_with(&f, base.clone()),
+        simple_payout(&f, 1_000_000, 2_000),
+        None,
+        Expect::Accept,
+        false,
+    );
     {
         // sweep two coins to the cold descriptor; net outflow exactly maxPerTx (1 BTC)
         let psbt = build_psbt(
             &f.w,
-            &[In::Own { branch: 0, index: 1, amount: 50_000_000, hint: true }, In::Own { branch: 0, index: 2, amount: 50_000_000, hint: true }],
+            &[
+                In::Own { branch: 0, index: 1, amount: 50_000_000, hint: true },
+                In::Own { branch: 0, index: 2, amount: 50_000_000, hint: true },
+            ],
             &[Out { spk: f.cold.spk(0, 3), amount: 99_990_000, hint: None }],
             2,
             true,
         )
         .psbt;
-        push("accept-sweep-to-trusted-descriptor-net-at-cap", state_with(&f, base.clone()), psbt, None, Expect::Accept, false);
+        push(
+            "accept-sweep-to-trusted-descriptor-net-at-cap",
+            state_with(&f, base.clone()),
+            psbt,
+            None,
+            Expect::Accept,
+            false,
+        );
     }
     {
         let psbt = build_psbt(
@@ -114,14 +138,24 @@ fn vectors() -> Vec<Vector> {
             false,
         )
         .psbt;
-        push("accept-self-transfer-to-own-receive-index", state_with(&f, base.clone()), psbt, None, Expect::Accept, false);
+        push(
+            "accept-self-transfer-to-own-receive-index",
+            state_with(&f, base.clone()),
+            psbt,
+            None,
+            Expect::Accept,
+            false,
+        );
     }
     {
         let mut m = base.clone();
         m.rules.payjoin = PayjoinRule::InflowOnly;
         let psbt = build_psbt(
             &f.w,
-            &[In::Foreign { spk: foreign_spk(9), amount: 100_000 }, In::Own { branch: 0, index: 3, amount: 20_000, hint: true }],
+            &[
+                In::Foreign { spk: foreign_spk(9), amount: 100_000 },
+                In::Own { branch: 0, index: 3, amount: 20_000, hint: true },
+            ],
             &[Out { spk: f.w.spk(0, 4), amount: 119_000, hint: Some((0, 4)) }],
             2,
             false,
@@ -133,7 +167,9 @@ fn vectors() -> Vec<Vector> {
         let mut m = base.clone();
         m.rules.op_return = OpReturnRule::ZeroValue;
         let mut psbt = simple_payout(&f, 900_000, 2_000);
-        psbt.unsigned_tx.output.push(TxOut { value: Amount::ZERO, script_pubkey: ScriptBuf::new_op_return([1u8, 2, 3]) });
+        psbt.unsigned_tx
+            .output
+            .push(TxOut { value: Amount::ZERO, script_pubkey: ScriptBuf::new_op_return([1u8, 2, 3]) });
         psbt.outputs.push(Default::default());
         push("accept-opreturn-zero-value-when-allowed", state_with(&f, m), psbt, None, Expect::Accept, false);
     }
@@ -142,16 +178,33 @@ fn vectors() -> Vec<Vector> {
         m.freshness = Freshness { required: true, witness_pk: Some(f.keys.witness.pk), max_tip_lag: 6 };
         let s = state_with(&f, m);
         let tok = witness_token(&f, H, 0, &f.keys.witness);
-        push("accept-witness-token-fresh", s.clone(), simple_payout(&f, 900_000, 2_000), Some(tok), Expect::Accept, false);
+        push(
+            "accept-witness-token-fresh",
+            s.clone(),
+            simple_payout(&f, 900_000, 2_000),
+            Some(tok),
+            Expect::Accept,
+            false,
+        );
         let tok = witness_token(&f, H - 6, 0, &f.keys.witness);
-        push("accept-witness-token-at-max-tip-lag", s, simple_payout(&f, 900_000, 2_000), Some(tok), Expect::Accept, false);
+        push(
+            "accept-witness-token-at-max-tip-lag",
+            s,
+            simple_payout(&f, 900_000, 2_000),
+            Some(tok),
+            Expect::Accept,
+            false,
+        );
     }
     {
         // change at index bound+gap-1 is the last accepted index
         let psbt = build_psbt(
             &f.w,
             &[In::Own { branch: 0, index: 5, amount: 2_000_000, hint: true }],
-            &[Out { spk: foreign_spk(1), amount: 900_000, hint: None }, Out { spk: f.w.spk(1, 99), amount: 1_098_000, hint: Some((1, 99)) }],
+            &[
+                Out { spk: foreign_spk(1), amount: 900_000, hint: None },
+                Out { spk: f.w.spk(1, 99), amount: 1_098_000, hint: Some((1, 99)) },
+            ],
             2,
             false,
         )
@@ -164,14 +217,31 @@ fn vectors() -> Vec<Vector> {
         let psbt = build_psbt(
             &f.w,
             &[In::Own { branch: 0, index: 1, amount: 200_000_000, hint: true }],
-            &[Out { spk: f.cold.spk(0, 3), amount: 100_000_001, hint: None }, Out { spk: f.w.spk(1, 0), amount: 99_998_999, hint: Some((1, 0)) }],
+            &[
+                Out { spk: f.cold.spk(0, 3), amount: 100_000_001, hint: None },
+                Out { spk: f.w.spk(1, 0), amount: 99_998_999, hint: Some((1, 0)) },
+            ],
             2,
             false,
         )
         .psbt;
-        push("refuse-cap-tx-and-trusted-tx-plus-one", state_with(&f, base.clone()), psbt, None, refuse(&["CAP_TX", "CAP_TRUSTED_TX"]), false);
+        push(
+            "refuse-cap-tx-and-trusted-tx-plus-one",
+            state_with(&f, base.clone()),
+            psbt,
+            None,
+            refuse(&["CAP_TX", "CAP_TRUSTED_TX"]),
+            false,
+        );
     }
-    push("refuse-cap-unlisted-tx-plus-one", state_with(&f, base.clone()), simple_payout(&f, 1_000_001, 2_000), None, refuse(&["CAP_UNLISTED_TX"]), false);
+    push(
+        "refuse-cap-unlisted-tx-plus-one",
+        state_with(&f, base.clone()),
+        simple_payout(&f, 1_000_001, 2_000),
+        None,
+        refuse(&["CAP_UNLISTED_TX"]),
+        false,
+    );
     {
         let mut s = state_with(&f, base.clone());
         s.window.outflow = 5 * BTC - 1_000;
@@ -180,7 +250,14 @@ fn vectors() -> Vec<Vector> {
     {
         let mut s = state_with(&f, base.clone());
         s.window.unlisted = 4_999_000;
-        push("refuse-cap-unlisted-window", s, simple_payout(&f, 2_000, 1_000), None, refuse(&["CAP_UNLISTED_WINDOW"]), false);
+        push(
+            "refuse-cap-unlisted-window",
+            s,
+            simple_payout(&f, 2_000, 1_000),
+            None,
+            refuse(&["CAP_UNLISTED_WINDOW"]),
+            false,
+        );
     }
     {
         let mut s = state_with(&f, base.clone());
@@ -188,15 +265,32 @@ fn vectors() -> Vec<Vector> {
         let psbt = build_psbt(
             &f.w,
             &[In::Own { branch: 0, index: 1, amount: 10_000, hint: true }],
-            &[Out { spk: f.cold.spk(0, 0), amount: 2_000, hint: None }, Out { spk: f.w.spk(1, 0), amount: 7_000, hint: Some((1, 0)) }],
+            &[
+                Out { spk: f.cold.spk(0, 0), amount: 2_000, hint: None },
+                Out { spk: f.w.spk(1, 0), amount: 7_000, hint: Some((1, 0)) },
+            ],
             2,
             false,
         )
         .psbt;
         push("refuse-cap-trusted-window", s, psbt, None, refuse(&["CAP_TRUSTED_WINDOW"]), false);
     }
-    push("refuse-fee-abs-plus-one", state_with(&f, base.clone()), simple_payout(&f, 900_000, 100_001), None, refuse(&["FEE_ABS", "FEE_RATE"]), false);
-    push("refuse-fee-rate", state_with(&f, base.clone()), simple_payout(&f, 900_000, 50_000), None, refuse(&["FEE_RATE"]), false);
+    push(
+        "refuse-fee-abs-plus-one",
+        state_with(&f, base.clone()),
+        simple_payout(&f, 900_000, 100_001),
+        None,
+        refuse(&["FEE_ABS", "FEE_RATE"]),
+        false,
+    );
+    push(
+        "refuse-fee-rate",
+        state_with(&f, base.clone()),
+        simple_payout(&f, 900_000, 50_000),
+        None,
+        refuse(&["FEE_RATE"]),
+        false,
+    );
     {
         let mut m = base.clone();
         m.limits.max_fee_per_window = Some(10_000);
@@ -256,7 +350,10 @@ fn vectors() -> Vec<Vector> {
         // C-R12e: Σ inputs near u64::MAX ⇒ OVERFLOW, never wrap
         let psbt = build_psbt(
             &f.w,
-            &[In::Own { branch: 0, index: 1, amount: u64::MAX, hint: true }, In::Own { branch: 0, index: 2, amount: 1, hint: true }],
+            &[
+                In::Own { branch: 0, index: 1, amount: u64::MAX, hint: true },
+                In::Own { branch: 0, index: 2, amount: 1, hint: true },
+            ],
             &[Out { spk: foreign_spk(1), amount: 1, hint: None }],
             2,
             false,
@@ -266,7 +363,10 @@ fn vectors() -> Vec<Vector> {
         let psbt = build_psbt(
             &f.w,
             &[In::Own { branch: 0, index: 1, amount: 10, hint: true }],
-            &[Out { spk: foreign_spk(1), amount: u64::MAX, hint: None }, Out { spk: foreign_spk(2), amount: 1, hint: None }],
+            &[
+                Out { spk: foreign_spk(1), amount: u64::MAX, hint: None },
+                Out { spk: foreign_spk(2), amount: 1, hint: None },
+            ],
             2,
             false,
         )
@@ -280,57 +380,116 @@ fn vectors() -> Vec<Vector> {
         let mut psbt = simple_payout(&f, 900_000, 2_000);
         psbt.inputs[0].non_witness_utxo = None;
         psbt.inputs[0].witness_utxo = Some(TxOut { value: Amount::from_sat(2_000_000), script_pubkey: f.w.spk(0, 5) });
-        push("refuse-input-no-prevtx-witness-utxo-only", state_with(&f, base.clone()), psbt, None, refuse(&["INPUT_NO_PREVTX"]), false);
+        push(
+            "refuse-input-no-prevtx-witness-utxo-only",
+            state_with(&f, base.clone()),
+            psbt,
+            None,
+            refuse(&["INPUT_NO_PREVTX"]),
+            false,
+        );
     }
     {
         let mut psbt = simple_payout(&f, 900_000, 2_000);
         let other = funding_tx(&[(f.w.spk(0, 5), 2_000_000)], 9999);
         psbt.inputs[0].non_witness_utxo = Some(other);
-        push("refuse-input-prevtx-txid-mismatch", state_with(&f, base.clone()), psbt, None, refuse(&["INPUT_PREVTX_MISMATCH"]), false);
+        push(
+            "refuse-input-prevtx-txid-mismatch",
+            state_with(&f, base.clone()),
+            psbt,
+            None,
+            refuse(&["INPUT_PREVTX_MISMATCH"]),
+            false,
+        );
     }
     {
         // non_witness_utxo correct, but a witness_utxo that disagrees with it
         let mut psbt = simple_payout(&f, 900_000, 2_000);
         psbt.inputs[0].witness_utxo = Some(TxOut { value: Amount::from_sat(1), script_pubkey: f.w.spk(0, 5) });
-        push("refuse-input-witness-utxo-disagrees-with-prevtx", state_with(&f, base.clone()), psbt, None, refuse(&["INPUT_PREVTX_MISMATCH"]), false);
+        push(
+            "refuse-input-witness-utxo-disagrees-with-prevtx",
+            state_with(&f, base.clone()),
+            psbt,
+            None,
+            refuse(&["INPUT_PREVTX_MISMATCH"]),
+            false,
+        );
     }
     {
         // hint names our path 0/5 but carries a foreign key
         let mut psbt = simple_payout(&f, 900_000, 2_000);
         psbt.inputs[0].bip32_derivation.clear();
         psbt.inputs[0].bip32_derivation.insert(wallet(0x77).pubkey(0, 5), f.w.origin(0, 5));
-        push("refuse-input-hint-path-with-foreign-key", state_with(&f, base.clone()), psbt, None, refuse(&["INPUT_NOT_OWN"]), false);
+        push(
+            "refuse-input-hint-path-with-foreign-key",
+            state_with(&f, base.clone()),
+            psbt,
+            None,
+            refuse(&["INPUT_NOT_OWN"]),
+            false,
+        );
     }
     {
         // hint names path 0/6 (our key 6) while the coin is at 0/5: derivation does not reproduce
         let mut psbt = simple_payout(&f, 900_000, 2_000);
         psbt.inputs[0].bip32_derivation.clear();
         psbt.inputs[0].bip32_derivation.insert(f.w.pubkey(0, 6), f.w.origin(0, 6));
-        push("refuse-input-hint-wrong-index", state_with(&f, base.clone()), psbt, None, refuse(&["INPUT_NOT_OWN"]), false);
+        push(
+            "refuse-input-hint-wrong-index",
+            state_with(&f, base.clone()),
+            psbt,
+            None,
+            refuse(&["INPUT_NOT_OWN"]),
+            false,
+        );
     }
     {
         // I3: the classic trap — output hint claims our change path, script is a foreign key
         let mut psbt = simple_payout(&f, 900_000, 2_000);
         psbt.unsigned_tx.output[1].script_pubkey = foreign_spk(5);
-        push("refuse-change-to-foreign-key", state_with(&f, base.clone()), psbt, None, refuse(&["OUTPUT_SCRIPT_TYPE"]), false);
+        push(
+            "refuse-change-to-foreign-key",
+            state_with(&f, base.clone()),
+            psbt,
+            None,
+            refuse(&["OUTPUT_SCRIPT_TYPE"]),
+            false,
+        );
     }
     {
         // change hint beyond bound + gap (bound 0, gap 100, index 100)
         let psbt = build_psbt(
             &f.w,
             &[In::Own { branch: 0, index: 5, amount: 2_000_000, hint: true }],
-            &[Out { spk: foreign_spk(1), amount: 900_000, hint: None }, Out { spk: f.w.spk(1, 100), amount: 1_098_000, hint: Some((1, 100)) }],
+            &[
+                Out { spk: foreign_spk(1), amount: 900_000, hint: None },
+                Out { spk: f.w.spk(1, 100), amount: 1_098_000, hint: Some((1, 100)) },
+            ],
             2,
             false,
         )
         .psbt;
-        push("refuse-change-index-beyond-gap", state_with(&f, base.clone()), psbt, None, refuse(&["CHANGE_INDEX_BEYOND_GAP"]), false);
+        push(
+            "refuse-change-index-beyond-gap",
+            state_with(&f, base.clone()),
+            psbt,
+            None,
+            refuse(&["CHANGE_INDEX_BEYOND_GAP"]),
+            false,
+        );
     }
     {
         // our own change without a hint: counted as unlisted (safe direction) — here it blows the unlisted cap
         let mut psbt = simple_payout(&f, 900_000, 2_000);
         psbt.outputs[1].bip32_derivation.clear();
-        push("refuse-own-change-without-hint-counts-as-unlisted", state_with(&f, base.clone()), psbt, None, refuse(&["CAP_UNLISTED_TX"]), false);
+        push(
+            "refuse-own-change-without-hint-counts-as-unlisted",
+            state_with(&f, base.clone()),
+            psbt,
+            None,
+            refuse(&["CAP_UNLISTED_TX"]),
+            false,
+        );
     }
 
     // ---------------- refuse: structure ----------------
@@ -346,7 +505,10 @@ fn vectors() -> Vec<Vector> {
         let psbt = build_psbt(
             &f.w,
             &[In::Own { branch: 0, index: 5, amount: 2_000_000, hint: true }],
-            &[Out { spk: foreign_spk(1), amount: 900_000, hint: None }, Out { spk: f.w.spk(1, 0), amount: 1_098_000, hint: Some((1, 0)) }],
+            &[
+                Out { spk: foreign_spk(1), amount: 900_000, hint: None },
+                Out { spk: f.w.spk(1, 0), amount: 1_098_000, hint: Some((1, 0)) },
+            ],
             3,
             false,
         )
@@ -359,7 +521,10 @@ fn vectors() -> Vec<Vector> {
         let psbt = build_psbt(
             &f.w,
             &[In::Own { branch: 0, index: 5, amount: 2_000_000, hint: true }],
-            &[Out { spk: foreign_spk(1), amount: 900_000, hint: None }, Out { spk: f.w.spk(1, 0), amount: 1_098_000, hint: Some((1, 0)) }],
+            &[
+                Out { spk: foreign_spk(1), amount: 900_000, hint: None },
+                Out { spk: f.w.spk(1, 0), amount: 1_098_000, hint: Some((1, 0)) },
+            ],
             2,
             true,
         )
@@ -370,41 +535,80 @@ fn vectors() -> Vec<Vector> {
         let mut psbt = simple_payout(&f, 900_000, 2_000);
         psbt.unsigned_tx.output.push(TxOut { value: Amount::ZERO, script_pubkey: ScriptBuf::new_op_return([1u8]) });
         psbt.outputs.push(Default::default());
-        push("refuse-opreturn-under-none", state_with(&f, base.clone()), psbt, None, refuse(&["OPRETURN_FORBIDDEN"]), false);
+        push(
+            "refuse-opreturn-under-none",
+            state_with(&f, base.clone()),
+            psbt,
+            None,
+            refuse(&["OPRETURN_FORBIDDEN"]),
+            false,
+        );
         let mut m = base.clone();
         m.rules.op_return = OpReturnRule::ZeroValue;
         let mut psbt = simple_payout(&f, 900_000, 2_000);
         psbt.unsigned_tx.output[0].value = Amount::from_sat(899_999);
-        psbt.unsigned_tx.output.push(TxOut { value: Amount::from_sat(1), script_pubkey: ScriptBuf::new_op_return([1u8]) });
+        psbt.unsigned_tx
+            .output
+            .push(TxOut { value: Amount::from_sat(1), script_pubkey: ScriptBuf::new_op_return([1u8]) });
         psbt.outputs.push(Default::default());
         push("refuse-opreturn-nonzero-value", state_with(&f, m), psbt, None, refuse(&["OPRETURN_FORBIDDEN"]), false);
     }
     {
         let psbt = build_psbt(
             &f.w,
-            &[In::Foreign { spk: foreign_spk(9), amount: 100_000 }, In::Own { branch: 0, index: 3, amount: 20_000, hint: true }],
+            &[
+                In::Foreign { spk: foreign_spk(9), amount: 100_000 },
+                In::Own { branch: 0, index: 3, amount: 20_000, hint: true },
+            ],
             &[Out { spk: f.w.spk(0, 4), amount: 119_000, hint: Some((0, 4)) }],
             2,
             false,
         )
         .psbt;
-        push("refuse-foreign-input-under-payjoin-none", state_with(&f, base.clone()), psbt, None, refuse(&["INPUT_FOREIGN_FORBIDDEN"]), false);
+        push(
+            "refuse-foreign-input-under-payjoin-none",
+            state_with(&f, base.clone()),
+            psbt,
+            None,
+            refuse(&["INPUT_FOREIGN_FORBIDDEN"]),
+            false,
+        );
         let mut m = base.clone();
         m.rules.payjoin = PayjoinRule::InflowOnly;
         let psbt = build_psbt(
             &f.w,
-            &[In::Foreign { spk: foreign_spk(9), amount: 1_000 }, In::Own { branch: 0, index: 3, amount: 200_000, hint: true }],
-            &[Out { spk: foreign_spk(1), amount: 150_000, hint: None }, Out { spk: f.w.spk(1, 0), amount: 50_000, hint: Some((1, 0)) }],
+            &[
+                In::Foreign { spk: foreign_spk(9), amount: 1_000 },
+                In::Own { branch: 0, index: 3, amount: 200_000, hint: true },
+            ],
+            &[
+                Out { spk: foreign_spk(1), amount: 150_000, hint: None },
+                Out { spk: f.w.spk(1, 0), amount: 50_000, hint: Some((1, 0)) },
+            ],
             2,
             false,
         )
         .psbt;
-        push("refuse-payjoin-inflow-only-with-outflow", state_with(&f, m), psbt, None, refuse(&["INPUT_FOREIGN_FORBIDDEN"]), false);
+        push(
+            "refuse-payjoin-inflow-only-with-outflow",
+            state_with(&f, m),
+            psbt,
+            None,
+            refuse(&["INPUT_FOREIGN_FORBIDDEN"]),
+            false,
+        );
     }
     {
         let mut psbt = simple_payout(&f, 900_000, 2_000);
         psbt.inputs[0].bip32_derivation.clear();
-        push("refuse-own-coin-without-hint-nothing-to-sign", state_with(&f, base.clone()), psbt, None, refuse(&["INPUT_FOREIGN_FORBIDDEN", "INPUT_NOT_OWN"]), false);
+        push(
+            "refuse-own-coin-without-hint-nothing-to-sign",
+            state_with(&f, base.clone()),
+            psbt,
+            None,
+            refuse(&["INPUT_FOREIGN_FORBIDDEN", "INPUT_NOT_OWN"]),
+            false,
+        );
     }
     {
         let mut psbt = simple_payout(&f, 900_000, 2_000);
@@ -435,28 +639,77 @@ fn vectors() -> Vec<Vector> {
         let mut m = base.clone();
         m.freshness = Freshness { required: true, witness_pk: Some(f.keys.witness.pk), max_tip_lag: 6 };
         let s = state_with(&f, m);
-        push("refuse-freshness-missing", s.clone(), simple_payout(&f, 900_000, 2_000), None, refuse(&["FRESHNESS_MISSING"]), false);
+        push(
+            "refuse-freshness-missing",
+            s.clone(),
+            simple_payout(&f, 900_000, 2_000),
+            None,
+            refuse(&["FRESHNESS_MISSING"]),
+            false,
+        );
         let tok = witness_token(&f, H, 0, &f.keys.owner);
-        push("refuse-freshness-sig-wrong-key", s.clone(), simple_payout(&f, 900_000, 2_000), Some(tok), refuse(&["FRESHNESS_SIG"]), false);
+        push(
+            "refuse-freshness-sig-wrong-key",
+            s.clone(),
+            simple_payout(&f, 900_000, 2_000),
+            Some(tok),
+            refuse(&["FRESHNESS_SIG"]),
+            false,
+        );
         let tok = witness_token(&f, H - 7, 0, &f.keys.witness);
-        push("refuse-freshness-tip-lag-plus-one", s.clone(), simple_payout(&f, 900_000, 2_000), Some(tok), refuse(&["FRESHNESS_TIP"]), false);
+        push(
+            "refuse-freshness-tip-lag-plus-one",
+            s.clone(),
+            simple_payout(&f, 900_000, 2_000),
+            Some(tok),
+            refuse(&["FRESHNESS_TIP"]),
+            false,
+        );
         let mut tok = witness_token(&f, H, 0, &f.keys.witness);
         if let Message::WitnessToken { tip_hash, .. } = &mut tok {
             *tip_hash = [0xab; 32];
         }
         f.keys.witness.sign(&mut tok);
-        push("refuse-freshness-tip-unknown-hash", s.clone(), simple_payout(&f, 900_000, 2_000), Some(tok), refuse(&["FRESHNESS_TIP"]), false);
+        push(
+            "refuse-freshness-tip-unknown-hash",
+            s.clone(),
+            simple_payout(&f, 900_000, 2_000),
+            Some(tok),
+            refuse(&["FRESHNESS_TIP"]),
+            false,
+        );
         let tok = witness_token(&f, H + 1, 0, &f.keys.witness);
-        push("refuse-freshness-tip-ahead-of-best", s.clone(), simple_payout(&f, 900_000, 2_000), Some(tok), refuse(&["FRESHNESS_TIP"]), false);
+        push(
+            "refuse-freshness-tip-ahead-of-best",
+            s.clone(),
+            simple_payout(&f, 900_000, 2_000),
+            Some(tok),
+            refuse(&["FRESHNESS_TIP"]),
+            false,
+        );
         // the rollback detection: witness has seen seq 5, this (rolled-back) state remembers 3
         let mut s3 = s.clone();
         s3.seq = 3;
         let tok = witness_token(&f, H, 5, &f.keys.witness);
-        push("refuse-freshness-seq-behind-disarms", s3, simple_payout(&f, 900_000, 2_000), Some(tok), refuse(&["FRESHNESS_SEQ_BEHIND"]), true);
+        push(
+            "refuse-freshness-seq-behind-disarms",
+            s3,
+            simple_payout(&f, 900_000, 2_000),
+            Some(tok),
+            refuse(&["FRESHNESS_SEQ_BEHIND"]),
+            true,
+        );
         let mut sd = s.clone();
         sd.armed = false;
         let tok = witness_token(&f, H, 0, &f.keys.witness);
-        push("refuse-disarmed-until-rearm", sd, simple_payout(&f, 900_000, 2_000), Some(tok), refuse(&["FRESHNESS_SEQ_BEHIND"]), false);
+        push(
+            "refuse-disarmed-until-rearm",
+            sd,
+            simple_payout(&f, 900_000, 2_000),
+            Some(tok),
+            refuse(&["FRESHNESS_SEQ_BEHIND"]),
+            false,
+        );
     }
     v
 }
@@ -480,7 +733,8 @@ fn run(v: &Vector) -> Result<(), String> {
             let c = classify(&secp, &bytes, &f.w.account, &v.state.mandate, v.state.own_index_bound).unwrap();
             let mut psbt = v.psbt.clone();
             let n = sign_own_inputs(&secp, &mut psbt, &f.w.account_xpriv, &c).map_err(|e| format!("sign: {e:?}"))?;
-            let own_count = c.inputs.iter().filter(|i| matches!(i, signer_core::classify::InputClass::Own { .. })).count();
+            let own_count =
+                c.inputs.iter().filter(|i| matches!(i, signer_core::classify::InputClass::Own { .. })).count();
             if n != own_count {
                 return Err(format!("signed {n} of {own_count} own inputs"));
             }
@@ -490,7 +744,8 @@ fn run(v: &Vector) -> Result<(), String> {
                 if let signer_core::classify::InputClass::Own { path, amount, .. } = class {
                     let (pk, sig) = psbt.inputs[i].partial_sigs.iter().next().expect("partial sig");
                     let spk = f.w.spk(path.branch, path.index);
-                    let sh = cache.p2wpkh_signature_hash(i, &spk, Amount::from_sat(*amount), EcdsaSighashType::All).unwrap();
+                    let sh =
+                        cache.p2wpkh_signature_hash(i, &spk, Amount::from_sat(*amount), EcdsaSighashType::All).unwrap();
                     let msg = bitcoin::secp256k1::Message::from_digest(sh.to_byte_array());
                     secp.verify_ecdsa(&msg, &sig.signature, &pk.inner).map_err(|e| format!("input {i}: {e}"))?;
                     if sig.sighash_type != EcdsaSighashType::All {
@@ -579,12 +834,37 @@ fn all_vectors() {
     covered.sort();
     covered.dedup();
     let required_r1 = [
-        "CAP_TRUSTED_TX", "CAP_TRUSTED_WINDOW", "CAP_TX", "CAP_UNLISTED_TX", "CAP_UNLISTED_WINDOW", "CAP_WINDOW",
-        "CHAIN_STALE", "CHANGE_INDEX_BEYOND_GAP", "FEE_ABS", "FEE_RATE", "FEE_WINDOW", "FRESHNESS_MISSING",
-        "FRESHNESS_SEQ_BEHIND", "FRESHNESS_SIG", "FRESHNESS_TIP", "FROZEN", "INPUT_FOREIGN_FORBIDDEN",
-        "INPUT_NOT_OWN", "INPUT_NO_PREVTX", "INPUT_PREVTX_MISMATCH", "MANDATE_EXPIRED", "OPRETURN_FORBIDDEN",
-        "OUTPUT_SCRIPT_TYPE", "OVERFLOW", "PSBT_PARSE", "RBF_FORBIDDEN", "SIGHASH", "TOO_MANY_INPUTS",
-        "TOO_MANY_OUTPUTS", "TX_VERSION", "UNKNOWN_FIELD",
+        "CAP_TRUSTED_TX",
+        "CAP_TRUSTED_WINDOW",
+        "CAP_TX",
+        "CAP_UNLISTED_TX",
+        "CAP_UNLISTED_WINDOW",
+        "CAP_WINDOW",
+        "CHAIN_STALE",
+        "CHANGE_INDEX_BEYOND_GAP",
+        "FEE_ABS",
+        "FEE_RATE",
+        "FEE_WINDOW",
+        "FRESHNESS_MISSING",
+        "FRESHNESS_SEQ_BEHIND",
+        "FRESHNESS_SIG",
+        "FRESHNESS_TIP",
+        "FROZEN",
+        "INPUT_FOREIGN_FORBIDDEN",
+        "INPUT_NOT_OWN",
+        "INPUT_NO_PREVTX",
+        "INPUT_PREVTX_MISMATCH",
+        "MANDATE_EXPIRED",
+        "OPRETURN_FORBIDDEN",
+        "OUTPUT_SCRIPT_TYPE",
+        "OVERFLOW",
+        "PSBT_PARSE",
+        "RBF_FORBIDDEN",
+        "SIGHASH",
+        "TOO_MANY_INPUTS",
+        "TOO_MANY_OUTPUTS",
+        "TX_VERSION",
+        "UNKNOWN_FIELD",
     ];
     for r in required_r1 {
         assert!(covered.contains(&r), "no refusal vector for {r}");

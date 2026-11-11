@@ -205,7 +205,8 @@ impl TestInitRequest {
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let init = InitRequest::decode(&d.bytes(limits::MAX_MESSAGE)?)?;
-        let r = TestInitRequest { init, seed: d.fixed()?, identity_sk: d.fixed()?, state: d.bytes(limits::MAX_SEALED)? };
+        let r =
+            TestInitRequest { init, seed: d.fixed()?, identity_sk: d.fixed()?, state: d.bytes(limits::MAX_SEALED)? };
         d.finish()?;
         Ok(r)
     }
@@ -284,7 +285,12 @@ impl IdentityCard {
     /// Canonical bytes.
     pub fn encode(&self) -> Vec<u8> {
         let mut e = Enc::new();
-        e.fixed(&self.mrenclave).u8(self.network).fixed(&self.xpub).fixed(&self.fingerprint).fixed(&self.identity_pk).str(&self.tier);
+        e.fixed(&self.mrenclave)
+            .u8(self.network)
+            .fixed(&self.xpub)
+            .fixed(&self.fingerprint)
+            .fixed(&self.identity_pk)
+            .str(&self.tier);
         e.finish()
     }
     /// Strict decode.
@@ -486,7 +492,6 @@ impl PolicyResponse {
     }
 }
 
-
 /// The `REPORT` binding (REQ-r5 §3): `report_data = SHA-256(DOMAIN ‖ nonce ‖ card bytes) ‖ 0[32]`.
 pub mod quote {
     /// Domain separator in front of the nonce and the card.
@@ -503,7 +508,8 @@ pub mod quote {
     pub const REPORT_DATA_OFFSET: usize = 320;
     /// The bytes the enclave hashes into `report_data[..32]`.
     pub fn preimage(nonce: &[u8; NONCE_LEN], card_bytes: &[u8]) -> alloc::vec::Vec<u8> {
-        let mut v = alloc::vec::Vec::with_capacity(DOMAIN.len().saturating_add(NONCE_LEN).saturating_add(card_bytes.len()));
+        let mut v =
+            alloc::vec::Vec::with_capacity(DOMAIN.len().saturating_add(NONCE_LEN).saturating_add(card_bytes.len()));
         v.extend_from_slice(DOMAIN);
         v.extend_from_slice(nonce);
         v.extend_from_slice(card_bytes);

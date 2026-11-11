@@ -28,7 +28,8 @@ static SESSION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn call(op_code: u32, input: &[u8]) -> Response {
     let mut out = vec![0u8; 2 * 1024 * 1024];
     let mut out_len = 0usize;
-    let rc = unsafe { rcore::rcore_call(op_code, input.as_ptr(), input.len(), out.as_mut_ptr(), out.len(), &mut out_len) };
+    let rc =
+        unsafe { rcore::rcore_call(op_code, input.as_ptr(), input.len(), out.as_mut_ptr(), out.len(), &mut out_len) };
     assert_eq!(rc, 0, "rcore_call status");
     Response::decode(&out[..out_len]).unwrap()
 }
@@ -99,11 +100,24 @@ fn wallet(entropy: &[u8; 32], net: bitcoin::Network, coin: u32) -> Wallet {
 
 impl Wallet {
     fn spk(&self, secp: &Secp256k1<All>, branch: u32, index: u32) -> ScriptBuf {
-        let k = self.xpub.derive_pub(secp, &[ChildNumber::from_normal_idx(branch).unwrap(), ChildNumber::from_normal_idx(index).unwrap()]).unwrap();
+        let k = self
+            .xpub
+            .derive_pub(
+                secp,
+                &[ChildNumber::from_normal_idx(branch).unwrap(), ChildNumber::from_normal_idx(index).unwrap()],
+            )
+            .unwrap();
         ScriptBuf::new_p2wpkh(&k.to_pub().wpubkey_hash())
     }
     fn pubkey(&self, secp: &Secp256k1<All>, branch: u32, index: u32) -> bitcoin::secp256k1::PublicKey {
-        self.xpub.derive_pub(secp, &[ChildNumber::from_normal_idx(branch).unwrap(), ChildNumber::from_normal_idx(index).unwrap()]).unwrap().to_pub().0
+        self.xpub
+            .derive_pub(
+                secp,
+                &[ChildNumber::from_normal_idx(branch).unwrap(), ChildNumber::from_normal_idx(index).unwrap()],
+            )
+            .unwrap()
+            .to_pub()
+            .0
     }
     fn origin(&self, coin: u32, branch: u32, index: u32) -> (Fingerprint, DerivationPath) {
         (
@@ -139,8 +153,15 @@ fn regtest_mandate(fp: [u8; 4], cp: &Header) -> Mandate {
     Mandate {
         version: MANDATE_VERSION,
         network: Network::Regtest,
-        wallet: WalletSpec { fingerprint: fp, account: AccountPath { purpose: 84, coin: 1, account: 0 }, script_types: vec![ScriptType::P2wpkh] },
-        destinations: Destinations { trusted: vec![], unlisted: ClassCaps { max_per_tx: 1_000_000, max_per_window: 5_000_000 } },
+        wallet: WalletSpec {
+            fingerprint: fp,
+            account: AccountPath { purpose: 84, coin: 1, account: 0 },
+            script_types: vec![ScriptType::P2wpkh],
+        },
+        destinations: Destinations {
+            trusted: vec![],
+            unlisted: ClassCaps { max_per_tx: 1_000_000, max_per_window: 5_000_000 },
+        },
         limits: Limits {
             max_per_tx: 100_000_000,
             window_blocks: 144,
@@ -153,7 +174,12 @@ fn regtest_mandate(fp: [u8; 4], cp: &Header) -> Mandate {
             own_index_gap: 100,
             max_reorg: 6,
         },
-        rules: Rules { sighash: SighashRule::All, payjoin: PayjoinRule::None, op_return: OpReturnRule::None, rbf: true },
+        rules: Rules {
+            sighash: SighashRule::All,
+            payjoin: PayjoinRule::None,
+            op_return: OpReturnRule::None,
+            rbf: true,
+        },
         checkpoint: Checkpoint {
             hash: cp.block_hash().to_byte_array(),
             height: 100,
@@ -168,18 +194,36 @@ fn regtest_mandate(fp: [u8; 4], cp: &Header) -> Mandate {
     }
 }
 
-fn payout_psbt(secp: &Secp256k1<All>, w: &Wallet, coin: u32, in_index: u32, in_amount: u64, out_amount: u64, fee: u64) -> Psbt {
+fn payout_psbt(
+    secp: &Secp256k1<All>,
+    w: &Wallet,
+    coin: u32,
+    in_index: u32,
+    in_amount: u64,
+    out_amount: u64,
+    fee: u64,
+) -> Psbt {
     let prev = Transaction {
         version: Version::TWO,
         lock_time: LockTime::from_consensus(777),
-        input: vec![TxIn { previous_output: OutPoint::null(), script_sig: ScriptBuf::new(), sequence: Sequence::MAX, witness: Witness::new() }],
+        input: vec![TxIn {
+            previous_output: OutPoint::null(),
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::MAX,
+            witness: Witness::new(),
+        }],
         output: vec![TxOut { value: Amount::from_sat(in_amount), script_pubkey: w.spk(secp, 0, in_index) }],
     };
     let foreign = wallet(&[0x77; 32], bitcoin::Network::Regtest, 1).spk(secp, 0, 1);
     let tx = Transaction {
         version: Version::TWO,
         lock_time: LockTime::ZERO,
-        input: vec![TxIn { previous_output: OutPoint { txid: prev.compute_txid(), vout: 0 }, script_sig: ScriptBuf::new(), sequence: Sequence::MAX, witness: Witness::new() }],
+        input: vec![TxIn {
+            previous_output: OutPoint { txid: prev.compute_txid(), vout: 0 },
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::MAX,
+            witness: Witness::new(),
+        }],
         output: vec![
             TxOut { value: Amount::from_sat(out_amount), script_pubkey: foreign },
             TxOut { value: Amount::from_sat(in_amount - out_amount - fee), script_pubkey: w.spk(secp, 1, 0) },
@@ -244,21 +288,35 @@ fn full_flow_init_install_headers_judge_sign_and_fork_refusal() {
     // a mandate signed by the recovery key is refused
     let mut bad = m.clone();
     recovery.sign(&mut bad);
-    let r = call(op::INSTALL, &proto::SealedWith { sealed: ir.sealed.clone(), data: mandate.encode(), extra: Some(bad.sig().to_vec()) }.encode());
+    let r = call(
+        op::INSTALL,
+        &proto::SealedWith { sealed: ir.sealed.clone(), data: mandate.encode(), extra: Some(bad.sig().to_vec()) }
+            .encode(),
+    );
     assert!(!r.ok && r.reasons == vec!["POLICY_SIG"]);
     // a mandate for a different fingerprint is refused
     let mut other = mandate.clone();
     other.wallet.fingerprint = [9; 4];
     let mut mo = Message::PolicyUpdate { enclave_id, nonce: 0, mandate: other.encode(), sig: [0; 64] };
     owner.sign(&mut mo);
-    let r = call(op::INSTALL, &proto::SealedWith { sealed: ir.sealed.clone(), data: other.encode(), extra: Some(mo.sig().to_vec()) }.encode());
+    let r = call(
+        op::INSTALL,
+        &proto::SealedWith { sealed: ir.sealed.clone(), data: other.encode(), extra: Some(mo.sig().to_vec()) }.encode(),
+    );
     assert!(!r.ok && r.reasons == vec!["POLICY_WALLET"]);
     // the right one installs
-    let r = call(op::INSTALL, &proto::SealedWith { sealed: ir.sealed.clone(), data: mandate.encode(), extra: Some(m.sig().to_vec()) }.encode());
+    let r = call(
+        op::INSTALL,
+        &proto::SealedWith { sealed: ir.sealed.clone(), data: mandate.encode(), extra: Some(m.sig().to_vec()) }
+            .encode(),
+    );
     assert!(r.ok, "{:?}", r.reasons);
     let sealed0 = proto::SealedResponse::decode(&r.payload).unwrap().sealed;
     // installing twice is refused
-    let r = call(op::INSTALL, &proto::SealedWith { sealed: sealed0.clone(), data: mandate.encode(), extra: Some(m.sig().to_vec()) }.encode());
+    let r = call(
+        op::INSTALL,
+        &proto::SealedWith { sealed: sealed0.clone(), data: mandate.encode(), extra: Some(m.sig().to_vec()) }.encode(),
+    );
     assert!(!r.ok);
 
     // --- STATUS / POLICY ---
@@ -305,7 +363,10 @@ fn full_flow_init_install_headers_judge_sign_and_fork_refusal() {
     // SIGN with the charged blob but a different PSBT (same txid, hint stripped) refuses
     let mut stripped = psbt.clone();
     stripped.outputs[1].bip32_derivation.clear();
-    let r = call(op::SIGN, &proto::SealedWith { sealed: charged.clone(), data: stripped.serialize(), extra: None }.encode());
+    let r = call(
+        op::SIGN,
+        &proto::SealedWith { sealed: charged.clone(), data: stripped.serialize(), extra: None }.encode(),
+    );
     assert!(!r.ok, "sign needs the exact judged bytes");
     // SIGN with the charged blob and the exact bytes signs; the receipt verifies
     let r = call(op::SIGN, &proto::SealedWith { sealed: charged.clone(), data: bytes.clone(), extra: None }.encode());
@@ -314,8 +375,11 @@ fn full_flow_init_install_headers_judge_sign_and_fork_refusal() {
     let signed = Psbt::deserialize(&sr.psbt).unwrap();
     let (pk, sig) = signed.inputs[0].partial_sigs.iter().next().unwrap();
     let mut cache = SighashCache::new(&signed.unsigned_tx);
-    let sh = cache.p2wpkh_signature_hash(0, &w.spk(&secp, 0, 5), Amount::from_sat(2_000_000), EcdsaSighashType::All).unwrap();
-    secp.verify_ecdsa(&bitcoin::secp256k1::Message::from_digest(sh.to_byte_array()), &sig.signature, &pk.inner).unwrap();
+    let sh = cache
+        .p2wpkh_signature_hash(0, &w.spk(&secp, 0, 5), Amount::from_sat(2_000_000), EcdsaSighashType::All)
+        .unwrap();
+    secp.verify_ecdsa(&bitcoin::secp256k1::Message::from_digest(sh.to_byte_array()), &sig.signature, &pk.inner)
+        .unwrap();
     let receipt = Receipt::decode(&sr.receipt).unwrap();
     assert_eq!(receipt, preview);
     assert!(verify_digest_secp(&secp, &ir.identity_pk, &receipt.digest(), &sr.receipt_sig));
@@ -327,13 +391,15 @@ fn full_flow_init_install_headers_judge_sign_and_fork_refusal() {
 
     // --- the fork: a second JUDGE from the same base blob is refused by the session mark ---
     let psbt_b = payout_psbt(&secp, &w, 1, 6, 2_000_000, 800_000, 2_000);
-    let r = call(op::JUDGE, &proto::SealedWith { sealed: sealed1.clone(), data: psbt_b.serialize(), extra: None }.encode());
+    let r =
+        call(op::JUDGE, &proto::SealedWith { sealed: sealed1.clone(), data: psbt_b.serialize(), extra: None }.encode());
     assert!(!r.ok && r.reasons == vec!["SEQ_BEHIND_SESSION"], "{:?}", r.reasons);
     // and so is every other operation on the stale blob
     let r = call(op::HEADERS, &proto::SealedWith { sealed: sealed1.clone(), data: vec![], extra: None }.encode());
     assert!(!r.ok && r.reasons == vec!["SEQ_BEHIND_SESSION"]);
     // the charged blob continues normally
-    let r = call(op::JUDGE, &proto::SealedWith { sealed: charged.clone(), data: psbt_b.serialize(), extra: None }.encode());
+    let r =
+        call(op::JUDGE, &proto::SealedWith { sealed: charged.clone(), data: psbt_b.serialize(), extra: None }.encode());
     assert!(r.ok, "{:?}", r.reasons);
     let charged2 = proto::JudgeResponse::decode(&r.payload).unwrap().sealed;
     let st2 = proto::StatusResponse::decode(&call(op::STATUS, &charged2).payload).unwrap();
@@ -342,10 +408,15 @@ fn full_flow_init_install_headers_judge_sign_and_fork_refusal() {
     // --- after an enclave "reload" the volatile mark is gone — and so is the owner's approval:
     // REQ-r7 makes a reloaded process one that judges and signs nothing until `Arm` ---
     call(op::TEST_RESET_SESSION, &[]);
-    let r = call(op::JUDGE, &proto::SealedWith { sealed: sealed1.clone(), data: psbt_b.serialize(), extra: None }.encode());
+    let r =
+        call(op::JUDGE, &proto::SealedWith { sealed: sealed1.clone(), data: psbt_b.serialize(), extra: None }.encode());
     assert!(!r.ok && r.reasons == vec!["NOT_ARMED"], "a reload is unarmed: {:?}", r.reasons);
     let r = call(op::SIGN, &proto::SealedWith { sealed: charged.clone(), data: bytes.clone(), extra: None }.encode());
-    assert!(!r.ok && r.reasons == vec!["NOT_ARMED"], "the signing entrypoint checks the boot-arm itself: {:?}", r.reasons);
+    assert!(
+        !r.ok && r.reasons == vec!["NOT_ARMED"],
+        "the signing entrypoint checks the boot-arm itself: {:?}",
+        r.reasons
+    );
     let st3 = proto::StatusResponse::decode(&call(op::STATUS, &charged2).payload).unwrap();
     assert_ne!(st3.session_id, st.session_id);
     assert!(!st3.boot_armed && !st3.auto_arm);
@@ -353,38 +424,60 @@ fn full_flow_init_install_headers_judge_sign_and_fork_refusal() {
     // a replayed Arm — an earlier load's challenge — is refused
     let mut stale = Message::Arm { enclave_id, nonce: 1, boot_challenge: st.boot_challenge, seq_seen: 2, sig: [0; 64] };
     owner.sign(&mut stale);
-    let r = call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: charged2.clone(), data: stale.encode(), extra: None }.encode());
+    let r = call(
+        op::APPLY_MESSAGE,
+        &proto::SealedWith { sealed: charged2.clone(), data: stale.encode(), extra: None }.encode(),
+    );
     assert!(!r.ok && r.reasons == vec!["ARM_CHALLENGE"], "{:?}", r.reasons);
     // the owner saw #2: a rolled-back blob (#0) cannot be armed with that knowledge
-    let mut arm_old = Message::Arm { enclave_id, nonce: 1, boot_challenge: st3.boot_challenge, seq_seen: 2, sig: [0; 64] };
+    let mut arm_old =
+        Message::Arm { enclave_id, nonce: 1, boot_challenge: st3.boot_challenge, seq_seen: 2, sig: [0; 64] };
     owner.sign(&mut arm_old);
-    let r = call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: sealed1.clone(), data: arm_old.encode(), extra: None }.encode());
+    let r = call(
+        op::APPLY_MESSAGE,
+        &proto::SealedWith { sealed: sealed1.clone(), data: arm_old.encode(), extra: None }.encode(),
+    );
     assert!(!r.ok && r.reasons == vec!["ARM_SEQ_BEHIND"], "{:?}", r.reasons);
     // the wrong key, the wrong nonce
     let thief = p256_key(0xb2);
-    let mut arm_thief = Message::Arm { enclave_id, nonce: 1, boot_challenge: st3.boot_challenge, seq_seen: 2, sig: [0; 64] };
+    let mut arm_thief =
+        Message::Arm { enclave_id, nonce: 1, boot_challenge: st3.boot_challenge, seq_seen: 2, sig: [0; 64] };
     thief.sign(&mut arm_thief);
-    let r = call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: charged2.clone(), data: arm_thief.encode(), extra: None }.encode());
+    let r = call(
+        op::APPLY_MESSAGE,
+        &proto::SealedWith { sealed: charged2.clone(), data: arm_thief.encode(), extra: None }.encode(),
+    );
     assert!(!r.ok && r.reasons == vec!["POLICY_SIG"], "{:?}", r.reasons);
-    let mut arm_nonce = Message::Arm { enclave_id, nonce: 7, boot_challenge: st3.boot_challenge, seq_seen: 2, sig: [0; 64] };
+    let mut arm_nonce =
+        Message::Arm { enclave_id, nonce: 7, boot_challenge: st3.boot_challenge, seq_seen: 2, sig: [0; 64] };
     owner.sign(&mut arm_nonce);
-    let r = call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: charged2.clone(), data: arm_nonce.encode(), extra: None }.encode());
+    let r = call(
+        op::APPLY_MESSAGE,
+        &proto::SealedWith { sealed: charged2.clone(), data: arm_nonce.encode(), extra: None }.encode(),
+    );
     assert!(!r.ok && r.reasons == vec!["POLICY_NONCE"], "{:?}", r.reasons);
     // still unarmed after all of that
     assert!(!proto::StatusResponse::decode(&call(op::STATUS, &charged2).payload).unwrap().boot_armed);
     // the genuine Arm over THIS load's challenge, on the current blob
     let mut arm = Message::Arm { enclave_id, nonce: 1, boot_challenge: st3.boot_challenge, seq_seen: 2, sig: [0; 64] };
     owner.sign(&mut arm);
-    let r = call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: charged2.clone(), data: arm.encode(), extra: None }.encode());
+    let r = call(
+        op::APPLY_MESSAGE,
+        &proto::SealedWith { sealed: charged2.clone(), data: arm.encode(), extra: None }.encode(),
+    );
     assert!(r.ok, "{:?}", r.reasons);
     let charged2 = proto::SealedResponse::decode(&r.payload).unwrap().sealed; // the nonce is consumed: 1
     let st4 = proto::StatusResponse::decode(&call(op::STATUS, &charged2).payload).unwrap();
     assert!(st4.boot_armed && st4.nonce == 1 && st4.seq == 2, "{st4:?}");
     // the same Arm again within the load: the nonce is spent
-    let r = call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: charged2.clone(), data: arm.encode(), extra: None }.encode());
+    let r = call(
+        op::APPLY_MESSAGE,
+        &proto::SealedWith { sealed: charged2.clone(), data: arm.encode(), extra: None }.encode(),
+    );
     assert!(!r.ok && r.reasons == vec!["POLICY_NONCE"], "{:?}", r.reasons);
     // C-R7-3: arming ratcheted the mark to #2 — the stale blob is refused inside this armed process
-    let r = call(op::JUDGE, &proto::SealedWith { sealed: sealed1.clone(), data: psbt_b.serialize(), extra: None }.encode());
+    let r =
+        call(op::JUDGE, &proto::SealedWith { sealed: sealed1.clone(), data: psbt_b.serialize(), extra: None }.encode());
     assert!(!r.ok && r.reasons == vec!["SEQ_BEHIND_SESSION"], "{:?}", r.reasons);
 
     // --- FREEZE (unauthenticated) then a message ---
@@ -442,7 +535,10 @@ fn replay_r1_vectors_through_the_dispatcher() {
         assert_eq!(ir.fingerprint, w.fingerprint, "{}: fixture wallet", v.name);
         let psbt = hex::decode(&v.psbt_hex).unwrap();
         let witness = v.witness_hex.as_ref().map(|h| hex::decode(h).unwrap());
-        let r = call(op::JUDGE, &proto::SealedWith { sealed: ir.sealed.clone(), data: psbt.clone(), extra: witness }.encode());
+        let r = call(
+            op::JUDGE,
+            &proto::SealedWith { sealed: ir.sealed.clone(), data: psbt.clone(), extra: witness }.encode(),
+        );
         let mut got = r.reasons.clone();
         got.sort();
         let mut want = v.reasons.clone();
@@ -454,7 +550,8 @@ fn replay_r1_vectors_through_the_dispatcher() {
                     continue;
                 }
                 let jr = proto::JudgeResponse::decode(&r.payload).unwrap();
-                let r = call(op::SIGN, &proto::SealedWith { sealed: jr.sealed, data: psbt.clone(), extra: None }.encode());
+                let r =
+                    call(op::SIGN, &proto::SealedWith { sealed: jr.sealed, data: psbt.clone(), extra: None }.encode());
                 if !r.ok {
                     failures.push(format!("{}: sign {:?}", v.name, r.reasons));
                     continue;
@@ -467,8 +564,17 @@ fn replay_r1_vectors_through_the_dispatcher() {
                     for (pk, sig) in &input.partial_sigs {
                         let prev = input.non_witness_utxo.as_ref().unwrap();
                         let prevout = &prev.output[signed.unsigned_tx.input[i].previous_output.vout as usize];
-                        let sh = cache.p2wpkh_signature_hash(i, &prevout.script_pubkey, prevout.value, EcdsaSighashType::All).unwrap();
-                        if secp.verify_ecdsa(&bitcoin::secp256k1::Message::from_digest(sh.to_byte_array()), &sig.signature, &pk.inner).is_err() {
+                        let sh = cache
+                            .p2wpkh_signature_hash(i, &prevout.script_pubkey, prevout.value, EcdsaSighashType::All)
+                            .unwrap();
+                        if secp
+                            .verify_ecdsa(
+                                &bitcoin::secp256k1::Message::from_digest(sh.to_byte_array()),
+                                &sig.signature,
+                                &pk.inner,
+                            )
+                            .is_err()
+                        {
                             failures.push(format!("{}: bad signature on input {i}", v.name));
                         }
                         n += 1;
@@ -491,7 +597,12 @@ fn replay_r1_vectors_through_the_dispatcher() {
                     failures.push(format!("{}: reasons {:?} want {:?}", v.name, got, want));
                 }
                 if v.disarms == r.payload.is_empty() {
-                    failures.push(format!("{}: disarm payload presence {} want {}", v.name, !r.payload.is_empty(), v.disarms));
+                    failures.push(format!(
+                        "{}: disarm payload presence {} want {}",
+                        v.name,
+                        !r.payload.is_empty(),
+                        v.disarms
+                    ));
                 }
             }
             _ => unreachable!(),
@@ -537,10 +648,16 @@ fn report_binds_card_and_nonce() {
     assert!(s1.ok);
     // one byte short, one byte long, a stray `extra`: ENCODING
     for bad in [543usize, 545] {
-        let r = call(op::REPORT, &proto::SealedWith { sealed: ir.sealed.clone(), data: vec![0u8; bad], extra: None }.encode());
+        let r = call(
+            op::REPORT,
+            &proto::SealedWith { sealed: ir.sealed.clone(), data: vec![0u8; bad], extra: None }.encode(),
+        );
         assert!(!r.ok && r.reasons.iter().any(|x| x == "ENCODING"), "{bad}: {:?}", r.reasons);
     }
-    let r4 = call(op::REPORT, &proto::SealedWith { sealed: ir.sealed.clone(), data: vec![0u8; 544], extra: Some(vec![1]) }.encode());
+    let r4 = call(
+        op::REPORT,
+        &proto::SealedWith { sealed: ir.sealed.clone(), data: vec![0u8; 544], extra: Some(vec![1]) }.encode(),
+    );
     assert!(!r4.ok && r4.reasons.iter().any(|x| x == "ENCODING"), "{:?}", r4.reasons);
     // a blob that does not unseal: no report at all
     let r5 = call(op::REPORT, &proto::SealedWith { sealed: vec![9u8; 40], data: vec![0u8; 544], extra: None }.encode());
@@ -619,7 +736,11 @@ fn tpm_counter_freshness_r9() {
     let enclave_id = signer_core::sha256(&ir.identity_pk);
     let mut m = Message::PolicyUpdate { enclave_id, nonce: 0, mandate: mandate.encode(), sig: [0; 64] };
     owner.sign(&mut m);
-    let r = call(op::INSTALL, &proto::SealedWith { sealed: ir.sealed.clone(), data: mandate.encode(), extra: Some(m.sig().to_vec()) }.encode());
+    let r = call(
+        op::INSTALL,
+        &proto::SealedWith { sealed: ir.sealed.clone(), data: mandate.encode(), extra: Some(m.sig().to_vec()) }
+            .encode(),
+    );
     assert!(r.ok, "{:?}", r.reasons);
     let unbound = proto::SealedResponse::decode(&r.payload).unwrap().sealed;
     let st = status_of(&unbound);
@@ -630,43 +751,63 @@ fn tpm_counter_freshness_r9() {
 
     // --- Anchor negatives first: wrong challenge, seq ahead, malformed key, wrong nonce, wrong signer ---
     let challenge = st.boot_challenge;
-    let mk = |nonce: u64, challenge: [u8; 32], ak_pk: [u8; 65], name: [u8; 34], counter: u64, seq_seen: u64| Message::Anchor {
-        enclave_id,
-        nonce,
-        boot_challenge: challenge,
-        ak_pk,
-        nv_name: name,
-        counter,
-        seq_seen,
-        sig: [0; 64],
+    let mk = |nonce: u64, challenge: [u8; 32], ak_pk: [u8; 65], name: [u8; 34], counter: u64, seq_seen: u64| {
+        Message::Anchor {
+            enclave_id,
+            nonce,
+            boot_challenge: challenge,
+            ak_pk,
+            nv_name: name,
+            counter,
+            seq_seen,
+            sig: [0; 64],
+        }
     };
     let mut bad = mk(1, [9; 32], tpm.ak.pk, tpm.name, tpm.counter, 0);
     owner.sign(&mut bad);
-    let r = call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: unbound.clone(), data: bad.encode(), extra: None }.encode());
+    let r = call(
+        op::APPLY_MESSAGE,
+        &proto::SealedWith { sealed: unbound.clone(), data: bad.encode(), extra: None }.encode(),
+    );
     assert!(!r.ok && r.reasons == vec!["ARM_CHALLENGE"], "{:?}", r.reasons);
     let mut bad = mk(1, challenge, tpm.ak.pk, tpm.name, tpm.counter, 5);
     owner.sign(&mut bad);
-    let r = call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: unbound.clone(), data: bad.encode(), extra: None }.encode());
+    let r = call(
+        op::APPLY_MESSAGE,
+        &proto::SealedWith { sealed: unbound.clone(), data: bad.encode(), extra: None }.encode(),
+    );
     assert!(!r.ok && r.reasons == vec!["ARM_SEQ_BEHIND"], "{:?}", r.reasons);
     let mut sha1_name = tpm.name;
     sha1_name[1] = 0x04;
     let mut bad = mk(1, challenge, tpm.ak.pk, sha1_name, tpm.counter, 0);
     owner.sign(&mut bad);
-    let r = call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: unbound.clone(), data: bad.encode(), extra: None }.encode());
+    let r = call(
+        op::APPLY_MESSAGE,
+        &proto::SealedWith { sealed: unbound.clone(), data: bad.encode(), extra: None }.encode(),
+    );
     assert!(!r.ok && r.reasons == vec!["POLICY_INVALID"], "{:?}", r.reasons);
     let mut bad = mk(3, challenge, tpm.ak.pk, tpm.name, tpm.counter, 0);
     owner.sign(&mut bad);
-    let r = call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: unbound.clone(), data: bad.encode(), extra: None }.encode());
+    let r = call(
+        op::APPLY_MESSAGE,
+        &proto::SealedWith { sealed: unbound.clone(), data: bad.encode(), extra: None }.encode(),
+    );
     assert!(!r.ok && r.reasons == vec!["POLICY_NONCE"], "{:?}", r.reasons);
     let mut bad = mk(1, challenge, tpm.ak.pk, tpm.name, tpm.counter, 0);
     recovery.sign(&mut bad);
-    let r = call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: unbound.clone(), data: bad.encode(), extra: None }.encode());
+    let r = call(
+        op::APPLY_MESSAGE,
+        &proto::SealedWith { sealed: unbound.clone(), data: bad.encode(), extra: None }.encode(),
+    );
     assert!(!r.ok && r.reasons == vec!["POLICY_SIG"], "{:?}", r.reasons);
 
     // --- the genuine Anchor: the state pins the TPM and expects counter+1 after the seal ---
     let mut anchor = mk(1, challenge, tpm.ak.pk, tpm.name, tpm.counter, 0);
     owner.sign(&mut anchor);
-    let r = call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: unbound.clone(), data: anchor.encode(), extra: None }.encode());
+    let r = call(
+        op::APPLY_MESSAGE,
+        &proto::SealedWith { sealed: unbound.clone(), data: anchor.encode(), extra: None }.encode(),
+    );
     assert!(r.ok, "{:?}", r.reasons);
     let bound1 = proto::SealedResponse::decode(&r.payload).unwrap().sealed;
     tpm.increment(); // the host increments after persisting the new blob
@@ -740,14 +881,22 @@ fn tpm_counter_freshness_r9() {
     let mut un = Message::Unfreeze { enclave_id, nonce: 2, sig: [0; 64] };
     owner.sign(&mut un);
     // the owner's message itself is a Fresh op: without a proof it is TPM_REQUIRED, not NOT_ARMED
-    let r = call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: frozen.clone(), data: un.encode(), extra: None }.encode());
+    let r =
+        call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: frozen.clone(), data: un.encode(), extra: None }.encode());
     assert!(!r.ok && r.reasons == vec!["TPM_REQUIRED"], "{:?}", r.reasons);
-    let r = fresh_call(&tpm, op::APPLY_MESSAGE, &proto::SealedWith { sealed: frozen.clone(), data: un.encode(), extra: None }.encode());
+    let r = fresh_call(
+        &tpm,
+        op::APPLY_MESSAGE,
+        &proto::SealedWith { sealed: frozen.clone(), data: un.encode(), extra: None }.encode(),
+    );
     assert!(r.ok, "fresh proof after a reload: {:?}", r.reasons);
     let live = proto::SealedResponse::decode(&r.payload).unwrap().sealed;
     tpm.increment();
     let st = status_of(&live);
-    assert!(st.boot_armed && !st.frozen && st.tpm_expected == 1003 && st.nonce == 2, "auto-armed on a fresh proof: {st:?}");
+    assert!(
+        st.boot_armed && !st.frozen && st.tpm_expected == 1003 && st.nonce == 2,
+        "auto-armed on a fresh proof: {st:?}"
+    );
 
     // --- a reload onto a rolled-back blob stays unarmed: STATE_STALE, never auto-arm ---
     call(op::TEST_RESET_SESSION, &[]);
@@ -757,7 +906,11 @@ fn tpm_counter_freshness_r9() {
     // an owner message other than Anchor cannot rescue a stale blob either: it needs the proof
     let mut fr = Message::Unfreeze { enclave_id, nonce: 3, sig: [0; 64] };
     owner.sign(&mut fr);
-    let r = fresh_call(&tpm, op::APPLY_MESSAGE, &proto::SealedWith { sealed: bound1.clone(), data: fr.encode(), extra: None }.encode());
+    let r = fresh_call(
+        &tpm,
+        op::APPLY_MESSAGE,
+        &proto::SealedWith { sealed: bound1.clone(), data: fr.encode(), extra: None }.encode(),
+    );
     assert!(!r.ok && r.reasons == vec!["STATE_STALE"], "{:?}", r.reasons);
     // ...until the owner re-anchors ON THE STALE BLOB, without a proof (§2.5): the override names
     // the live counter (from the owner's attested read) and arms; the blob's nonce is 1 → next 2
@@ -765,7 +918,8 @@ fn tpm_counter_freshness_r9() {
     assert!(st.tpm_expected == 1001 && st.nonce == 1, "{st:?}");
     let mut re = mk(2, st.boot_challenge, tpm.ak.pk, tpm.name, tpm.counter, 0);
     owner.sign(&mut re);
-    let r = call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: bound1.clone(), data: re.encode(), extra: None }.encode());
+    let r =
+        call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: bound1.clone(), data: re.encode(), extra: None }.encode());
     assert!(r.ok, "the Anchor is exempt from the proof: {:?}", r.reasons);
     let live2 = proto::SealedResponse::decode(&r.payload).unwrap().sealed;
     tpm.increment();
@@ -776,6 +930,7 @@ fn tpm_counter_freshness_r9() {
     assert!(r.ok, "{:?}", r.reasons);
     tpm.increment();
     // a captured old Anchor (nonce 2 again) is refused after the fact, proof or not
-    let r = call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: live2.clone(), data: re.encode(), extra: None }.encode());
+    let r =
+        call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: live2.clone(), data: re.encode(), extra: None }.encode());
     assert!(!r.ok && r.reasons == vec!["POLICY_NONCE"], "{:?}", r.reasons);
 }

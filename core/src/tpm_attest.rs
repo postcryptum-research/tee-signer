@@ -155,23 +155,14 @@ pub fn parse_nv_attest(attest: &[u8]) -> Result<NvAttest, Reason> {
     if !r.at_end() {
         return Err(p());
     }
-    Ok(NvAttest {
-        extra,
-        index_name,
-        counter,
-    })
+    Ok(NvAttest { extra, index_name, counter })
 }
 
 /// Verify a certify proof against the anchor and the nonce the enclave issued for this call.
 /// Returns the certified counter when it equals the expected one. The order of checks gives each
 /// mutation its own reason: structure (`TPM_PARSE`), nonce (`TPM_NONCE`), index (`TPM_INDEX`),
 /// signature (`TPM_SIG`), value (`STATE_STALE`).
-pub fn verify_nv_certify(
-    attest: &[u8],
-    sig: &[u8; 64],
-    anchor: &TpmAnchor,
-    nonce: &[u8; 32],
-) -> Result<u64, Reason> {
+pub fn verify_nv_certify(attest: &[u8], sig: &[u8; 64], anchor: &TpmAnchor, nonce: &[u8; 32]) -> Result<u64, Reason> {
     let a = parse_nv_attest(attest)?;
     if a.extra != *nonce {
         return Err(Reason::TpmNonce);
