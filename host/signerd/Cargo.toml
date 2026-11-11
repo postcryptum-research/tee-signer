@@ -13,6 +13,9 @@ default = []
 sgx = []
 # In-process rcore in host simulation (no SGX): for laptop end-to-end tests of the daemon logic.
 nosgx = ["dep:rcore"]
+# REQ-r9: the `tss` TPM transport (a local TPM 2.0 through libtss2: `SIGNERD_TPM=tss:…`, `tpm-setup`,
+# `tpm-teardown`). Needs libtss2-dev at build time and libtss2-esys/-tctildr/-mu/-sys at run time.
+tss = ["dep:tss-esapi"]
 
 [dependencies]
 signer-core = { path = "../../core", features = ["std"] }
@@ -34,3 +37,5 @@ p256 = { version = "0.13", features = ["ecdsa", "ecdh", "arithmetic", "std"] }
 aes-gcm = "0.10"
 hkdf = "0.12"
 sha2 = "0.10"
+# bundled x86_64-linux bindings (no clang in the build image); links the system libtss2 via pkg-config
+tss-esapi = { version = "7.7", optional = true }

@@ -4,7 +4,8 @@
 //! `TPM_SIG`, …), never accept a stale state. Three transports: `software` (the T0 bench — a key
 //! and a counter in a file, with switches to lie for the negative vectors), `remote` (the dev
 //! bench — the owner's laptop TPM behind a two-operation agent reached over a reverse ssh tunnel),
-//! and, later, `tss` (a local `/dev/tpmrm0`). Configured by `SIGNERD_TPM`.
+//! and `tss` (a local TPM through libtss2 — `tpm_tss.rs`, build feature `tss`). Configured by
+//! `SIGNERD_TPM`.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -39,7 +40,7 @@ pub trait TpmTransport: Send {
     fn increment(&mut self) -> Result<u64>;
 }
 
-/// `SIGNERD_TPM=software:<file>` | `remote:<http://host:port>` | unset.
+/// `SIGNERD_TPM=software:<file>` | `remote:<http://host:port>` | `tss:<tcti>?ak=0x…&nv=0x…` | unset.
 pub fn from_env() -> Result<Option<Box<dyn TpmTransport>>> {
     let Ok(spec) = std::env::var("SIGNERD_TPM") else { return Ok(None) };
     let spec = spec.trim();
@@ -52,7 +53,19 @@ pub fn from_env() -> Result<Option<Box<dyn TpmTransport>>> {
     if let Some(url) = spec.strip_prefix("remote:") {
         return Ok(Some(Box::new(RemoteTpm::new(url)?)));
     }
-    Err(anyhow!("SIGNERD_TPM: use software:<file> or remote:<url>"))
+    if let Some(rest) = spec.strip_prefix("tss:") {
+        #[cfg(feature = "tss")]
+        {
+            let spec = crate::tpm_tss::TssSpec::parse(rest)?;
+            return Ok(Some(Box::new(crate::tpm_tss::TssTpm::open(spec)?)));
+        }
+        #[cfg(not(feature = "tss"))]
+        {
+            let _ = rest;
+            return Err(anyhow!("SIGNERD_TPM=tss:… needs a signerd built with `--features tss`"));
+        }
+    }
+    Err(anyhow!("SIGNERD_TPM: use software:<file>, remote:<url> or tss:<tcti>?ak=0x…&nv=0x…"))
 }
 
 // ---------------------------------------------------------------------------------------------
