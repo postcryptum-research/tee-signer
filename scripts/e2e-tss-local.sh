@@ -127,11 +127,15 @@ case "$out" in *STATE_STALE*) echo "  refused: STATE_STALE ✓";; *) echo "UNEXP
 "$OC" status | python3 -c "
 import json,sys;d=json.load(sys.stdin); assert d['boot_armed'] is False and d['tpm_last_fresh'] is False, d
 print('  rolled back:', {k:d[k] for k in ['boot_armed','tpm_last_fresh','tpm_expected']})"
-echo "--- the owner re-anchors (attended override) ---"
+echo "--- the owner re-anchors (attended override) — this time the R8 FILE-EXCHANGE form, exactly as the FAQ describes it for the server: status file in, anchor.msg out, signerd submit ---"
+"$SD" status --state-dir "$S/state" --url http://127.0.0.1:7393 --out "$S/status.json"
 openssl rand -hex 32 > "$S/anchor-nonce2.txt"
 "$SD" tpm-certify --state-dir "$S/state" --url http://127.0.0.1:7393 --nonce-file "$S/anchor-nonce2.txt" --out "$S/anchor-proof2.json"
-"$OC" --wallet-record "$S/wallet.json" anchor --key "$S/owner.key" --tpm-info-file "$S/tpm-info.json" --proof-file "$S/anchor-proof2.json" --proof-nonce-file "$S/anchor-nonce2.txt" | grep -E "attested counter|anchored"
+(unset SIGNERD_URL SIGNERD_TOKEN_FILE; "$OC" --status-file "$S/status.json" --wallet-record "$S/wallet.json" --out "$S/anchor2.msg" anchor --key "$S/owner.key" --tpm-info-file "$S/tpm-info.json" --proof-file "$S/anchor-proof2.json" --proof-nonce-file "$S/anchor-nonce2.txt" | grep -E "attested counter|after .signerd submit")
+[ -s "$S/anchor2.msg" ] || { echo "UNEXPECTED: no anchor2.msg written"; exit 1; }
+"$SD" submit --state-dir "$S/state" --url http://127.0.0.1:7393 --file "$S/anchor2.msg" --out "$S/anchor2.result.json"
+python3 -c "import json;d=json.load(open('$S/anchor2.result.json'));assert d['ok'] is True, d;print('  submit:', {k:d[k] for k in ['ok','http_status']})"
 "$OC" status | python3 -c "
-import json,sys;d=json.load(sys.stdin); assert d['boot_armed'] is True and d['tpm_bound'] is True, d; print('  re-anchored:', {k:d[k] for k in ['boot_armed','tpm_expected']})"
+import json,sys;d=json.load(sys.stdin); assert d['boot_armed'] is True and d['tpm_bound'] is True, d; print('  re-anchored (file exchange):', {k:d[k] for k in ['boot_armed','tpm_expected']})"
 "$OC" freeze >/dev/null; "$OC" unfreeze --key "$S/owner.key" >/dev/null
 echo "e2e-tss-local: OK (REQ-r9 against a real TPM; proofs: $S)"
