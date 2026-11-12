@@ -144,8 +144,10 @@ rcore:
 $(RCORE_DIR)/librcore.a: rcore
 
 ######## Bridge ########
+# App/ holds only generated files and is not in git: a clean clone must create it (auditor's clean-room
+# repro of c7c5d8ef, 2026-11-12). Untrusted bridge only — nothing here enters enclave.so.
 App/Enclave_u.h: $(SGX_EDGER8R) Enclave/Enclave.edl
-	@cd App && $(SGX_EDGER8R) --untrusted ../Enclave/Enclave.edl --search-path ../Enclave --search-path $(SGX_SDK)/include
+	@mkdir -p App && cd App && $(SGX_EDGER8R) --untrusted ../Enclave/Enclave.edl --search-path ../Enclave --search-path $(SGX_SDK)/include
 	@echo "GEN  =>  $@"
 App/Enclave_u.c: App/Enclave_u.h
 App/Enclave_u.o: App/Enclave_u.c App/Enclave_u.h
