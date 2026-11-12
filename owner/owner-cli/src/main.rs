@@ -88,9 +88,51 @@ fn passphrase(prompt: &str, confirm: bool) -> Result<String> {
     Ok(a)
 }
 
+/// An activity indicator for steps that take seconds (scrypt, Intel collateral, the explorer): a
+/// spinner line on stderr while the work runs, cleared when it ends; a single plain line when stderr is
+/// not a terminal (logs). Owner's ask, 2026-11-12: "a black screen is not a status".
+struct Busy {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+    width: usize,
+}
+
+fn busy(msg: &str) -> Busy {
+    use std::io::{IsTerminal, Write};
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let width = msg.chars().count() + 4;
+    if !std::io::stderr().is_terminal() {
+        eprintln!("… {msg}");
+        return Busy { stop, handle: None, width: 0 };
+    }
+    let (s2, m) = (stop.clone(), msg.to_string());
+    let handle = std::thread::spawn(move || {
+        let frames = ['|', '/', '-', '\\'];
+        let mut i = 0usize;
+        while !s2.load(std::sync::atomic::Ordering::Relaxed) {
+            eprint!("\r{} {m} ", frames[i % 4]);
+            let _ = std::io::stderr().flush();
+            i += 1;
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+    });
+    Busy { stop, handle: Some(handle), width }
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+            eprint!("\r{:width$}\r", "", width = self.width);
+        }
+    }
+}
+
 fn kdf(pass: &str, salt: &[u8], log_n: u8, r: u32, p: u32) -> Result<[u8; 32]> {
     let params = scrypt::Params::new(log_n, r, p, 32).map_err(|e| anyhow!("scrypt params: {e}"))?;
     let mut key = [0u8; 32];
+    let _b = busy("deriving the key from the passphrase (scrypt N=2^18 — up to half a minute)");
     scrypt::scrypt(pass.as_bytes(), salt, &params, &mut key).map_err(|e| anyhow!("scrypt: {e}"))?;
     Ok(key)
 }
@@ -1783,6 +1825,7 @@ fn main() -> Result<()> {
                 println!("checkpoint filled from the node at height {height}");
             } else if let Some(es) = esplora {
                 let es = es.trim_end_matches('/');
+                let b = busy("fetching the chain checkpoint from the explorer (network)");
                 let tip: u32 = reqwest::blocking::get(format!("{es}/blocks/tip/height"))?
                     .error_for_status()?
                     .text()?
@@ -1797,6 +1840,7 @@ fn main() -> Result<()> {
                 };
                 let h = hdr(height)?;
                 let p = hdr(height - height % 2016)?;
+                drop(b);
                 j.chain = Some(ChainJson {
                     checkpoint: CheckpointJson {
                         hash: h["id"].as_str().unwrap_or("").into(),
@@ -2461,6 +2505,7 @@ fn attest_record(
 
     // 1. chain + collateral (Intel PCS v4) + expiry
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let b = busy("fetching Intel's collateral and verifying the quote chain (network)");
     let collateral = rt
         .block_on(async {
             let c = dcap_qvl::collateral::CollateralClient::with_default_http(pccs)?;
@@ -2482,6 +2527,7 @@ fn attest_record(
     QuoteVerifier::new_prod().verify(&quote_bytes, &collateral, now).map_err(|e| {
         anyhow!("step 1 refused: the verifier crate's embedded Intel root disagrees with the pinned one: {e}")
     })?;
+    drop(b);
     println!("step 1 ok: quote chain verifies to the pinned Intel SGX Root CA (sha256 {INTEL_SGX_ROOT_CA_SHA256}); collateral from {pccs}");
 
     // 2. DEBUG == 0, before anything else about the enclave is believed
