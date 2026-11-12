@@ -2565,6 +2565,23 @@ fn attest_record(
     // 6. report_data binds this nonce and this card
     let expect = signer_core::sha256(&quote::preimage(&nonce, &card_bytes));
     if body.report_data[..32] != expect[..] || body.report_data[32..] != [0u8; 32] {
+        // Two different failures hide behind one mismatch (T2 migration, 2026-11-12): the server's quote
+        // record names the nonce the server was handed; if report_data binds THAT nonce, the quote is a
+        // genuine fresh quote over a nonce that is not ours — the nonce did not reach the server (a stale
+        // nonce.txt there) — refused all the same, but the operator is told to check the transfer, not to
+        // suspect a replay or a foreign enclave.
+        let server_nonce = r["nonce"].as_str().and_then(|h| hex::decode(h).ok());
+        if let Some(sn) = server_nonce.as_deref().filter(|n| n.len() == 32 && *n != &nonce[..]) {
+            let over_server_nonce =
+                signer_core::sha256(&quote::preimage(sn.try_into().unwrap_or(&[0u8; 32]), &card_bytes));
+            if body.report_data[..32] == over_server_nonce[..] && body.report_data[32..] == [0u8; 32] {
+                bail!(
+                    "step 6 refused: the server quoted over nonce {}…, not over yours ({}…) — the nonce you chose did not reach the server (a stale nonce.txt in its exchange directory?). Not a replay by itself: carry your nonce to the server, quote again, verify again",
+                    hex::encode(&sn[..8]),
+                    hex::encode(&nonce[..8])
+                );
+            }
+        }
         bail!("step 6 refused: report_data does not equal SHA-256(domain ‖ our nonce ‖ card) ‖ 0 — a replayed or foreign quote");
     }
     println!("step 6 ok: report_data = SHA-256(domain ‖ nonce {} ‖ card)", hex::encode(nonce));
