@@ -293,3 +293,34 @@ build** — ceremony-signed (`SIGN=ceremony PHASE=gendata/catsig`, as on 2026-11
 ВЕРДИКТ: мерж t2-tss-image — ACK. Деплоя нет до owner vTPM-шага + моей image/compose-проверки в тот момент.»
 Merged to `main` on that ack.
 
+## 9. Addendum 2026-11-12 — ceremony signing of `c7c5d8ef…` and the T2 image, ready for the owner's migration
+
+Owner's decision («1»): move T2 to the R9 enclave first, so the later vTPM step is an additive `anchor`
+and not a second wallet migration.
+
+- **gendata** (box, `tee-signer-build:2.28` rebuilt from the merged recipe): `enclave_hash.hex` 256 B,
+  `enclave.so` byte-identical to the dev-signed `r9-tss` build (the hash signed is the proven measurement).
+- **Owner's signature** (laptop, `scripts/ceremony-sign.sh ~/tee-signer-out/r9-ceremony`): `signature verifies
+  under the pinned public key`, 384 B pushed to the box.
+- **catsig** (box): `CATSIG => enclave.signed.so (ceremony key)`; gates 1 (cpuid set), 2 (no test symbols),
+  3 (no TEXTREL), 4 (DisableDebug), 6 (LVI LOAD), **7 (MRSIGNER `56b25ccb4c1e446df1be4b308cd305b2d43e3f44745c10118bd7bad7bb2c0d41`
+  = the pinned ceremony key)** — `GATES: all passed`; MRENCLAVE `c7c5d8ef373b57083034693616b06b2dc0f12b345ee905b8b0d8be8d4f527db0`.
+  Gate 5 ceremony-signed vs dev-signed: REPRODUCIBLE, `enclave.so` byte-identical. Outputs `~/tee-signer-out/r9-ceremony/`.
+- **T2 image** `tee-signer/signerd:t2` = `86214e0e7dc5` (MANIFEST `signerd features: sgx,tss`, libtss2-dev 3.2.0;
+  `tpm-setup --help` answers), tarball 44 MB sha256 `f256bc3122fe4c9615c35498…`, **copied to the node's exchange
+  directory, not loaded**; the node still runs `a1cdb0f1d697` (`ca5c1a6a…`). The box's copy of the previous T2
+  image tag was removed (dangling, ours).
+- **Migration = the owner's run** of their 2026-11-10 worked example with this build's values (deploy/README
+  dev-ops table, row "migrate T2 to the ceremony-signed R9 build"). The old wallet `51ca22a4` holds 67 337 signet-sat
+  (BTCPay wallet balance); the owner chooses between a payout before the migration and a later recovery from the blob.
+
+**Process defect found and fixed on the way (recorded for the audit trail, like the recovery-key one of
+2026-11-10):** the ceremony key file `.local/ceremony/enclave-ceremony.pem` had been created by the dev session on
+2026-11-03 with a dev-chosen passphrase (`openssl pkey -aes256 -passout pass:…` — the passphrase sat in the
+session transcript, the owner never chose or knew it). Found when the owner's first signing attempt failed
+(`bad decrypt`). Fix the same day: the owner re-encrypted the key file under a passphrase of their own
+(`openssl pkey -in … -aes256 -out …`, old → new), the public key verified unchanged against the pinned
+`enclave/ceremony/ceremony_pub.pem`, so MRSIGNER is unchanged and nothing was re-signed; the dev-chosen
+passphrase is retired and the dev does not know the new one. Rule restated: the dev never chooses an owner
+passphrase — not for the owner key, not for the recovery key, not for the ceremony key.
+
