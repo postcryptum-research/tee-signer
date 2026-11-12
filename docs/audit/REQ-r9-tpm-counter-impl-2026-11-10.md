@@ -370,3 +370,14 @@ pinned key, `recovery-verify`).
   Follow-up for the auditor's lens: owner-cli's step-6 diagnostic will distinguish "the node quoted over nonce X ≠
   yours — check the nonce transfer" (the quote record carries the node's nonce) from "replay or foreign quote".
 
+**Auditor's verdict on the migration (same day, firsthand from the run log and the exchange JSONs — verbatim excerpt):**
+«T2→c7c5d8ef МИГРАЦИЯ — IMPL-PASS FIRSTHAND: attestation 1-7 над бренд-новым 126125dd ✓; recovery-verify OK ✓;
+mandate-r9 = те же caps что R7, nonce0, installed true ✓; RESTART DRILL (мой C-R7 deployment-facet на НОВОЙ мере):
+boot_armed TRUE→FALSE + свежий boot_challenge f59ce9cd → owner-arm load 87129c5b → applied → boot_armed TRUE, nonce 0→1 =
+точная репродукция ca5c1a6a 11-10 drill на c7c5d8ef ✓; BTCPay re-point ✓; MOVE-not-LOSE: retired-ca5c1a6a-2026-11-12/
+нетронут, старый кошелёк 67,337 sat recovery-recoverable, новый cc685457 пуст ✓ ⇒ C-R7 deployment-facet ЗАКРЫТ на
+c7c5d8ef (deployed==reviewed: мера = мой 11-12 binary-repro). Owed ca5c1a6a repro теперь MOOT (мера retired).
+STEP-6 DIAGNOSTIC SPLIT — APPROVED: server-named nonce = UNTRUSTED, читается только для выбора текста ошибки, никогда для
+accept; оба бранча REFUSE; даже misclassify ведёт к безопасному действию (re-quote над свежим нонсом).»
+CONDITIONS: C-R7-11 closed as moot/superseded, C-R7-13 extended with the c7c5d8ef drill.
+
