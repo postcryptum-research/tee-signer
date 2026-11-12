@@ -2,9 +2,10 @@
 # Set, show or clear the owner-written hint of the ceremony enclave-signing key (C-SEC-1 hint rule).
 # The hint is a plain `Hint: …` text line BEFORE the PEM block (OpenSSL skips leading text; verified:
 # same public key, signing works); `scripts/ceremony-sign.sh` prints it before the passphrase prompt.
-#   scripts/ceremony-key-hint.sh "password manager, entry tee-ceremony"   # set (the argument IS the hint text;
-#   scripts/ceremony-key-hint.sh                                          #   without one the script asks for it)
-#   scripts/ceremony-key-hint.sh --show | --clear                          # the passphrase is asked once when setting
+#   scripts/ceremony-key-hint.sh                                   # SHOW the hint stored in the key file (default)
+#   scripts/ceremony-key-hint.sh --set "password manager, entry …"  # WRITE a new hint (once; asks the passphrase once)
+#   scripts/ceremony-key-hint.sh --clear
+# At signing time nothing is typed: ceremony-sign.sh reads the stored hint and prints it before the prompt.
 # Setting asks the passphrase so that (a) it is checked to open THIS key and (b) the hint is refused if it
 # contains the passphrase or the passphrase contains it (case-insensitive) — the same guard as owner-cli's
 # check_hint. A hint says WHERE the passphrase is kept, never what it is or looks like (THREAT-MODEL §5:
@@ -17,10 +18,10 @@ PUB=$(cd "$(dirname "$0")/.." && pwd)/enclave/ceremony/ceremony_pub.pem
 pem_block() { sed -n '/^-----BEGIN/,$p' "$KEY"; }       # the PEM without any leading text lines
 current() { grep -m1 '^Hint:' "$KEY" | sed 's/^Hint: *//' || true; }
 case "${1:-}" in
-  --show) h=$(current); echo "${h:-(no hint on the ceremony key)}"; exit 0;;
+  ""|--show) h=$(current); echo "${h:-(no hint on the ceremony key)}"; exit 0;;     # default: SHOW what is stored
   --clear) T=$(mktemp "$KEY.XXXXXX"); pem_block > "$T"; chmod 600 "$T"; mv "$T" "$KEY"; echo "hint cleared"; exit 0;;
-  "") read -r -p "hint text (where the passphrase is kept; shown before every prompt): " HINT_IN;;   # no argument: ask
-  *) HINT_IN=$1;;
+  --set) HINT_IN=${2:-}; [ -n "$HINT_IN" ] || read -r -p "new hint text (stored in the key file, shown before every prompt): " HINT_IN;;
+  *) echo "usage: $0            # show the stored hint"; echo "       $0 --set \"…\"  # write a new hint (asks the passphrase once)"; echo "       $0 --clear"; exit 2;;
 esac
 HINT=$(printf '%s' "$HINT_IN" | sed 's/^ *//; s/ *$//')
 [ -n "$HINT" ] || { echo "empty hint"; exit 1; }

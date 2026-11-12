@@ -660,7 +660,7 @@ The ceremony key is an OpenSSL PEM file; its hint is a `Hint:` text line before 
 with the script, which asks the passphrase once, applies the same checks and verifies the key is unchanged:
 
 ```sh
-scripts/ceremony-key-hint.sh "password manager, entry tee-ceremony"    # --show / --clear
+scripts/ceremony-key-hint.sh --set "password manager, entry tee-ceremony"   # once; plain `scripts/ceremony-key-hint.sh` shows it, --clear removes it
 ```
 
 ### Which owner devices work, and which should I use?
