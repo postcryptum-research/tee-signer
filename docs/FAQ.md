@@ -642,8 +642,10 @@ Yes — a hint that says **where** the passphrase is kept, never **what** it is 
 "Password manager, entry tee-recovery" or "envelope in the safe" helps only you; "4 digits", "same as
 the PIN" or "my usual pattern" helps whoever steals the file just as much: the hint is plain text inside
 the file, and the file's protection (scrypt + AES) assumes the thief has nothing to narrow the search —
-a four-digit space is an hour. This is a security rule, not tidiness. The tools refuse a hint that
-contains the passphrase; the rest is on you. The hint is shown before every prompt. (It is not
+a four-digit space is an hour. That is the trade: a thief with the file gains whatever the hint gives
+away; you lose everything if you forget. The tools refuse only a hint that contains the passphrase
+itself; how descriptive the rest is, is your call — this project's owner weighs forgetting as the more
+real loss and writes hints accordingly. The hint is shown before every prompt. (It is not
 tamper-protected: someone who can edit the file can only confuse you with it, not learn anything.)
 
 ```sh
