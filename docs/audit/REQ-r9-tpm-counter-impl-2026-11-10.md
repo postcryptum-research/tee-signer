@@ -322,5 +322,10 @@ session transcript, the owner never chose or knew it). Found when the owner's fi
 (`openssl pkey -in … -aes256 -out …`, old → new), the public key verified unchanged against the pinned
 `enclave/ceremony/ceremony_pub.pem`, so MRSIGNER is unchanged and nothing was re-signed; the dev-chosen
 passphrase is retired and the dev does not know the new one. Rule restated: the dev never chooses an owner
-passphrase — not for the owner key, not for the recovery key, not for the ceremony key.
+passphrase — not for the owner key, not for the recovery key, not for the ceremony key. Formalised the same
+day at the auditor's request as **C-SEC-1** (`CONDITIONS.md`) with the dev-run half of the proof,
+`scripts/owner-secrets-check.sh`: the key files are encrypted, open with neither an empty passphrase nor any
+retired dev-chosen one (`.local/retired-dev-passphrases.txt`, gitignored), the recovery key's public part equals
+the wallet record's; the owner's half is their own successful use (the ceremony signature verified under the
+pinned key, `recovery-verify`).
 
