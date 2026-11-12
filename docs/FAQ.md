@@ -649,7 +649,7 @@ real loss and writes hints accordingly. The hint is shown before every prompt. (
 tamper-protected: someone who can edit the file can only confuse you with it, not learn anything.)
 
 ```sh
-./owner-cli keygen --out ~/tee-owner/recovery.key --role recovery --hint "password manager, entry tee-recovery"   # at creation
+./owner-cli keygen --out ~/tee-owner/recovery.key --role recovery --hint "password manager, entry tee-recovery"   # at creation (without --hint, keygen asks for one; Enter = none)
 ./owner-cli key-hint --key ~/tee-owner/recovery.key --set "envelope in the safe"   # later: asks the passphrase once, checks the hint against it
 ./owner-cli key-hint --key ~/tee-owner/recovery.key                                # show;  --clear removes it
 ./owner-cli --wallet-record ~/tee-owner/wallet.json key-hint --pin --set "the PIN is in the password manager, entry tee-yubikey"   # the YubiKey PIN hint lives in the wallet record

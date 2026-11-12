@@ -657,7 +657,7 @@ tee-recovery» или «конверт в сейфе» помогают толь
 от подмены: тот, кто может править файл, сможет лишь запутать вас, но ничего не узнает.)
 
 ```sh
-./owner-cli keygen --out ~/tee-owner/recovery.key --role recovery --hint "менеджер паролей, запись tee-recovery"   # при создании
+./owner-cli keygen --out ~/tee-owner/recovery.key --role recovery --hint "менеджер паролей, запись tee-recovery"   # при создании (без --hint keygen сам спросит подсказку; Enter = без неё)
 ./owner-cli key-hint --key ~/tee-owner/recovery.key --set "конверт в сейфе"   # позже: один раз спросит пароль и проверит подсказку по нему
 ./owner-cli key-hint --key ~/tee-owner/recovery.key                           # показать;  --clear убирает
 ./owner-cli --wallet-record ~/tee-owner/wallet.json key-hint --pin --set "PIN в менеджере паролей, запись tee-yubikey"   # подсказка к PIN YubiKey живёт в записи кошелька
