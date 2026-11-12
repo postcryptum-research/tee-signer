@@ -2,8 +2,9 @@
 # Set, show or clear the owner-written hint of the ceremony enclave-signing key (C-SEC-1 hint rule).
 # The hint is a plain `Hint: …` text line BEFORE the PEM block (OpenSSL skips leading text; verified:
 # same public key, signing works); `scripts/ceremony-sign.sh` prints it before the passphrase prompt.
-#   scripts/ceremony-key-hint.sh "<where the passphrase is kept>"   # set (asks the passphrase once)
-#   scripts/ceremony-key-hint.sh --show | --clear
+#   scripts/ceremony-key-hint.sh "password manager, entry tee-ceremony"   # set (the argument IS the hint text;
+#   scripts/ceremony-key-hint.sh                                          #   without one the script asks for it)
+#   scripts/ceremony-key-hint.sh --show | --clear                          # the passphrase is asked once when setting
 # Setting asks the passphrase so that (a) it is checked to open THIS key and (b) the hint is refused if it
 # contains the passphrase or the passphrase contains it (case-insensitive) — the same guard as owner-cli's
 # check_hint. A hint says WHERE the passphrase is kept, never what it is or looks like (THREAT-MODEL §5:
@@ -18,9 +19,10 @@ current() { grep -m1 '^Hint:' "$KEY" | sed 's/^Hint: *//' || true; }
 case "${1:-}" in
   --show) h=$(current); echo "${h:-(no hint on the ceremony key)}"; exit 0;;
   --clear) T=$(mktemp "$KEY.XXXXXX"); pem_block > "$T"; chmod 600 "$T"; mv "$T" "$KEY"; echo "hint cleared"; exit 0;;
-  "") echo "usage: $0 \"<where the passphrase is kept>\" | --show | --clear"; exit 2;;
+  "") read -r -p "hint text (where the passphrase is kept; shown before every prompt): " HINT_IN;;   # no argument: ask
+  *) HINT_IN=$1;;
 esac
-HINT=$(printf '%s' "$1" | sed 's/^ *//; s/ *$//')
+HINT=$(printf '%s' "$HINT_IN" | sed 's/^ *//; s/ *$//')
 [ -n "$HINT" ] || { echo "empty hint"; exit 1; }
 [ "${#HINT}" -le 200 ] || { echo "hint too long (200 characters max)"; exit 1; }
 case "$HINT" in *$'\n'*) echo "one line only"; exit 1;; esac
