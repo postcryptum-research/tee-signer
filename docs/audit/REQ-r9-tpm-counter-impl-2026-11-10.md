@@ -340,3 +340,33 @@ retired dev-chosen one (`.local/retired-dev-passphrases.txt`, gitignored), the r
 the wallet record's; the owner's half is their own successful use (the ceremony signature verified under the
 pinned key, `recovery-verify`).
 
+### 9.1 The migration, 2026-11-12 (owner-run; this is also the R7 deployment facet on `c7c5d8ef…`)
+
+- Node: `docker load` of the shipped tarball (sha256 match; node image id `c933b91baeff` — Docker 29's containerd
+  store names the same content differently from the box's `86214e0e7dc5`; `enclave.signed.so` inside = `98eed863…`,
+  the ceremony-signed one).
+- Owner's run of the worked example (step 1 on the node): sidecar stopped, R7 state set aside in
+  `retired-ca5c1a6a-2026-11-12/`, start on the new image, token rotated (old → 401), `init`, quote, status:
+  `tier T2-release, mrenclave c7c5d8ef…, boot_armed true (init arms), nonce 0, seq 0`.
+- **Verifier step 6 refused on the laptop** ("report_data ≠ SHA-256(domain ‖ nonce ‖ card)"). Root cause, proven: the
+  worked example never sends `nonce.txt` to the node, so the node quoted over the 11-10 nonce `ecdb39e9…` (file mtime
+  2026-11-10 13:17) while the laptop checked the fresh `ffe242cd…`. Steps 1–5 had passed, i.e. a genuine `c7c5d8ef`
+  enclave had quoted; only the nonce binding failed. **Auditor's gate (same day) for continuing instead of wiping:**
+  (1) a quote over a brand-new nonce must pass all seven steps — done over `126125dd…`; (2) the mechanism must be
+  shown — a quote taken over the recovered 11-10 nonce verifies against it at steps 6–7 with the same identity key and
+  card. Caveat recorded: the failed quote's bytes were overwritten by the dev's first same-name re-quote before they
+  could be hashed; the auditor ruled gate 1 the safety-relevant proof and the lost bytes non-disqualifying (a wipe would
+  re-create an equivalent in-enclave seed and repeat the same step).
+- Resume (the same script from step 2, guarded on `quote.nonce == nonce.txt`): all seven steps over `126125dd…`,
+  record `wallet-c7c5d8ef.json` (xpub `tpubDDUrStb…ET4o`, fingerprint `cc685457`, enclave id `9f79215d…`),
+  `recovery-verify` OK (the hint printed before the prompt), mandate `67c35535…` installed at nonce 0, **restart
+  drill: `boot_armed false`, challenge `f59ce9cd…` → owner `arm` (PIN + touch) → `applied`, `boot_armed true`,
+  nonce 1, seq 0**, store wallet re-pointed, plugin token rotated (`xpubMatches true`, `processorEnabled true`).
+  Final status on the node: armed, `best_height 330520`, `tpm_bound false`, `tpm_transport none`.
+- Retired: `51ca22a4` / `ca5c1a6a…` with 67 337 signet-sat still in it (recoverable from the archived record); the
+  new wallet is unfunded (first address `tb1qmuygp022328km5ft5xw4scftk4an2tzutq9n4k`, path 0/0).
+- Lessons (deploy/README row): send the owner's public files + a fresh nonce before step 1; never reuse a filename for
+  a security artefact under investigation; the per-day retired-dir name makes a same-day re-run destructive.
+  Follow-up for the auditor's lens: owner-cli's step-6 diagnostic will distinguish "the node quoted over nonce X ≠
+  yours — check the nonce transfer" (the quote record carries the node's nonce) from "replay or foreign quote".
+
