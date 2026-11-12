@@ -636,6 +636,29 @@ lives:** the coins are safe but the backstop is gone — `rotate-owner` cannot c
 key, so initialise a new wallet with a new recovery key and sweep to it under the mandate. **Both
 lost:** the coins are gone. That is the two-of-two the design rests on; hence two media, two places.
 
+### I forget passphrases. Can a key carry a hint?
+
+Yes — a hint that says **where** the passphrase is kept, never **what** it is or what it looks like.
+"Password manager, entry tee-recovery" or "envelope in the safe" helps only you; "4 digits" or "same as
+the PIN" helps whoever steals the file just as much (a four-digit space is an hour of scrypt). The tool
+refuses a hint that contains the passphrase, but the rest is on you. The hint is shown before every
+prompt.
+
+```sh
+./owner-cli keygen --out ~/tee-owner/recovery.key --role recovery --hint "password manager, entry tee-recovery"   # at creation
+./owner-cli key-hint --key ~/tee-owner/recovery.key --set "envelope in the safe"   # later: asks the passphrase once, checks the hint against it
+./owner-cli key-hint --key ~/tee-owner/recovery.key                                # show;  --clear removes it
+./owner-cli --wallet-record ~/tee-owner/wallet.json key-hint --pin --set "the PIN is in the password manager, entry tee-yubikey"   # the YubiKey PIN hint lives in the wallet record
+```
+
+The ceremony key is an OpenSSL PEM file; a `Hint:` text line before its `-----BEGIN` is ignored by
+OpenSSL and printed by `scripts/ceremony-sign.sh` before the passphrase prompt:
+
+```sh
+K=.local/ceremony/enclave-ceremony.pem; { echo "Hint: password manager, entry tee-ceremony"; cat "$K"; } > "$K.new" && mv "$K.new" "$K" && chmod 600 "$K"
+openssl pkey -in "$K" -pubout | diff - enclave/ceremony/ceremony_pub.pem && echo "still the same key"
+```
+
 ### Which owner devices work, and which should I use?
 
 Today, through TPM_sign's `hw-signer`: a **Linux TPM 2.0** (`tpm:<handle>`; the key is created

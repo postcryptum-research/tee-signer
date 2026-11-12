@@ -644,6 +644,29 @@ docker exec tee-btcpay-tee-signer-1 signerd submit --state-dir /var/lib/signerd 
 переведите в него под мандатом. **Потеряны оба:** монеты пропали. Это «два из двух», на котором
 стоит замысел; отсюда два носителя, два места.
 
+### Я забываю пароли. Можно привязать к ключу подсказку?
+
+Да — подсказку о том, **где** лежит пароль, а не **какой** он и как выглядит. «Менеджер паролей, запись
+tee-recovery» или «конверт в сейфе» помогают только вам; «4 цифры» или «как PIN» ровно так же помогают
+тому, кто украл файл (четырёхзначное пространство перебирается scrypt за час). Инструмент отказывает
+подсказке, в которой содержится сам пароль, остальное на вашей совести. Подсказка печатается перед каждым
+запросом пароля.
+
+```sh
+./owner-cli keygen --out ~/tee-owner/recovery.key --role recovery --hint "менеджер паролей, запись tee-recovery"   # при создании
+./owner-cli key-hint --key ~/tee-owner/recovery.key --set "конверт в сейфе"   # позже: один раз спросит пароль и проверит подсказку по нему
+./owner-cli key-hint --key ~/tee-owner/recovery.key                           # показать;  --clear убирает
+./owner-cli --wallet-record ~/tee-owner/wallet.json key-hint --pin --set "PIN в менеджере паролей, запись tee-yubikey"   # подсказка к PIN YubiKey живёт в записи кошелька
+```
+
+Ключ церемонии — PEM-файл OpenSSL; текстовая строка `Hint:` перед `-----BEGIN` игнорируется OpenSSL и
+печатается скриптом `scripts/ceremony-sign.sh` перед запросом пароля:
+
+```sh
+K=.local/ceremony/enclave-ceremony.pem; { echo "Hint: менеджер паролей, запись tee-ceremony"; cat "$K"; } > "$K.new" && mv "$K.new" "$K" && chmod 600 "$K"
+openssl pkey -in "$K" -pubout | diff - enclave/ceremony/ceremony_pub.pem && echo "ключ тот же"
+```
+
 ### Какие устройства владельца работают и какое выбрать?
 
 Сегодня, через `hw-signer` из TPM_sign: **Linux TPM 2.0** (`tpm:<handle>`; ключ создаётся

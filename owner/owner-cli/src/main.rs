@@ -40,7 +40,33 @@ struct KeyFile {
     ct_hex: String,
     pubkey_hex: String,
     role: String,
+    /// Owner-written reminder of WHERE the passphrase is kept (never what it is) — shown before the
+    /// prompt. Optional; absent in files written before 2026-11-12.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hint: Option<String>,
 }
+
+/// A hint may say where the passphrase is kept, never what it is: it must be non-empty, short, and must
+/// not contain the passphrase (either direction, case-insensitive). The format of the passphrase is
+/// not checkable here — the FAQ says why "4 digits" or "like the PIN" is a bad hint.
+fn check_hint(hint: &str, pass: &str) -> Result<String> {
+    let h = hint.trim();
+    if h.is_empty() {
+        bail!("empty hint");
+    }
+    if h.chars().count() > 200 {
+        bail!("hint too long (200 characters max)");
+    }
+    let (hl, pl) = (h.to_lowercase(), pass.to_lowercase());
+    if hl.contains(&pl) || pl.contains(&hl) {
+        bail!("REFUSED: the hint contains the passphrase (or the passphrase contains the hint) — a hint says WHERE the passphrase is kept, never what it is");
+    }
+    Ok(h.to_string())
+}
+
+/// The owner's PIN hint from the wallet record (set with `key-hint --pin --set …`), shown before a
+/// YubiKey PIN prompt. Set once at start-up when `--wallet-record` is given.
+static PIN_HINT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 fn passphrase(prompt: &str, confirm: bool) -> Result<String> {
     if let Ok(p) = std::env::var("OWNER_PASSPHRASE") {
@@ -69,7 +95,7 @@ fn kdf(pass: &str, salt: &[u8], log_n: u8, r: u32, p: u32) -> Result<[u8; 32]> {
     Ok(key)
 }
 
-fn keygen(path: &Path, role: &str) -> Result<[u8; 65]> {
+fn keygen(path: &Path, role: &str, hint: Option<&str>) -> Result<[u8; 65]> {
     use aes_gcm::aead::{Aead, KeyInit};
     use aes_gcm::{Aes256Gcm, Nonce};
     use rand::RngCore;
@@ -79,6 +105,7 @@ fn keygen(path: &Path, role: &str) -> Result<[u8; 65]> {
     let sk = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
     let pk = sk.verifying_key().to_encoded_point(false);
     let pass = passphrase(&format!("passphrase for the {role} key"), true)?;
+    let hint = hint.map(|h| check_hint(h, &pass)).transpose()?;
     let mut salt = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut salt);
     let mut nonce = [0u8; 12];
@@ -101,6 +128,7 @@ fn keygen(path: &Path, role: &str) -> Result<[u8; 65]> {
         ct_hex: hex::encode(ct),
         pubkey_hex: hex::encode(pk.as_bytes()),
         role: role.into(),
+        hint,
     };
     use std::os::unix::fs::OpenOptionsExt;
     let f = std::fs::OpenOptions::new().create_new(true).write(true).mode(0o600).open(path)?;
@@ -234,6 +262,9 @@ fn owner_slot_policy_ok(
 /// environment and has no local length rule (the applet's is 6–8 characters); it lives only in
 /// the backend's zeroized memory for this one command (C-R6-3).
 fn piv_pin(prompt: &str) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+    if let Some(h) = PIN_HINT.get() {
+        eprintln!("hint for the PIN: {h}");
+    }
     let pin = zeroize::Zeroizing::new(rpassword::prompt_password(format!("{prompt}: "))?);
     if pin.is_empty() {
         bail!("empty PIN");
@@ -373,14 +404,26 @@ impl Drop for OpenKey {
 }
 
 fn open_key(path: &Path) -> Result<OpenKey> {
+    let kf: KeyFile = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+    if kf.version != 1 || kf.kdf != "scrypt" || kf.log_n < 18 {
+        bail!("keyfile: unsupported or below the required strength (scrypt N ≥ 2^18)");
+    }
+    if let (Some(h), Err(_)) = (kf.hint.as_deref(), std::env::var("OWNER_PASSPHRASE")) {
+        eprintln!("hint for the {} key: {h}", kf.role);
+    }
+    let pass = passphrase(&format!("passphrase for the {} key", kf.role), false)?;
+    open_key_with(path, &pass)
+}
+
+/// Decrypt a keyfile with a given passphrase (the body of `open_key`, also used by `key-hint --set`).
+fn open_key_with(path: &Path, pass: &str) -> Result<OpenKey> {
     use aes_gcm::aead::{Aead, KeyInit};
     use aes_gcm::{Aes256Gcm, Nonce};
     let kf: KeyFile = serde_json::from_str(&std::fs::read_to_string(path)?)?;
     if kf.version != 1 || kf.kdf != "scrypt" || kf.log_n < 18 {
         bail!("keyfile: unsupported or below the required strength (scrypt N ≥ 2^18)");
     }
-    let pass = passphrase(&format!("passphrase for the {} key", kf.role), false)?;
-    let mut key = kdf(&pass, &hex::decode(&kf.salt_hex)?, kf.log_n, kf.r, kf.p)?;
+    let mut key = kdf(pass, &hex::decode(&kf.salt_hex)?, kf.log_n, kf.r, kf.p)?;
     let cipher = Aes256Gcm::new((&key).into());
     let pt = cipher
         .decrypt(Nonce::from_slice(&hex::decode(&kf.nonce_hex)?), hex::decode(&kf.ct_hex)?.as_slice())
@@ -979,6 +1022,10 @@ struct WalletRecord {
     /// owner-attested acceptance of a rollback, kept on record (unix time, enclave seq, last seen).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rollback_acceptances: Option<Vec<String>>,
+    /// Owner-written reminder of WHERE the YubiKey PIN is kept (never what it is), shown before a PIN prompt
+    /// when this record is given (`key-hint --pin --set …`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owner_pin_hint: Option<String>,
 }
 
 // ---------------------------------------------------------------- CLI
@@ -1028,6 +1075,22 @@ enum Cmd {
         /// TPM persistent handle for `--backend tpm` (0x81000100 is this project's; other handles belong to other keys).
         #[arg(long, default_value = "0x81000100")]
         handle: String,
+        /// `--backend file` only: a reminder of WHERE the passphrase is kept (a password-manager entry, an
+        /// envelope) — never what it is or what it looks like. Shown before every passphrase prompt.
+        #[arg(long)]
+        hint: Option<String>,
+    },
+    /// Show, set or clear the hint of a keyfile (`--key FILE`; setting asks the passphrase once, so the hint
+    /// is checked against it) or the PIN hint in the wallet record (`--pin`, with `--wallet-record`).
+    KeyHint {
+        #[arg(long, conflicts_with = "pin")]
+        key: Option<PathBuf>,
+        #[arg(long)]
+        pin: bool,
+        #[arg(long, conflicts_with = "clear")]
+        set: Option<String>,
+        #[arg(long)]
+        clear: bool,
     },
     /// Print a key's public key (keyfile path, `tpm:<handle>` or `piv:<slot>[@<serial>]`; a YubiKey needs no PIN for this).
     Pubkey {
@@ -1416,8 +1479,75 @@ fn submit_message(sd: &Signerd, msg: &Message) -> Result<()> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(rp) = cli.wallet_record.as_ref() {
+        if let Ok(w) = std::fs::read_to_string(rp)
+            .map_err(anyhow::Error::from)
+            .and_then(|t| Ok(serde_json::from_str::<WalletRecord>(&t)?))
+        {
+            if let Some(h) = w.owner_pin_hint {
+                let _ = PIN_HINT.set(h);
+            }
+        }
+    }
     match &cli.cmd {
-        Cmd::Keygen { out, role, backend, handle } => {
+        Cmd::KeyHint { key, pin, set, clear } => {
+            if *pin {
+                let rec_path =
+                    cli.wallet_record.clone().ok_or_else(|| anyhow!("--pin needs --wallet-record <wallet.json>"))?;
+                let mut w: WalletRecord = serde_json::from_str(&std::fs::read_to_string(&rec_path)?)?;
+                if let Some(h) = set {
+                    let h = h.trim();
+                    if h.is_empty() || h.chars().count() > 200 {
+                        bail!("hint: 1–200 characters");
+                    }
+                    if h.chars().all(|c| c.is_ascii_digit()) {
+                        bail!(
+                            "REFUSED: a PIN hint that is all digits looks like the PIN itself — say WHERE it is kept"
+                        );
+                    }
+                    w.owner_pin_hint = Some(h.to_string());
+                    std::fs::write(&rec_path, serde_json::to_string_pretty(&w)?)?;
+                    println!("PIN hint set in {}", rec_path.display());
+                } else if *clear {
+                    w.owner_pin_hint = None;
+                    std::fs::write(&rec_path, serde_json::to_string_pretty(&w)?)?;
+                    println!("PIN hint cleared");
+                } else {
+                    println!("{}", w.owner_pin_hint.as_deref().unwrap_or("(no PIN hint in this record)"));
+                }
+                return Ok(());
+            }
+            let path = key.clone().ok_or_else(|| anyhow!("--key <keyfile> or --pin"))?;
+            let mut kf: KeyFile = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+            if let Some(h) = set {
+                // the passphrase is asked once: the hint must belong to this key and must not contain it
+                let pass =
+                    passphrase(&format!("passphrase for the {} key (to check the hint against it)", kf.role), false)?;
+                let probe = open_key_with(&path, &pass)?;
+                drop(probe);
+                kf.hint = Some(check_hint(h, &pass)?);
+            } else if *clear {
+                kf.hint = None;
+            } else {
+                println!("{}", kf.hint.as_deref().unwrap_or("(no hint in this keyfile)"));
+                return Ok(());
+            }
+            let tmp = path.with_extension("hint.tmp");
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                let f = std::fs::OpenOptions::new().create_new(true).write(true).mode(0o600).open(&tmp)?;
+                serde_json::to_writer_pretty(f, &kf)?;
+            }
+            let check: KeyFile = serde_json::from_str(&std::fs::read_to_string(&tmp)?)?;
+            if check.ct_hex != kf.ct_hex || check.pubkey_hex != kf.pubkey_hex {
+                std::fs::remove_file(&tmp)?;
+                bail!("rewrite check failed; keyfile untouched");
+            }
+            std::fs::rename(&tmp, &path)?;
+            println!("hint {} for {}", if kf.hint.is_some() { "set" } else { "cleared" }, path.display());
+            return Ok(());
+        }
+        Cmd::Keygen { out, role, backend, handle, hint } => {
             if backend == "piv" {
                 bail!(
                     "REFUSED: owner-cli does not generate YubiKey PIV keys (it never holds the management key). Generate the {role} key \
@@ -1435,7 +1565,7 @@ fn main() -> Result<()> {
             }
             let out = out.clone().ok_or_else(|| anyhow!("--out is required for --backend file"))?;
             let out = &out;
-            let pk = keygen(out, role)?;
+            let pk = keygen(out, role, hint.as_deref())?;
             println!(
                 "{} key written to {} (scrypt N=2^18 + AES-256-GCM; keep it OFF the BTCPay box)",
                 role,
@@ -1571,6 +1701,7 @@ fn main() -> Result<()> {
                 recovery_pk: recovery_pk.clone(),
                 last_seen_seq: Some(0),
                 rollback_acceptances: None,
+                owner_pin_hint: None,
             };
             if is_auto_arm(&rec.tier) {
                 eprintln!("AUTO_ARM: this enclave was built with the pause after a restart compiled OUT (REQ-r7 §2.6). Rollback protection is OFF: the loss bound against root is the hot-wallet float. It has its own MRENCLAVE and is never ceremony-signed.");
@@ -2531,5 +2662,22 @@ mod piv_locator_tests {
         assert!(piv_locator("piv:").unwrap().is_err());
         assert!(piv_locator("tpm:0x81000100").is_none());
         assert!(piv_locator(".local/signet/owner.key").is_none());
+    }
+}
+
+#[cfg(test)]
+mod hint_tests {
+    use super::check_hint;
+
+    #[test]
+    fn hint_never_contains_the_passphrase() {
+        assert_eq!(
+            check_hint("  password manager, entry tee-recovery ", "correct horse").unwrap(),
+            "password manager, entry tee-recovery"
+        );
+        assert!(check_hint("", "x").is_err(), "empty");
+        assert!(check_hint(&"h".repeat(201), "x").is_err(), "too long");
+        assert!(check_hint("it is Correct Horse battery", "correct horse").is_err(), "hint contains the passphrase");
+        assert!(check_hint("horse", "correct horse battery").is_err(), "passphrase contains the hint");
     }
 }

@@ -9,6 +9,10 @@ HOST=${BUILD_HOST:-andrey@94.130.18.162}
 KEY=${CEREMONY_KEY:-$HOME/llm-btcpay-tee/.local/ceremony/enclave-ceremony.pem}
 PUB=$(cd "$(dirname "$0")/.." && pwd)/enclave/ceremony/ceremony_pub.pem
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+# an owner-written reminder of WHERE the passphrase is kept may precede the PEM block (`Hint: …`, a plain text
+# line openssl skips, like the Bag Attributes of a PKCS#12 export) — shown before the prompt. Add one with
+#   { echo "Hint: <where it is kept>"; cat "$KEY"; } > "$KEY.new" && mv "$KEY.new" "$KEY" && chmod 600 "$KEY"
+H=$(grep -m1 '^Hint:' "$KEY" 2>/dev/null || true); [ -n "$H" ] && echo "$H (ceremony key)"
 scp -q "$HOST:$OUT/enclave_hash.hex" "$T/enclave_hash.hex"
 echo "enclave_hash.hex: $(stat -c %s "$T/enclave_hash.hex") bytes, sha256 $(sha256sum "$T/enclave_hash.hex" | cut -c1-16)…"
 if [ -n "${CEREMONY_PASS:-}" ]; then
