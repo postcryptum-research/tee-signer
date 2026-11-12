@@ -16,7 +16,9 @@ rc=0; ok() { echo "  PASS: $*"; }; bad() { echo "  FAIL: $*"; rc=1; }
 
 echo "== ceremony key ($CER)"
 if [ -f "$CER" ]; then
-  head -1 "$CER" | grep -q "ENCRYPTED" && ok "file is encrypted (PKCS#8, ENCRYPTED PRIVATE KEY)" || bad "key file is NOT encrypted"
+  # the PEM block may be preceded by an owner-written `Hint:` line (ceremony-key-hint.sh) — look at the block itself
+  if grep -q "^-----BEGIN ENCRYPTED PRIVATE KEY-----" "$CER" && ! grep -qE "^-----BEGIN (RSA |EC )?PRIVATE KEY-----" "$CER"; then ok "PEM block is an ENCRYPTED PRIVATE KEY (PKCS#8)"; else bad "key file is NOT encrypted"; fi
+  H=$(grep -m1 '^Hint:' "$CER" | sed 's/^Hint: *//'); [ -n "$H" ] && echo "  hint on file: $H (plaintext — must say WHERE, never what; THREAT-MODEL §5)"
   openssl pkey -in "$CER" -passin pass: -noout 2>/dev/null && bad "opens with an EMPTY passphrase" || ok "does not open with an empty passphrase"
   if [ -s "$RETIRED" ]; then
     while IFS= read -r p; do [ -n "$p" ] || continue
