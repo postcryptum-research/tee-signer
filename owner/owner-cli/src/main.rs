@@ -105,6 +105,25 @@ fn keygen(path: &Path, role: &str, hint: Option<&str>) -> Result<[u8; 65]> {
     let sk = p256::ecdsa::SigningKey::random(&mut rand::thread_rng());
     let pk = sk.verifying_key().to_encoded_point(false);
     let pass = passphrase(&format!("passphrase for the {role} key"), true)?;
+    // The hint is written at creation, because the owner will not remember it either (owner, 2026-11-12):
+    // without --hint, ask for it when a human is at the terminal (Enter = none). Non-interactive runs
+    // (tests, OWNER_PASSPHRASE set) are not asked.
+    let asked;
+    let hint = match hint {
+        Some(h) => Some(h),
+        None if std::env::var("OWNER_PASSPHRASE").is_err() && std::io::IsTerminal::is_terminal(&std::io::stdin()) => {
+            eprint!("hint for this key — where the passphrase is kept; stored in the key file and shown before every prompt (Enter = none): ");
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line)?;
+            asked = line.trim().to_string();
+            if asked.is_empty() {
+                None
+            } else {
+                Some(asked.as_str())
+            }
+        }
+        None => None,
+    };
     let hint = hint.map(|h| check_hint(h, &pass)).transpose()?;
     let mut salt = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut salt);
