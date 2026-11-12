@@ -314,6 +314,17 @@ and not a second wallet migration.
   dev-ops table, row "migrate T2 to the ceremony-signed R9 build"). The old wallet `51ca22a4` holds 67 337 signet-sat
   (BTCPay wallet balance); the owner chooses between a payout before the migration and a later recovery from the blob.
 
+**Auditor's decorrelated reproduction (same day, their laptop, clean clone @e396d91, their own throwaway signer):**
+MRENCLAVE `c7c5d8ef…` full match, unsigned `enclave.so` sha256 `deab1c48…fa540` full match, SIGSTRUCT body fields
+match, DisableDebug=1, gates 1–4/6 pass — "mainnet/TOFU-grade reproducibility confirmed; safe to load from the
+measurement side". **Clean-clone defect found by that repro:** `enclave/App/` holds only generated files and is
+not tracked, so a fresh clone's `make` died at `App/Enclave_u.h` (`cd: App: No such file or directory`); our own
+builds never hit it because the synced working tree carried `App/` from earlier runs. Fix (the auditor's one-liner):
+`@mkdir -p App && cd App && …` in the bridge rule — `enclave/Makefile` @5c7d774, untrusted bridge only. Verified on
+the box the way the auditor hit it: `git clone --depth 1` into a fresh directory (no `enclave/App`), `build-enclave.sh`
+→ `build+gates: OK`, MRENCLAVE `c7c5d8ef…`, `enclave.so` byte-identical to the ceremony build
+(`~/tee-signer-out/clean-clone-check`); the clone directory removed afterwards.
+
 **Process defect found and fixed on the way (recorded for the audit trail, like the recovery-key one of
 2026-11-10):** the ceremony key file `.local/ceremony/enclave-ceremony.pem` had been created by the dev session on
 2026-11-03 with a dev-chosen passphrase (`openssl pkey -aes256 -passout pass:…` — the passphrase sat in the
