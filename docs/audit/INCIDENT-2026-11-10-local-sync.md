@@ -47,7 +47,11 @@ the resync of the same day confirmed no `.local` on the box. Nothing was ever sy
 - *Where are the passphrases?* Only in this laptop's Claude Code transcripts and memory directory
   (`~/.claude/projects/-home-andrey-llm-btcpay-tee/`), outside the repo tree; a grep of the whole repo
   tree for every dev passphrase string finds none. The box therefore only ever held encrypted blobs,
-  never a passphrase — the blobs stay encrypted-safe (auditor: severity low).
+  never a passphrase — the blobs stay encrypted-safe (auditor: severity low). *Caveat added 2026-11-12:*
+  "encrypted-safe" leans on an attacker having nothing to narrow the passphrase space. Since 2026-11-12
+  owner secrets may carry a plaintext **hint** (keyfile `hint`, ceremony `Hint:` line); the property holds
+  **provided every hint is pure-WHERE** (where the passphrase is kept), never what it is or looks like —
+  THREAT-MODEL §5, C-SEC-1. The files of this incident carried no hints (the feature did not exist).
 - *Bearer tokens that sat on the box are live credentials.* T1 sidecar token **rotated** (file
   removed inside the container, sidecar restarted, new token minted; old token → `401`, new → `200`;
   the T1 BTCPay plugin re-pointed through its settings API, status page green; laptop copy

@@ -639,10 +639,12 @@ lost:** the coins are gone. That is the two-of-two the design rests on; hence tw
 ### I forget passphrases. Can a key carry a hint?
 
 Yes — a hint that says **where** the passphrase is kept, never **what** it is or what it looks like.
-"Password manager, entry tee-recovery" or "envelope in the safe" helps only you; "4 digits" or "same as
-the PIN" helps whoever steals the file just as much (a four-digit space is an hour of scrypt). The tool
-refuses a hint that contains the passphrase, but the rest is on you. The hint is shown before every
-prompt.
+"Password manager, entry tee-recovery" or "envelope in the safe" helps only you; "4 digits", "same as
+the PIN" or "my usual pattern" helps whoever steals the file just as much: the hint is plain text inside
+the file, and the file's protection (scrypt + AES) assumes the thief has nothing to narrow the search —
+a four-digit space is an hour. This is a security rule, not tidiness. The tools refuse a hint that
+contains the passphrase; the rest is on you. The hint is shown before every prompt. (It is not
+tamper-protected: someone who can edit the file can only confuse you with it, not learn anything.)
 
 ```sh
 ./owner-cli keygen --out ~/tee-owner/recovery.key --role recovery --hint "password manager, entry tee-recovery"   # at creation
@@ -651,12 +653,12 @@ prompt.
 ./owner-cli --wallet-record ~/tee-owner/wallet.json key-hint --pin --set "the PIN is in the password manager, entry tee-yubikey"   # the YubiKey PIN hint lives in the wallet record
 ```
 
-The ceremony key is an OpenSSL PEM file; a `Hint:` text line before its `-----BEGIN` is ignored by
-OpenSSL and printed by `scripts/ceremony-sign.sh` before the passphrase prompt:
+The ceremony key is an OpenSSL PEM file; its hint is a `Hint:` text line before the `-----BEGIN`
+(OpenSSL skips leading text) that `scripts/ceremony-sign.sh` prints before the passphrase prompt. Set it
+with the script, which asks the passphrase once, applies the same checks and verifies the key is unchanged:
 
 ```sh
-K=.local/ceremony/enclave-ceremony.pem; { echo "Hint: password manager, entry tee-ceremony"; cat "$K"; } > "$K.new" && mv "$K.new" "$K" && chmod 600 "$K"
-openssl pkey -in "$K" -pubout | diff - enclave/ceremony/ceremony_pub.pem && echo "still the same key"
+scripts/ceremony-key-hint.sh "password manager, entry tee-ceremony"    # --show / --clear
 ```
 
 ### Which owner devices work, and which should I use?
