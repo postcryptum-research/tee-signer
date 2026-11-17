@@ -381,3 +381,37 @@ STEP-6 DIAGNOSTIC SPLIT — APPROVED: server-named nonce = UNTRUSTED, читае
 accept; оба бранча REFUSE; даже misclassify ведёт к безопасному действию (re-quote над свежим нонсом).»
 CONDITIONS: C-R7-11 closed as moot/superseded, C-R7-13 extended with the c7c5d8ef drill.
 
+## 10. Addendum 2026-11-17 — three design facts for the conversion decision, and what they changed in the docs
+
+Asked by the auditor (session `security-audit-playbook-7f`, coordinating the co-tenant impact of the
+`sgx-node-3` Trusted Launch conversion, issue #1) while the owner reconsidered the scope. Answers were
+given from the code; this section records them and the doc changes they forced. No code changed.
+
+1. **A remote counter is viable by design.** `core/src/tpm_attest.rs::verify_nv_certify` is
+   location-blind (magic, type, `extraData` == the enclave's nonce, `indexName` == the pinned Name, P-256
+   signature by the pinned AK, counter == expected); `host/signerd/src/tpm.rs` carries the `remote:`
+   client (`GET /info`, `POST /certify`, `POST /increment`); only the agent on a counter VM is missing.
+   **The owner rejected the option the same day** («не реалистичный сценарий»); recorded in issue #1 §5.
+2. **No code depends on an EK certificate.** Neither the enclave nor `owner-cli anchor`
+   (`owner/owner-cli/src/main.rs`, `Cmd::Anchor`) parses one; the "which TPM" check is the owner's manual
+   step of §2 of the design REQ, never confirmed on Azure, and `tpm-anchor-prepare` (design step 9) was
+   never implemented. A reviewer reports that an Azure Trusted Launch vTPM ships **no EK certificate**;
+   Azure's own AK certificate sits at NV `0x01C101D0` (key `0x81000003`) under "Azure Virtual TPM Root CA
+   2023" — to confirm on a throwaway TL VM. The honest gap this exposed: reading *any* certificate through
+   `/dev/tpmrm0` at anchor time does not bind **our** AK to that TPM — the pin is TOFU against a VM-root
+   who substitutes the TPM *before* setup. Added as design threat row 11 and THREAT-MODEL §5 "TPM identity
+   at anchor time"; remedy proposed: `TPM2_Certify` of our AK by the provider-certified key, verified on
+   the laptop, before pinning.
+3. **A subscription Contributor with disk rights is the provider class.** The vTPM's state (VMGS) is
+   snapshotted/exported/restored with the OS disk; a consistent restore passes the R9 comparison. The
+   design always put this under V7, but the docs said "the provider" only — V7 and design row 10 now name
+   control-plane rights explicitly, and state that R7's attended `arm` bounds this adversary better than
+   R9's auto-arm. The counter is a brake against root inside the VM; sweep-to-cold and the hot-float size
+   remain the custody bound.
+
+**Questions for the auditor.** (a) Is row 11 a condition on the product anchor (a `Certify`-by-provider-AK
+REQ before any Azure anchor) or a labeled residual like V7? (b) Does the widened V7 wording state the
+Contributor case correctly? (c) The conversion itself (issue #1 plan): the live state `cc685457` is
+expected `STATE_UNSEALABLE` on the new host (row 12); the owner decided to abandon its 42 566 signet-sat
+(2026-11-17) and to re-init a new wallet on the same MRENCLAVE with `tpm-setup` before `init`.
+
