@@ -30,7 +30,7 @@ encrypted to the offline recovery key — and nowhere else; lose both and the fu
 |---|---|
 | D1 `recovery-verify` **without printing**: the blob decrypts to a mnemonic whose BIP84 xpub and fingerprint equal the wallet record's | executed on every wallet initialised so far (T1, T2, throwaways) — the standard check before funding |
 | D2 full restore: mnemonic → a different BIP84 wallet → it sees the coins → it spends | **executed once on signet (2026-11-03) in the course of a threat-model vector**, which is the wrong frame: it proved the restore works, but it was run on an online laptop and the words entered a chat. The drill proper is: offline machine, air-gapped wallet, a sweep to a new wallet, and the old wallet treated as burned afterwards |
-| D3 enclave loss → new enclave wallet → sweep from the restored old wallet | not executed yet; **scheduled**: the Trusted Launch conversion of `sgx-node-3` (issue #1, 2026-11-17 plan) re-places the VM and is a real enclave loss for wallet `cc685457` (~42 566 signet-sat); the owner decided 2026-11-17 to recover best-effort — the drill runs then, in the D2-proper frame (offline decrypt, the old wallet treated as burned afterwards), and its date and outcome are recorded here |
+| D3 enclave loss → new enclave wallet → sweep from the restored old wallet | not executed. The Trusted Launch conversion of `sgx-node-3` (issue #1, 2026-11-17 plan) re-places the VM and is a real enclave loss for wallet `cc685457` (42 566 signet-sat); the owner decided 2026-11-17 to **abandon** those test coins rather than build the sweep tool now — D1 on that blob (2026-11-12) stays the proof that it is recoverable; the sweep path (`tools/recovery-sweep`: words from stdin only, never persisted or logged, local signing, one sweep tx; auditor's review before use; rehearsal on a faucet-funded throwaway) is to be validated before mainnet, as this drill |
 | D4 owner-key loss → `recover` with the recovery key → new owner | the message path is vectored (R1/R2); the drill on a live wallet not executed |
 | D5 laptop loss → recovery key from backup | not executed; the backup discipline is the owner's |
 
@@ -39,7 +39,7 @@ encrypted to the offline recovery key — and nowhere else; lose both and the fu
 - `--print-mnemonic` is a **continuity tool**: an explicit, warned, confirmed act, on an offline
   machine, for D2 only. It is never a security test and never run on a wallet one intends to
   keep using — printing it ends that wallet's life (sweep and retire).
-- The recovery key never touches the BTCPay box or the build host; it is backed up on two media.
+- The recovery key never touches the BTCPay box or the build host; it is backed up on two media (owner's confirmation for `recovery-r7.key`: 2026-11-17).
 - A recovery is followed by a **retire**: the restored seed is spent to a new enclave wallet and
   never reused.
 - Drills are scheduled, not improvised; each executed drill is recorded here with a date.
