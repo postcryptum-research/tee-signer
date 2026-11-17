@@ -415,3 +415,27 @@ Contributor case correctly? (c) The conversion itself (issue #1 plan): the live 
 expected `STATE_UNSEALABLE` on the new host (row 12); the owner decided to abandon its 42 566 signet-sat
 (2026-11-17) and to re-init a new wallet on the same MRENCLAVE with `tpm-setup` before `init`.
 
+**Auditor's answers (session `security-audit-playbook-7f`, 2026-11-17, in substance verbatim).**
+(a) Row 11 = a **labeled residual like V7, not a hard condition** gating every anchor: the TPM counter is
+defense-in-depth against rollback, not the custody root — the seed is SGX-sealed and signs only under an
+owner-signed timelocked mandate, so a VM-root who substitutes the vTPM at anchor time controls the
+counter (rollback within the mandate window) but cannot extract the seed or sign outside a valid mandate;
+exposure = the hot-float/rollback residual already tracked, bounded by R7's attended `arm`, the mandate
+window and sweep-to-cold. **But implement the `TPM2_Certify`-by-provider-AK remedy anyway** — cheap, closes
+the last TOFU cleanly — framed as a **SHOULD** (hardening), never a REQ that blocks mainnet and never a
+precondition the seed custody depends on ("software is never a mainnet-wait").
+(b) The widened V7 wording is **right** for the Contributor case: the subscription's operator service
+principal has Contributor and can do a disk+VMGS restore = a consistent rollback; bound = hot float; R7's
+attended arm bounds it better than R9's auto-arm; the seal breaking on re-placement is luck (only a
+different-CPU landing, which Azure does not guarantee) — the real defense is the mandate window and
+sweep-to-cold, not the seal-break.
+(c) The owner's decision: **Option A, all three SGX nodes converted in place to Trusted Launch, node-3
+first, one at a time.** Each conversion = probable host move = sealed state lost (`STATE_UNSEALABLE`
+expected; row 12 = not an attack). Sharpening for the node-3 flow: the vTPM is **brand new regardless of
+CPU**, so `tpm-setup` and the **first** `anchor` always run; the **new-wallet step is forced only on a
+different-CPU landing** and is a no-op on the same CPU (seed survives, identity matches the baseline) —
+branch the runbook on `signerd status` rather than always regenerating the wallet. Dev's confirmation:
+the seed is **SGX-sealed** (`sgx_seal_data_ex`, MRENCLAVE policy), not TPM-bound — the TPM anchor lives
+*inside* the sealed state and the TPM is a freshness source only; the seed never touches it. Branching
+adopted in deploy/README and issue #1.
+
