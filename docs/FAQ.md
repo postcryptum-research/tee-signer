@@ -555,7 +555,10 @@ run the same command.
 You need a TPM 2.0 the signer's machine can reach as `/dev/tpmrm0`: a physical one on your own server,
 or the virtual TPM of a cloud VM with Trusted Launch (on Azure this is a property of the VM, switched
 on from the Azure account with `scripts/azure-enable-vtpm.sh <vm>` — one VM per run, downtime for every
-tenant of that VM; the project's own node is waiting for it — issue #1). The signer build must carry the
+tenant of that VM; the project's own node is waiting for it — issue #1. Switching it on re-places the VM,
+and on a different physical host the sealed state of an existing wallet will not open any more — see
+["The server died…"](#the-server-died--the-disk-is-gone--the-provider-deleted-the-vm-are-the-coins-lost):
+plan a new wallet and run `tpm-setup` before its `init`). The signer build must carry the
 `tss` feature (its `MANIFEST` says `signerd features: sgx,tss`). If the enclave you run today predates the
 counter check (builds before R9 do — the check lives inside the enclave), moving to one that has it is a **new
 enclave build and therefore a new wallet**: do ["How do I move to a new enclave build?"](#how-do-i-move-to-a-new-enclave-build-a-new-mrenclave)
@@ -620,7 +623,10 @@ and never leave it.
 ### The server died / the disk is gone / the provider deleted the VM. Are the coins lost?
 
 No. The seed exists in two places: inside the enclave, and in the **recovery blob** encrypted at
-init to your recovery key. Decrypt the blob on an offline machine (`recovery-verify` checks it
+init to your recovery key. (A cloud VM that comes back on a **different physical host** — after
+`az vm deallocate`/`start`, a Trusted Launch conversion, provider maintenance — is the same case even
+though the disk is intact: SGX seals to the CPU, so the signer answers `STATE_UNSEALABLE` and the
+enclave's copy of the seed is gone.) Decrypt the blob on an offline machine (`recovery-verify` checks it
 without printing; `--print-mnemonic` prints, with a warning and a typed confirmation) and restore
 the 24 words into any BIP84 wallet; then sweep to a **new** enclave wallet, and treat the old
 one as retired. A new enclave is always a new wallet: by design there is no way to put an old
