@@ -553,10 +553,11 @@ run the same command.
 ### How do I put a TPM in front of the signer (R9)?
 
 You need a TPM 2.0 the signer's machine can reach as `/dev/tpmrm0`: a physical one on your own server,
-or the virtual TPM of a cloud VM with Trusted Launch (on Azure this is a property of the VM; the
-project's own node is waiting for it — issue #1). The signer build must carry the `tss` feature (its
-`MANIFEST` says `signerd features: sgx,tss`). If the enclave you run today predates the counter check
-(builds before R9 do — the check lives inside the enclave), moving to one that has it is a **new
+or the virtual TPM of a cloud VM with Trusted Launch (on Azure this is a property of the VM, switched
+on from the Azure account with `scripts/azure-enable-vtpm.sh <vm>` — one VM per run, downtime for every
+tenant of that VM; the project's own node is waiting for it — issue #1). The signer build must carry the
+`tss` feature (its `MANIFEST` says `signerd features: sgx,tss`). If the enclave you run today predates the
+counter check (builds before R9 do — the check lives inside the enclave), moving to one that has it is a **new
 enclave build and therefore a new wallet**: do ["How do I move to a new enclave build?"](#how-do-i-move-to-a-new-enclave-build-a-new-mrenclave)
 first, and come back here before its step 2 `up`. Then, **once, on the server**, with the sidecar not
 yet running against the TPM:
