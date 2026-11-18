@@ -1,6 +1,6 @@
 # REQ-r9a — the Anchor pins the LIVE counter: closing the anchor-window race (design REQ)
 
-**Date:** 2026-11-18. **Status:** design review **closed by the auditor the same day** (in messages, §6 — the sealed-identity correction is load-bearing; the RESP file is the auditor's to write); the implementation waits for the
+**Date:** 2026-11-18. **Status:** **DESIGN-PASS** — `RESP-r9a-anchor-live-counter-2026-11-18.md` (the auditor, same day; conditions C1–C6 binding, the sealed-identity correction load-bearing); the implementation waits for the
 owner's scope decision (§5: a new MRENCLAVE, hence a ceremony signature and a new T2 wallet).
 **Scope:** `core/src/state.rs` (`apply_anchor`), `enclave/rcore/src/ops.rs` (`apply_message`, the Anchor branch),
 `core/src/reason.rs` (one new reason), vectors; the host daemon is unchanged. Builds on REQ-r9 (design + impl, both
@@ -138,3 +138,60 @@ owner's attested value as a lower bound.
   living wallet, correctly refused. Refinement adopted in §2.6: the refusal text names the sanctioned path.
 - The auditor's IMPL-PASS will check firsthand: the verification roots on the sealed `TpmAnchor` (not the
   message), the §4 break-tests fire at the intended lines, and no proof-less path survives.
+
+## 7. Implementation (branch `r9a`, 2026-11-18) — for the auditor's IMPL-PASS
+
+**Core (`core/`, no_std):**
+- `src/tpm_attest.rs`: `certified_counter(attest, sig, ak_pk, nv_name, nonce) -> Result<u64, Reason>` — structure
+  (`TPM_PARSE`), nonce (`TPM_NONCE`), index (`TPM_INDEX`), signature (`TPM_SIG`), **no value judgement**;
+  `verify_nv_certify` = `certified_counter` + `counter == expected` (`STATE_STALE`). Every Fresh op is unchanged.
+- `src/state.rs`: `State::anchor_identity(&self, msg)` — C1: a TPM-bound state answers the **sealed** `ak_pk`/`nv_name`
+  and refuses a message naming anything else with `ANCHOR_TPM_MISMATCH`; an unbound state (first anchor) answers the
+  message's (TOFU). `State::apply_anchor(&self, msg, boot_challenge, live_counter)` — the former checks (owner
+  signature, enclave id, next nonce, this load's challenge, `seq_seen ≤ seq`), then `anchor_identity`, then C3:
+  `live_counter < msg.counter → ANCHOR_COUNTER_BEHIND`; pins `TpmAnchor { ak_pk, nv_name, expected: live_counter }`
+  (the seal bumps to `+1`). The message's `counter` is read **only** as the lower bound.
+- `src/reason.rs`: `AnchorTpmMismatch` → `ANCHOR_TPM_MISMATCH`, `AnchorCounterBehind` → `ANCHOR_COUNTER_BEHIND`;
+  `hint_for_code()` under `#[cfg(feature = "std")]` (host side only — the enclave carries no text) with the
+  sanctioned recovery for `ANCHOR_TPM_MISMATCH`, `ANCHOR_COUNTER_BEHIND`, `STATE_STALE`, `TPM_REQUIRED`, `NOT_ARMED`.
+
+**Enclave shell (`enclave/rcore/src/ops.rs`):**
+- `apply_message`: the `Anchor` branch still opens the blob with `open_full_stale` (C5), then calls
+  `anchor_live_counter(&state, &msg)`: `session::tpm_proof_take()` (none → `TPM_REQUIRED`, C4), `anchor_identity`
+  (`ANCHOR_TPM_MISMATCH`, proof already consumed), a structural check of the identity (`POLICY_INVALID`), decode
+  (`TPM_PARSE`), `certified_counter` against the sealed-or-first identity over the **live nonce** (C2;
+  `TPM_NONCE`/`TPM_INDEX`/`TPM_SIG`), `tpm_set_last_fresh` accordingly → `apply_anchor(…, live)`. No branch reads
+  `msg.counter` as a value; the REQ-r9 §2.5 proof-less path is gone. `FRESHNESS` table unchanged
+  (`APPLY_MESSAGE` Fresh; comment updated).
+
+**Host (untrusted):** `host/signerd`: the refusal JSON carries `hint` (first reason with one) and `signerd submit`/
+status prints `CODE: hint` on REFUSED (C6). `owner/owner-cli`: the post-anchor prediction says "`tpm_expected`: at
+least N+1". `btcpay` plugin: unchanged (it shows the daemon's `error`; the `hint` field is available to it).
+
+**Vectors (RESP-r9a §4) — `enclave/rcore/tests/replay.rs`:**
+- `anchor_pins_the_live_counter_r9a` (new): **2** proof-less first anchor → `TPM_REQUIRED`, nothing bound; **1**
+  owner attests 500, two persists before the apply → applied, expects 503 == TPM, the next Fresh op accepted;
+  **3** a deposit below the owner's value → `ANCHOR_COUNTER_BEHIND`, consumed (`TPM_REQUIRED` next), state
+  unchanged; **4** foreign AK `TPM_SIG`, wrong Name `TPM_INDEX`, replayed nonce `TPM_NONCE`, truncated `TPM_PARSE`,
+  then `TPM_REQUIRED`; **7** bound state + another TPM's identity with that TPM's valid proof →
+  `ANCHOR_TPM_MISMATCH`, consumed, unchanged — and the same forged identity with the honest proof → the same
+  mismatch; **5 + 7b** stale blob (expects 505, TPM 507) → `STATE_STALE`, a reload stays unarmed, the honest
+  same-identity re-pin with a live proof → **applied**, expects 508 == TPM, armed, `tpm_last_fresh`, a proven
+  `FREEZE` goes through; **1 again on a LIVE bound state** (k = 1, the 16:11 picture) → applied, 511 == TPM, the
+  next owner op accepted.
+- `tpm_counter_freshness_r9` (adapted): every Anchor now deposits (`anchor_call`); the first anchor and the
+  stale-blob re-anchor are each tried proof-less first → `TPM_REQUIRED`; a malformed identity stays
+  `POLICY_INVALID`; the captured old Anchor → `TPM_REQUIRED` without a proof, `POLICY_NONCE` with one.
+- e2e: `scripts/e2e-local.sh` (software transport) and `scripts/e2e-tss-local.sh` (the laptop's Intel PTT) gained
+  "the 2026-11-18 case": `freeze`+`unfreeze` between the owner's `tpm-certify` and `anchor` (two persists), then
+  the anchor must leave `tpm_expected == TPM counter` (= attested + 2 + 1). Evidence 2026-11-18: e2e-local
+  "blob expects 4 == TPM counter 4 ✓", e2e-tss "attested 57 + 2 persists in the window + 1 = expects 60 == TPM
+  counter 60 ✓", handles identical before/after, teardown clean.
+
+**Runs (2026-11-18, laptop):** `core`: fmt, clippy `-D warnings`, tests OK; `enclave/rcore` `--features nosgx,test-init`:
+5/5 replay tests OK (incl. the two above), clippy OK; `host/signerd --features nosgx`: tests, clippy OK;
+`owner/owner-cli`: 14 tests, clippy OK; `e2e-local: OK`; `e2e-tss-local: OK`.
+
+**Not in this branch:** the enclave build on T1 (new MRENCLAVE), the ceremony signature, the T2 image and the new T2
+wallet — owner-run, after the IMPL-PASS. The `vectors/r9a/` golden files are not produced: the R9/R9a scenarios
+live in the replay test (as REQ-r9's did); say if you want them as files too.

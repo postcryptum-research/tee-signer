@@ -559,12 +559,39 @@ impl State {
         Ok(s)
     }
 
-    /// The anchor transition (REQ-r9 §2.5): every check of `apply_arm` — owner signature, enclave
-    /// id, next nonce (consumed), this load's challenge, the sequence the owner saw — plus the
-    /// structural check of the pinned material; then the state pins the TPM and expects `counter`.
-    /// The shell seals the result (which bumps `expected` to `counter + 1`) and arms the load.
-    pub fn apply_anchor(&self, msg: &Message, boot_challenge: &[u8; 32]) -> Result<State, Refusal> {
-        let Message::Anchor { nonce, boot_challenge: c, ak_pk, nv_name, counter, seq_seen, .. } = msg else {
+    /// REQ-r9a C1: the TPM identity an `Anchor`'s proof must be verified against. A TPM-bound state
+    /// answers with the SEALED key and Name — the identity bound at this wallet's first anchor, inside
+    /// the blob the host cannot change — and the message must name the same two values, otherwise
+    /// `ANCHOR_TPM_MISMATCH`: the owner builds the Anchor from a host-supplied `tpm-info`, so a host
+    /// could hand the owner the identity of a TPM it controls plus a valid proof from that TPM and
+    /// re-point the anti-rollback counter to itself. Only an unbound state (the first, binding
+    /// anchor) takes the message's identity: trust-on-first-use, the labeled residual.
+    pub fn anchor_identity(&self, msg: &Message) -> Result<([u8; 65], [u8; crate::tpm_attest::NV_NAME_LEN]), Refusal> {
+        let Message::Anchor { ak_pk, nv_name, .. } = msg else {
+            return Err(Reason::PolicyInvalid.into());
+        };
+        match self.tpm.as_ref() {
+            Some(bound) => {
+                if bound.ak_pk != *ak_pk || bound.nv_name != *nv_name {
+                    return Err(Reason::AnchorTpmMismatch.into());
+                }
+                Ok((bound.ak_pk, bound.nv_name))
+            }
+            None => Ok((*ak_pk, *nv_name)),
+        }
+    }
+
+    /// The anchor transition (REQ-r9 §2.5, REQ-r9a): every check of `apply_arm` — owner signature,
+    /// enclave id, next nonce (consumed), this load's challenge, the sequence the owner saw — plus the
+    /// structural check of the pinned material and the identity rule of `anchor_identity`; then the
+    /// state pins the TPM and expects `live_counter` — the value the shell verified in the proof the
+    /// host deposited for THIS call (REQ-r9a C3), never the message's static snapshot: between the
+    /// owner's `tpm-certify` and this apply the daemon's own persists may have moved the counter. The
+    /// owner's attested `counter` is the LOWER BOUND: a live value below it is a lying host or a
+    /// replaced TPM (`ANCHOR_COUNTER_BEHIND`). The shell seals the result (which bumps `expected` to
+    /// `live_counter + 1`) and arms the load.
+    pub fn apply_anchor(&self, msg: &Message, boot_challenge: &[u8; 32], live_counter: u64) -> Result<State, Refusal> {
+        let Message::Anchor { nonce, boot_challenge: c, counter, seq_seen, .. } = msg else {
             return Err(Reason::PolicyInvalid.into());
         };
         if msg.enclave_id() != &self.enclave_id || !msg.verify(&self.owner_pk) {
@@ -582,7 +609,11 @@ impl State {
         if *seq_seen > s.seq {
             return Err(Reason::ArmSeqBehind.into());
         }
-        let anchor = crate::tpm_attest::TpmAnchor { ak_pk: *ak_pk, nv_name: *nv_name, expected: *counter };
+        let (ak_pk, nv_name) = self.anchor_identity(msg)?;
+        if live_counter < *counter {
+            return Err(Reason::AnchorCounterBehind.into());
+        }
+        let anchor = crate::tpm_attest::TpmAnchor { ak_pk, nv_name, expected: live_counter };
         if !anchor.well_formed() {
             return Err(Reason::PolicyInvalid.into());
         }

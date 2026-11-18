@@ -158,28 +158,43 @@ pub fn parse_nv_attest(attest: &[u8]) -> Result<NvAttest, Reason> {
     Ok(NvAttest { extra, index_name, counter })
 }
 
-/// Verify a certify proof against the anchor and the nonce the enclave issued for this call.
-/// Returns the certified counter when it equals the expected one. The order of checks gives each
-/// mutation its own reason: structure (`TPM_PARSE`), nonce (`TPM_NONCE`), index (`TPM_INDEX`),
-/// signature (`TPM_SIG`), value (`STATE_STALE`).
-pub fn verify_nv_certify(attest: &[u8], sig: &[u8; 64], anchor: &TpmAnchor, nonce: &[u8; 32]) -> Result<u64, Reason> {
+/// The counter an honest `TPM2_NV_Certify` certifies for THIS nonce, under THIS attestation key,
+/// for THIS index — without judging the value. The order of checks gives each mutation its own
+/// reason: structure (`TPM_PARSE`), nonce (`TPM_NONCE`), index (`TPM_INDEX`), signature (`TPM_SIG`).
+/// Used by `verify_nv_certify` (every Fresh op: the value must equal the blob's) and by the Anchor
+/// (REQ-r9a: the value becomes the blob's new expectation).
+pub fn certified_counter(
+    attest: &[u8],
+    sig: &[u8; 64],
+    ak_pk: &[u8; 65],
+    nv_name: &[u8; NV_NAME_LEN],
+    nonce: &[u8; 32],
+) -> Result<u64, Reason> {
     let a = parse_nv_attest(attest)?;
     if a.extra != *nonce {
         return Err(Reason::TpmNonce);
     }
-    if a.index_name != anchor.nv_name {
+    if a.index_name != *nv_name {
         return Err(Reason::TpmIndex);
     }
     // The TPM signs SHA-256(attest) with the AK (TPM_ALG_ECDSA / SHA-256); the host hands the
     // signature as raw r ‖ s with s normalized low (a TPM may emit a high s; both halves of the
     // pair verify the same message).
-    if !verify_p256(&anchor.ak_pk, &crate::sha256(attest), sig) {
+    if !verify_p256(ak_pk, &crate::sha256(attest), sig) {
         return Err(Reason::TpmSig);
     }
-    if a.counter != anchor.expected {
+    Ok(a.counter)
+}
+
+/// Verify a certify proof against the anchor and the nonce the enclave issued for this call.
+/// Returns the certified counter when it equals the expected one; otherwise `STATE_STALE` after the
+/// structural, nonce, index and signature checks of `certified_counter`.
+pub fn verify_nv_certify(attest: &[u8], sig: &[u8; 64], anchor: &TpmAnchor, nonce: &[u8; 32]) -> Result<u64, Reason> {
+    let counter = certified_counter(attest, sig, &anchor.ak_pk, &anchor.nv_name, nonce)?;
+    if counter != anchor.expected {
         return Err(Reason::StateStale);
     }
-    Ok(a.counter)
+    Ok(counter)
 }
 
 /// Build the canonical `TPMS_ATTEST` bytes an honest TPM would produce for these fields — used by

@@ -2258,7 +2258,7 @@ fn main() -> Result<()> {
             sign_message(&okey, &mut msg)?;
             submit_message(&sd, &msg)?;
             if sd.out.is_some() {
-                println!("after `signerd submit` on the server, `signerd status --out …` there will show tpm_bound: true, tpm_expected: {} and boot_armed: true for load {session}", counter + 1);
+                println!("after `signerd submit` on the server, `signerd status --out …` there will show tpm_bound: true, tpm_expected: at least {} (REQ-r9a: the counter the TPM certifies at apply time, plus one — the daemon's own state writes may have moved it past what you saw) and boot_armed: true for load {session}", counter + 1);
             } else {
                 let st = sd.get("/v1/status")?;
                 if st["tpm_bound"].as_bool() == Some(true) && st["boot_armed"].as_bool() == Some(true) {

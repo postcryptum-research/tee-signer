@@ -111,6 +111,14 @@ pub enum Reason {
     /// REQ-r9: the TPM certifies a counter other than the one this blob expects — the blob is not
     /// the latest state (a rollback, a crash between seal and increment, or a spurious increment).
     StateStale,
+    /// REQ-r9a: an `Anchor` on a TPM-bound state names an attestation key or a counter index other
+    /// than the sealed ones — the host handed the owner the identity of a TPM it controls. The TPM
+    /// identity is bound for the wallet's life; a replaced TPM under a living wallet means a new
+    /// wallet (or a re-bind ceremony), never a re-point by Anchor.
+    AnchorTpmMismatch,
+    /// REQ-r9a: the counter the host's live proof certifies is BELOW the value the owner saw
+    /// certified — impossible for an honest, monotone TPM: a lying host or a replaced TPM.
+    AnchorCounterBehind,
 }
 
 impl Reason {
@@ -168,6 +176,8 @@ impl Reason {
             Reason::TpmIndex => "TPM_INDEX",
             Reason::TpmSig => "TPM_SIG",
             Reason::StateStale => "STATE_STALE",
+            Reason::AnchorTpmMismatch => "ANCHOR_TPM_MISMATCH",
+            Reason::AnchorCounterBehind => "ANCHOR_COUNTER_BEHIND",
         }
     }
 }
@@ -187,4 +197,36 @@ impl From<Reason> for Refusal {
     fn from(r: Reason) -> Self {
         Refusal::one(r)
     }
+}
+
+/// Host-side only (REQ-r9a C6): the sanctioned next step for the refusals an operator meets in the
+/// daemon's answer, the plugin page or `owner-cli`. The enclave never carries these strings; the
+/// host prints them next to the stable code so nobody retries into a wall.
+#[cfg(feature = "std")]
+pub fn hint_for_code(code: &str) -> Option<&'static str> {
+    Some(match code {
+        "ANCHOR_TPM_MISMATCH" => {
+            "the host presented a TPM identity (attestation key / counter Name) different from the one this wallet is \
+             bound to — do not retry; a replaced TPM under a living wallet means a new wallet, or a re-bind ceremony \
+             (REQ pending); check tpm-info against the tpm-setup record and tell the auditor"
+        }
+        "ANCHOR_COUNTER_BEHIND" => {
+            "the host's live counter proof is BELOW the value you saw certified — an honest TPM only moves forward; \
+             do not retry with this host's files; take tpm-info and tpm-certify again and compare, then tell the auditor"
+        }
+        "STATE_STALE" => {
+            "the TPM counter and the sealed state disagree (a rollback, a crash between seal and increment, or a \
+             persist that raced your anchor): the signer pauses; the owner's anchor (tpm-info → your nonce → \
+             tpm-certify → owner-cli anchor → submit) is the remedy — from this state it is race-free"
+        }
+        "TPM_REQUIRED" => {
+            "the state is TPM-bound and this call carried no counter proof: the daemon's TPM transport is missing or \
+             failing (SIGNERD_TPM, /dev/tpmrm0, the tpm.env secret); fix the transport, nothing to sign until then"
+        }
+        "NOT_ARMED" => {
+            "this enclave load has not been approved: the owner's `arm` (R7), or — when the state is TPM-anchored — \
+             the first state-changing call with a fresh counter proof arms it (R9)"
+        }
+        _ => return None,
+    })
 }

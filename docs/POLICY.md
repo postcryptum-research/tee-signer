@@ -192,10 +192,14 @@ Nonce, owner rotation and recovery: `DESIGN.md §6–7`.
 `POLICY_WALLET`, `POLICY_PENDING`, `STATE_UNSEALABLE`, `SEQ_BEHIND_SESSION`, and from R7 `NOT_ARMED` (this enclave
 load has not been approved by the owner: no judging or signing until `Arm`), `ARM_CHALLENGE` (an `Arm` over
 another load's challenge — a replay), `ARM_SEQ_BEHIND` (the owner saw a higher sequence than the enclave
-remembers: the state was rolled back), and from R9 (`r9-tpm`, IMPL review pending) `TPM_REQUIRED` (the state
+remembers: the state was rolled back), and from R9 (IMPL-PASS 2026-11-10) `TPM_REQUIRED` (the state
 is TPM-bound and no counter proof was presented for this call), `TPM_PARSE` (the proof is not a well-formed
 NV attestation), `TPM_NONCE` (the proof is not over the nonce this enclave issued for this call — a replay),
 `TPM_INDEX` (another counter index than the pinned one), `TPM_SIG` (not signed by the pinned attestation key),
 `STATE_STALE` (the TPM certifies a counter other than the one this blob expects: a rollback, a crash between
-seal and increment, or a spurious increment — the owner's `Anchor` resolves it). Every one of them has at least
-one refusal vector in `vectors/` or in the `rcore` replay test.
+seal and increment, or a spurious increment — the owner's `Anchor` resolves it), and from R9a (2026-11-18)
+`ANCHOR_TPM_MISMATCH` (an `Anchor` on a TPM-bound state names another attestation key or counter index than the
+sealed ones: the host handed the owner the identity of a TPM it controls — the TPM identity is bound for the
+wallet's life; a replaced TPM under a living wallet means a new wallet or a re-bind ceremony, never a retry),
+`ANCHOR_COUNTER_BEHIND` (the host's live counter proof is below the value the owner saw certified — a lying host
+or a replaced TPM). Every one of them has at least one refusal vector in `vectors/` or in the `rcore` replay test.

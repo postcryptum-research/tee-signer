@@ -76,7 +76,11 @@ echo "--- the owner anchors: tpm-info + an attested certify over the owner's non
 "$SD" tpm-info --state-dir "$S/state" --url http://127.0.0.1:7391 --out "$S/tpm-info.json"
 openssl rand -hex 32 > "$S/anchor-nonce.txt"
 "$SD" tpm-certify --state-dir "$S/state" --url http://127.0.0.1:7391 --nonce-file "$S/anchor-nonce.txt" --out "$S/anchor-proof.json"
+echo "--- REQ-r9a, the 2026-11-18 case: two state writes land between the owner's certify and the anchor's apply (the feed persisting blocks); the anchor must pin the LIVE counter, not the owner's snapshot ---"
+"$OC" freeze >/dev/null; "$OC" unfreeze --key "$S/owner.key" >/dev/null   # two persists → the counter is 2 past the attested value
 "$OC" --wallet-record "$S/wallet.json" anchor --key "$S/owner.key" --tpm-info-file "$S/tpm-info.json" --proof-file "$S/anchor-proof.json" --proof-nonce-file "$S/anchor-nonce.txt"
+"$SD" tpm-info --state-dir "$S/state" --url http://127.0.0.1:7391 --out "$S/tpm-info-after.json"
+python3 -c "import json;d=json.load(open('$S/tpm-info-after.json'))['response'];import urllib.request;s=json.load(urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:7391/v1/status',headers={'Authorization':'Bearer '+open('$S/state/token').read().strip()})));assert s['tpm_expected']==d['counter'], ('REQ-r9a: blob expects', s['tpm_expected'], 'TPM at', d['counter']);print('  REQ-r9a: blob expects', s['tpm_expected'], '== TPM counter', d['counter'], '(attested value + 2 persists + 1) ✓')"
 C0=$(python3 -c "import json;print(json.load(open('$S/tpm.json'))['counter'])")
 "$OC" status | python3 -c "
 import json,sys;d=json.load(sys.stdin)

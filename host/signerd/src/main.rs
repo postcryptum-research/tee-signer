@@ -529,10 +529,14 @@ async fn feed_once(shared: &Shared) -> Result<u32> {
 struct ErrorBody {
     error: String,
     reasons: Vec<String>,
+    /// REQ-r9a C6: the sanctioned next step for the first reason that has one (host-side text).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hint: Option<&'static str>,
 }
 
 fn err(status: StatusCode, msg: impl Into<String>, reasons: Vec<String>) -> axum::response::Response {
-    (status, Json(ErrorBody { error: msg.into(), reasons })).into_response()
+    let hint = reasons.iter().find_map(|r| signer_core::reason::hint_for_code(r));
+    (status, Json(ErrorBody { error: msg.into(), reasons, hint })).into_response()
 }
 
 /// R8: one server-side owner step — file in, file out. The daemon's token is read from its state
@@ -626,6 +630,14 @@ async fn owner_step(state_dir: &Path, url: &str, out: &Path, step: OwnerStep) ->
     std::fs::write(out, serde_json::to_string_pretty(&record)?)?;
     println!("{} -> {}", if status.is_success() { "ok" } else { "REFUSED" }, out.display());
     if !status.is_success() {
+        // REQ-r9a C6: the operator reads the next step next to the code, not only in the docs
+        if let Some(reasons) = body.get("reasons").and_then(|v| v.as_array()) {
+            for code in reasons.iter().filter_map(|r| r.as_str()) {
+                if let Some(h) = signer_core::reason::hint_for_code(code) {
+                    println!("  {code}: {h}");
+                }
+            }
+        }
         std::process::exit(1);
     }
     Ok(())

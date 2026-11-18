@@ -705,6 +705,22 @@ fn fresh_call(tpm: &SoftTpm, op_code: u32, input: &[u8]) -> Response {
     call(op_code, input)
 }
 
+/// REQ-r9a: the host's side of an `Anchor` — `call_fresh` deposits a proof for every APPLY_MESSAGE, and
+/// the enclave verifies it against the SEALED identity and pins the LIVE value (the deposit is
+/// mandatory, C4). `tpm` is the TPM the host actually talks to — honest or not.
+fn anchor_call(tpm: &SoftTpm, sealed: &[u8], msg: &Message) -> Response {
+    fresh_call(
+        tpm,
+        op::APPLY_MESSAGE,
+        &proto::SealedWith { sealed: sealed.to_vec(), data: msg.encode(), extra: None }.encode(),
+    )
+}
+
+/// A proof-less APPLY_MESSAGE (no nonce, no deposit).
+fn bare_apply(sealed: &[u8], msg: &Message) -> Response {
+    call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: sealed.to_vec(), data: msg.encode(), extra: None }.encode())
+}
+
 fn status_of(sealed: &[u8]) -> proto::StatusResponse {
     let r = call(op::STATUS, sealed);
     assert!(r.ok, "{:?}", r.reasons);
@@ -765,49 +781,35 @@ fn tpm_counter_freshness_r9() {
     };
     let mut bad = mk(1, [9; 32], tpm.ak.pk, tpm.name, tpm.counter, 0);
     owner.sign(&mut bad);
-    let r = call(
-        op::APPLY_MESSAGE,
-        &proto::SealedWith { sealed: unbound.clone(), data: bad.encode(), extra: None }.encode(),
-    );
+    let r = anchor_call(&tpm, &unbound, &bad);
     assert!(!r.ok && r.reasons == vec!["ARM_CHALLENGE"], "{:?}", r.reasons);
     let mut bad = mk(1, challenge, tpm.ak.pk, tpm.name, tpm.counter, 5);
     owner.sign(&mut bad);
-    let r = call(
-        op::APPLY_MESSAGE,
-        &proto::SealedWith { sealed: unbound.clone(), data: bad.encode(), extra: None }.encode(),
-    );
+    let r = anchor_call(&tpm, &unbound, &bad);
     assert!(!r.ok && r.reasons == vec!["ARM_SEQ_BEHIND"], "{:?}", r.reasons);
     let mut sha1_name = tpm.name;
     sha1_name[1] = 0x04;
     let mut bad = mk(1, challenge, tpm.ak.pk, sha1_name, tpm.counter, 0);
     owner.sign(&mut bad);
-    let r = call(
-        op::APPLY_MESSAGE,
-        &proto::SealedWith { sealed: unbound.clone(), data: bad.encode(), extra: None }.encode(),
-    );
+    let r = anchor_call(&tpm, &unbound, &bad);
     assert!(!r.ok && r.reasons == vec!["POLICY_INVALID"], "{:?}", r.reasons);
     let mut bad = mk(3, challenge, tpm.ak.pk, tpm.name, tpm.counter, 0);
     owner.sign(&mut bad);
-    let r = call(
-        op::APPLY_MESSAGE,
-        &proto::SealedWith { sealed: unbound.clone(), data: bad.encode(), extra: None }.encode(),
-    );
+    let r = anchor_call(&tpm, &unbound, &bad);
     assert!(!r.ok && r.reasons == vec!["POLICY_NONCE"], "{:?}", r.reasons);
     let mut bad = mk(1, challenge, tpm.ak.pk, tpm.name, tpm.counter, 0);
     recovery.sign(&mut bad);
-    let r = call(
-        op::APPLY_MESSAGE,
-        &proto::SealedWith { sealed: unbound.clone(), data: bad.encode(), extra: None }.encode(),
-    );
+    let r = anchor_call(&tpm, &unbound, &bad);
     assert!(!r.ok && r.reasons == vec!["POLICY_SIG"], "{:?}", r.reasons);
 
     // --- the genuine Anchor: the state pins the TPM and expects counter+1 after the seal ---
     let mut anchor = mk(1, challenge, tpm.ak.pk, tpm.name, tpm.counter, 0);
     owner.sign(&mut anchor);
-    let r = call(
-        op::APPLY_MESSAGE,
-        &proto::SealedWith { sealed: unbound.clone(), data: anchor.encode(), extra: None }.encode(),
-    );
+    // REQ-r9a C4: even the first, binding anchor needs the host's live proof — no proof-less path
+    let r = bare_apply(&unbound, &anchor);
+    assert!(!r.ok && r.reasons == vec!["TPM_REQUIRED"], "proof-less Anchor: {:?}", r.reasons);
+    assert!(!status_of(&unbound).tpm_bound, "a refused Anchor binds nothing");
+    let r = anchor_call(&tpm, &unbound, &anchor);
     assert!(r.ok, "{:?}", r.reasons);
     let bound1 = proto::SealedResponse::decode(&r.payload).unwrap().sealed;
     tpm.increment(); // the host increments after persisting the new blob
@@ -912,15 +914,17 @@ fn tpm_counter_freshness_r9() {
         &proto::SealedWith { sealed: bound1.clone(), data: fr.encode(), extra: None }.encode(),
     );
     assert!(!r.ok && r.reasons == vec!["STATE_STALE"], "{:?}", r.reasons);
-    // ...until the owner re-anchors ON THE STALE BLOB, without a proof (§2.5): the override names
-    // the live counter (from the owner's attested read) and arms; the blob's nonce is 1 → next 2
+    // ...until the owner re-anchors ON THE STALE BLOB (§2.5 + REQ-r9a): the override does not compare
+    // the proof against the stale blob's expectation (C5), but it is NOT exempt from the proof (C4) —
+    // the live, attested value becomes the new expectation; the blob's nonce is 1 → next 2
     let st = status_of(&bound1);
     assert!(st.tpm_expected == 1001 && st.nonce == 1, "{st:?}");
     let mut re = mk(2, st.boot_challenge, tpm.ak.pk, tpm.name, tpm.counter, 0);
     owner.sign(&mut re);
-    let r =
-        call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: bound1.clone(), data: re.encode(), extra: None }.encode());
-    assert!(r.ok, "the Anchor is exempt from the proof: {:?}", r.reasons);
+    let r = bare_apply(&bound1, &re);
+    assert!(!r.ok && r.reasons == vec!["TPM_REQUIRED"], "REQ-r9a C4, no proof-less Anchor: {:?}", r.reasons);
+    let r = anchor_call(&tpm, &bound1, &re);
+    assert!(r.ok, "the Anchor bypasses the stale blob's expectation, not the proof: {:?}", r.reasons);
     let live2 = proto::SealedResponse::decode(&r.payload).unwrap().sealed;
     tpm.increment();
     let st = status_of(&live2);
@@ -930,7 +934,203 @@ fn tpm_counter_freshness_r9() {
     assert!(r.ok, "{:?}", r.reasons);
     tpm.increment();
     // a captured old Anchor (nonce 2 again) is refused after the fact, proof or not
-    let r =
-        call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: live2.clone(), data: re.encode(), extra: None }.encode());
+    let r = bare_apply(&live2, &re);
+    assert!(!r.ok && r.reasons == vec!["TPM_REQUIRED"], "{:?}", r.reasons);
+    let r = anchor_call(&tpm, &live2, &re);
     assert!(!r.ok && r.reasons == vec!["POLICY_NONCE"], "{:?}", r.reasons);
+}
+
+/// REQ-r9a (RESP-r9a §4): the Anchor pins the LIVE counter of the proof the host deposits, verified
+/// against the SEALED TPM identity, the owner's attested value as the lower bound. Vectors 1–5, 7, 7b.
+#[test]
+fn anchor_pins_the_live_counter_r9a() {
+    let _guard = SESSION_LOCK.lock().unwrap();
+    let owner = p256_key(0xc7);
+    let recovery = p256_key(0xd8);
+    call(op::TEST_RESET_SESSION, &[]);
+    let init = proto::InitRequest { network: 3, owner_pk: owner.pk, recovery_pk: recovery.pk };
+    let treq = proto::TestInitRequest { init, seed: [0x45u8; 32], identity_sk: [0x67; 32], state: vec![] };
+    let r = call(op::TEST_INIT, &treq.encode());
+    assert!(r.ok, "{:?}", r.reasons);
+    let ir = proto::InitResponse::decode(&r.payload).unwrap();
+    let genesis = Header {
+        version: bitcoin::block::Version::TWO,
+        prev_blockhash: bitcoin::BlockHash::all_zeros(),
+        merkle_root: bitcoin::TxMerkleNode::all_zeros(),
+        time: 1_000_000,
+        bits: CompactTarget::from_consensus(0x207f_ffff),
+        nonce: 0,
+    };
+    let cp = mine(&genesis, 1_000_000, 1);
+    let mandate = regtest_mandate(ir.fingerprint, &cp);
+    let enclave_id = signer_core::sha256(&ir.identity_pk);
+    let mut m = Message::PolicyUpdate { enclave_id, nonce: 0, mandate: mandate.encode(), sig: [0; 64] };
+    owner.sign(&mut m);
+    let r = call(
+        op::INSTALL,
+        &proto::SealedWith { sealed: ir.sealed.clone(), data: mandate.encode(), extra: Some(m.sig().to_vec()) }
+            .encode(),
+    );
+    assert!(r.ok, "{:?}", r.reasons);
+    let unbound = proto::SealedResponse::decode(&r.payload).unwrap().sealed;
+    let mk = |nonce: u64, challenge: [u8; 32], ak_pk: [u8; 65], name: [u8; 34], counter: u64| {
+        let mut a = Message::Anchor {
+            enclave_id,
+            nonce,
+            boot_challenge: challenge,
+            ak_pk,
+            nv_name: name,
+            counter,
+            seq_seen: 0,
+            sig: [0; 64],
+        };
+        owner.sign(&mut a);
+        a
+    };
+    let nonce_issue = || -> [u8; 32] { call(op::TPM_NONCE, &[]).payload.try_into().unwrap() };
+
+    // the node's TPM, at 500 when the owner reads it
+    let mut tpm = SoftTpm::new(0xe5, 0x5B, 500);
+    let st = status_of(&unbound);
+    let a1 = mk(1, st.boot_challenge, tpm.ak.pk, tpm.name, tpm.counter);
+
+    // --- vector 2: no proof → TPM_REQUIRED, nothing bound ---
+    let r = bare_apply(&unbound, &a1);
+    assert!(!r.ok && r.reasons == vec!["TPM_REQUIRED"], "{:?}", r.reasons);
+    assert!(!status_of(&unbound).tpm_bound);
+
+    // --- vector 1, the 2026-11-18 case: the owner attested 500; the feed persisted TWO blocks before the
+    // apply (each persist increments) — the anchor must pin the live 502, not the owner's 500 ---
+    tpm.increment();
+    tpm.increment();
+    let r = anchor_call(&tpm, &unbound, &a1);
+    assert!(r.ok, "vector 1 (k=2): {:?}", r.reasons);
+    let bound = proto::SealedResponse::decode(&r.payload).unwrap().sealed;
+    tpm.increment(); // the host increments after persisting the anchored blob
+    let st = status_of(&bound);
+    assert!(
+        st.tpm_bound && st.tpm_expected == 503 && st.tpm_expected == tpm.counter && st.boot_armed && st.nonce == 1,
+        "the blob expects the LIVE counter + 1: {st:?}"
+    );
+    // the next Fresh op is accepted — with the owner's snapshot (500 → 501) it would have been STATE_STALE
+    let r = fresh_call(&tpm, op::FREEZE, &bound);
+    assert!(r.ok, "no STATE_STALE after the anchor: {:?}", r.reasons);
+    let frozen = proto::SealedResponse::decode(&r.payload).unwrap().sealed;
+    tpm.increment();
+    let mut un = Message::Unfreeze { enclave_id, nonce: 2, sig: [0; 64] };
+    owner.sign(&mut un);
+    let r = fresh_call(
+        &tpm,
+        op::APPLY_MESSAGE,
+        &proto::SealedWith { sealed: frozen.clone(), data: un.encode(), extra: None }.encode(),
+    );
+    assert!(r.ok, "{:?}", r.reasons);
+    let live1 = proto::SealedResponse::decode(&r.payload).unwrap().sealed;
+    tpm.increment();
+    let st = status_of(&live1);
+    assert!(st.tpm_expected == 505 && tpm.counter == 505 && !st.frozen && st.nonce == 2, "{st:?}");
+
+    // --- vector 3: the host's live proof certifies a counter BELOW what the owner saw → ANCHOR_COUNTER_BEHIND,
+    // proof consumed, state unchanged ---
+    let a3 = mk(3, st.boot_challenge, tpm.ak.pk, tpm.name, tpm.counter);
+    let n = nonce_issue();
+    assert!(call(op::TPM_PROOF, &tpm.certify_as(&n, &tpm.name, tpm.counter - 1, &tpm.ak).encode()).ok);
+    let r = bare_apply(&live1, &a3);
+    assert!(!r.ok && r.reasons == vec!["ANCHOR_COUNTER_BEHIND"], "{:?}", r.reasons);
+    let r = bare_apply(&live1, &a3);
+    assert!(!r.ok && r.reasons == vec!["TPM_REQUIRED"], "the proof was consumed: {:?}", r.reasons);
+    assert!(status_of(&live1).tpm_expected == 505 && status_of(&live1).nonce == 2, "unchanged");
+
+    // --- vector 4: foreign AK → TPM_SIG; wrong Name → TPM_INDEX; replayed nonce → TPM_NONCE; truncated →
+    // TPM_PARSE; the same Anchor again without a deposit → TPM_REQUIRED ---
+    let other = SoftTpm::new(0xf6, 0x5B, tpm.counter); // same Name tag, another key
+    let n = nonce_issue();
+    assert!(call(op::TPM_PROOF, &other.certify(&n).encode()).ok);
+    let r = bare_apply(&live1, &a3);
+    assert!(!r.ok && r.reasons == vec!["TPM_SIG"], "{:?}", r.reasons);
+    let mut other_name = tpm.name;
+    other_name[7] ^= 1;
+    let n = nonce_issue();
+    assert!(call(op::TPM_PROOF, &tpm.certify_as(&n, &other_name, tpm.counter, &tpm.ak).encode()).ok);
+    let r = bare_apply(&live1, &a3);
+    assert!(!r.ok && r.reasons == vec!["TPM_INDEX"], "{:?}", r.reasons);
+    let n_a = nonce_issue();
+    let p_a = tpm.certify(&n_a);
+    let _n_b = nonce_issue();
+    assert!(call(op::TPM_PROOF, &p_a.encode()).ok);
+    let r = bare_apply(&live1, &a3);
+    assert!(!r.ok && r.reasons == vec!["TPM_NONCE"], "{:?}", r.reasons);
+    let n = nonce_issue();
+    let mut p = tpm.certify(&n);
+    p.attest.truncate(40);
+    assert!(call(op::TPM_PROOF, &p.encode()).ok);
+    let r = bare_apply(&live1, &a3);
+    assert!(!r.ok && r.reasons == vec!["TPM_PARSE"], "{:?}", r.reasons);
+    let r = bare_apply(&live1, &a3);
+    assert!(!r.ok && r.reasons == vec!["TPM_REQUIRED"], "{:?}", r.reasons);
+
+    // --- vector 7 (negative): a bound state; the host handed the owner ANOTHER TPM's identity and deposits a
+    // valid proof from that TPM → ANCHOR_TPM_MISMATCH, proof consumed, state unchanged ---
+    let rogue = SoftTpm::new(0xf7, 0x5C, tpm.counter + 40);
+    let a7 = mk(3, st.boot_challenge, rogue.ak.pk, rogue.name, rogue.counter);
+    let r = anchor_call(&rogue, &live1, &a7);
+    assert!(!r.ok && r.reasons == vec!["ANCHOR_TPM_MISMATCH"], "{:?}", r.reasons);
+    let r = bare_apply(&live1, &a7);
+    assert!(!r.ok && r.reasons == vec!["TPM_REQUIRED"], "the rogue proof was consumed: {:?}", r.reasons);
+    let st = status_of(&live1);
+    assert!(st.tpm_expected == 505 && st.nonce == 2 && st.tpm_bound, "unchanged: {st:?}");
+    // the same forged identity with the honest TPM's proof is the mismatch too (identity before signature)
+    let r = anchor_call(&tpm, &live1, &a7);
+    assert!(!r.ok && r.reasons == vec!["ANCHOR_TPM_MISMATCH"], "{:?}", r.reasons);
+
+    // --- vector 5 + 7b (positive): the blob is STALE (expects 505, the TPM moved on to 507 — a rollback, or
+    // two persists the blob never saw); an unattended reload stays unarmed; the owner's same-identity re-pin
+    // with a live proof APPLIES, expects 508 after the host's increment, arms; a proven op then goes through ---
+    tpm.increment();
+    tpm.increment();
+    let r = fresh_call(&tpm, op::FREEZE, &live1);
+    assert!(!r.ok && r.reasons == vec!["STATE_STALE"], "{:?}", r.reasons);
+    call(op::TEST_RESET_SESSION, &[]);
+    assert!(!status_of(&live1).boot_armed, "a reload onto a stale blob stays unarmed");
+    let st = status_of(&live1);
+    let a7b = mk(3, st.boot_challenge, tpm.ak.pk, tpm.name, tpm.counter);
+    let r = anchor_call(&tpm, &live1, &a7b);
+    assert!(r.ok, "vector 7b, the honest same-identity re-pin must apply as cleanly as 7 refuses: {:?}", r.reasons);
+    let live2 = proto::SealedResponse::decode(&r.payload).unwrap().sealed;
+    tpm.increment();
+    let st = status_of(&live2);
+    assert!(
+        st.tpm_bound
+            && st.tpm_expected == 508
+            && st.tpm_expected == tpm.counter
+            && st.boot_armed
+            && st.tpm_last_fresh
+            && st.nonce == 3,
+        "{st:?}"
+    );
+    let r = fresh_call(&tpm, op::FREEZE, &live2);
+    assert!(r.ok, "a proven op after the re-pin: {:?}", r.reasons);
+    let frozen2 = proto::SealedResponse::decode(&r.payload).unwrap().sealed;
+    tpm.increment();
+    assert!(status_of(&frozen2).tpm_expected == 509 && tpm.counter == 509);
+
+    // --- vector 1 again on a LIVE bound state (a re-pin while the feed runs, k=1 — exactly 2026-11-18 16:11):
+    // the owner attests 509, one persist lands before the apply, the anchor pins 510 ---
+    let st = status_of(&frozen2);
+    let a_live = mk(4, st.boot_challenge, tpm.ak.pk, tpm.name, tpm.counter);
+    tpm.increment(); // the feed persisted a block inside the owner's window
+    let r = anchor_call(&tpm, &frozen2, &a_live);
+    assert!(r.ok, "{:?}", r.reasons);
+    let live3 = proto::SealedResponse::decode(&r.payload).unwrap().sealed;
+    tpm.increment();
+    let st = status_of(&live3);
+    assert!(st.tpm_expected == 511 && st.tpm_expected == tpm.counter && st.nonce == 4, "{st:?}");
+    let mut un = Message::Unfreeze { enclave_id, nonce: 5, sig: [0; 64] };
+    owner.sign(&mut un);
+    let r = fresh_call(
+        &tpm,
+        op::APPLY_MESSAGE,
+        &proto::SealedWith { sealed: live3.clone(), data: un.encode(), extra: None }.encode(),
+    );
+    assert!(r.ok, "no STATE_STALE after a live re-pin with a persist in the window: {:?}", r.reasons);
 }

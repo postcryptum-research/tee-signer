@@ -93,17 +93,22 @@ echo "--- the owner anchors from an ATTESTED certify over the owner's nonce (C-R
 openssl rand -hex 32 > "$S/anchor-nonce.txt"
 "$SD" tpm-certify --state-dir "$S/state" --url http://127.0.0.1:7393 --nonce-file "$S/anchor-nonce.txt" --out "$S/anchor-proof.json"
 python3 -c "import json;d=json.load(open('$S/anchor-proof.json'))['response'];print('  real TPMS_ATTEST:', len(d['attest_hex'])//2, 'bytes (magic', d['attest_hex'][:8], 'type', d['attest_hex'][8:12] + '), sig', len(d['sig_hex'])//2, 'bytes')"
+echo "--- REQ-r9a, the 2026-11-18 case against the real TPM: two state writes between the owner's certify and the anchor's apply; the anchor pins the LIVE counter ---"
+"$OC" freeze >/dev/null; "$OC" unfreeze --key "$S/owner.key" >/dev/null   # two persists → the PTT counter is 2 past the attested value
 "$OC" --wallet-record "$S/wallet.json" anchor --key "$S/owner.key" --tpm-info-file "$S/tpm-info.json" --proof-file "$S/anchor-proof.json" --proof-nonce-file "$S/anchor-nonce.txt" | grep -E "attested counter|anchored"
 C0=$(python3 -c "import json;print(json.load(open('$S/tpm-info.json'))['response']['counter'])")
+"$SD" tpm-info --state-dir "$S/state" --url http://127.0.0.1:7393 --out "$S/tpm-info-anchored.json"
 "$OC" status | python3 -c "
-import json,sys;d=json.load(sys.stdin); assert d['tpm_bound'] is True and d['tpm_expected'] == $C0 + 1, d
+import json,sys;d=json.load(sys.stdin); t=json.load(open('$S/tpm-info-anchored.json'))['response']
+assert d['tpm_bound'] is True and d['tpm_expected'] == $C0 + 3 and t['counter'] == d['tpm_expected'], (d, t)
+print('  anchored (REQ-r9a): attested', $C0, '+ 2 persists in the window + 1 = expects', d['tpm_expected'], '== TPM counter', t['counter'], '✓')
 print('  anchored:', {k:d[k] for k in ['tpm_bound','tpm_expected','tpm_last_fresh','boot_armed']})"
 echo "--- every seal: nonce → NV_Certify → deposit → call, then NV_Increment; the TPM's counter equals the blob's expectation ---"
 "$OC" freeze >/dev/null; "$OC" unfreeze --key "$S/owner.key" >/dev/null
 "$SD" tpm-info --state-dir "$S/state" --url http://127.0.0.1:7393 --out "$S/tpm-info2.json"
 "$OC" status | python3 -c "
 import json,sys;d=json.load(sys.stdin); t=json.load(open('$S/tpm-info2.json'))['response']
-assert d['tpm_expected'] == $C0 + 3 and d['tpm_last_fresh'] is True and t['counter'] == d['tpm_expected'], (d, t)
+assert d['tpm_expected'] == $C0 + 5 and d['tpm_last_fresh'] is True and t['counter'] == d['tpm_expected'], (d, t)
 print('  after freeze+unfreeze: expected', d['tpm_expected'], '== TPM counter', t['counter'], '✓')"
 echo "--- an UNATTENDED restart: the fresh counter arms the load, no owner ---"
 kill $SDPID; wait $SDPID 2>/dev/null || true

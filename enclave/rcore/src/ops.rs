@@ -179,7 +179,8 @@ pub const FRESHNESS: &[(u32, Freshness)] = &[
     (op::INSTALL, Freshness::Fresh),
     (op::STATUS, Freshness::Stale),
     (op::POLICY, Freshness::Stale),
-    // APPLY_MESSAGE: Fresh for every message but `Anchor`, the attended override (see apply_message)
+    // APPLY_MESSAGE: Fresh for every message; `Anchor`, the attended override, opens the blob stale and
+    // verifies the deposited proof itself against the SEALED TPM identity (REQ-r9a, see apply_message)
     (op::APPLY_MESSAGE, Freshness::Fresh),
     (op::FREEZE, Freshness::Fresh),
     (op::HEADERS, Freshness::Fresh),
@@ -227,6 +228,37 @@ fn open_full_fresh(sealed: &[u8]) -> Result<(Envelope, State), Response> {
         }
     }
     Ok((env, state))
+}
+
+/// REQ-r9a: the counter an `Anchor` pins — read from the proof the host deposited for THIS call,
+/// verified against the identity the SEALED state names (the message's only on the first, binding
+/// anchor), over the live nonce. Nonce and proof are consumed whatever the verdict (REQ-r9 Q5), so
+/// a refused Anchor leaves nothing a second attempt could reuse. No proof → `TPM_REQUIRED`: there
+/// is no path on which the message's static counter is trusted (C4).
+fn anchor_live_counter(s: &State, msg: &Message) -> Result<u64, signer_core::reason::Refusal> {
+    let Some((nonce, bytes)) = session::tpm_proof_take() else {
+        return Err(Reason::TpmRequired.into());
+    };
+    let (ak_pk, nv_name) = s.anchor_identity(msg)?;
+    // a malformed identity (not a P-256 point, not a SHA-256 Name) is a structural refusal, judged
+    // before any proof is read against it — the same POLICY_INVALID the core gives in apply_anchor
+    if !(signer_core::tpm_attest::TpmAnchor { ak_pk, nv_name, expected: 0 }).well_formed() {
+        return Err(Reason::PolicyInvalid.into());
+    }
+    let Ok(proof) = proto::TpmProof::decode(&bytes) else {
+        session::tpm_set_last_fresh(false);
+        return Err(Reason::TpmParse.into());
+    };
+    match signer_core::tpm_attest::certified_counter(&proof.attest, &proof.sig, &ak_pk, &nv_name, &nonce) {
+        Ok(live) => {
+            session::tpm_set_last_fresh(true);
+            Ok(live)
+        }
+        Err(r) => {
+            session::tpm_set_last_fresh(false);
+            Err(r.into())
+        }
+    }
 }
 
 /// The one seal helper (C-R9-B): every blob this enclave seals goes through here, and a TPM-bound
@@ -521,11 +553,13 @@ fn apply_message(input: &[u8]) -> Response {
         Err(_) => return refuse(Reason::PolicyInvalid.into()),
     };
     let Ok(msg) = Message::decode(&req.data) else { return refuse(Reason::PolicyInvalid.into()) };
-    // REQ-r9 §2.5: the owner's `Anchor` is the attended override for a counter mismatch, so it is the
-    // one message that opens the blob WITHOUT a counter proof — a stale blob could otherwise never be
-    // re-anchored (found by the e2e rollback drill). Its own bindings stand in for the proof: the
-    // owner's signature, the next nonce, THIS load's challenge, and `seq_seen` ≤ the enclave's seq.
-    // Every other message needs the proof like any state change.
+    // REQ-r9 §2.5 + REQ-r9a: the owner's `Anchor` is the attended override for a counter mismatch, so
+    // it opens the blob WITHOUT comparing the proof against the stale blob's expectation (C5) — a
+    // stale blob could otherwise never be re-anchored. But it is NOT exempt from the proof (C4): the
+    // deposited `TPM2_NV_Certify` is verified against the SEALED TPM identity (C1) over the live
+    // nonce (C2), and its value — not the owner's static snapshot — becomes the new expectation, with
+    // the owner's value as the lower bound (C3). Every other message needs the proof like any state
+    // change.
     let opened = match &msg {
         Message::Anchor { .. } => open_full_stale(&req.sealed),
         _ => open_full_fresh(&req.sealed),
@@ -540,8 +574,11 @@ fn apply_message(input: &[u8]) -> Response {
     let result = match &msg {
         // REQ-r7: the boot-arm takes THIS load's challenge as data; the core stays pure
         Message::Arm { .. } => s.apply_arm(&msg, &session::challenge()),
-        // REQ-r9: the anchor is the owner's attended override; it arms like Arm and pins the TPM
-        Message::Anchor { .. } => s.apply_anchor(&msg, &session::challenge()),
+        // REQ-r9a: the live, attested counter of the deposited proof pins the TPM; the core stays pure
+        Message::Anchor { .. } => match anchor_live_counter(&s, &msg) {
+            Ok(live) => s.apply_anchor(&msg, &session::challenge(), live),
+            Err(r) => Err(r),
+        },
         _ => s.apply_message(&msg),
     };
     match result {
