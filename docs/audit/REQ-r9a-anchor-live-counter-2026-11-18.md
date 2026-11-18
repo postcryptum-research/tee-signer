@@ -97,6 +97,11 @@ owner's attested value as a lower bound.
 7. re-anchor on a bound state whose message `ak_pk`/`nv_name` ≠ the sealed ones (a valid proof from that other
    key) → `ANCHOR_TPM_MISMATCH`, state unchanged, proof consumed; the first anchor with message-carried identity →
    applied (TOFU, unchanged).
+7b. **the positive case (auditor, 2026-11-18): a re-pin with the SAME identity applies clean** — a bound state that
+   expects *N* while the TPM is at *N*+*k* (the 2026-11-18 picture), owner's Anchor with message identity ==
+   sealed and a live proof at *N*+*k* → applied, `expected` *N*+*k*+1, armed; the next Fresh op accepted. This is
+   exactly the 17:04Z re-anchor of `7180f2b6` ("already TPM-bound (expects 8); this anchor RE-PINS it"), and the
+   guard must permit it as cleanly as it refuses vector 7.
 8. e2e: the software transport gets a "feed persists *k* times inside the anchor window" knob; the anchor must
    apply clean. `e2e-tss-local`: the same against the laptop's PTT.
 
