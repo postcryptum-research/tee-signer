@@ -1,6 +1,6 @@
 # REQ-r9a — the Anchor pins the LIVE counter: closing the anchor-window race (design REQ)
 
-**Date:** 2026-11-18. **Status:** draft for the auditor (DESIGN-PASS wanted); the implementation waits for the
+**Date:** 2026-11-18. **Status:** draft, revised the same day with the auditor's answers (§6; the sealed-identity correction is load-bearing); DESIGN-PASS wanted; the implementation waits for the
 owner's scope decision (§5: a new MRENCLAVE, hence a ceremony signature and a new T2 wallet).
 **Scope:** `core/src/state.rs` (`apply_anchor`), `enclave/rcore/src/ops.rs` (`apply_message`, the Anchor branch),
 `core/src/reason.rs` (one new reason), vectors; the host daemon is unchanged. Builds on REQ-r9 (design + impl, both
@@ -36,10 +36,16 @@ owner's attested value as a lower bound.
 1. **Enclave shell (`ops.rs`, `apply_message`, the `Message::Anchor` branch).** The blob is still opened with
    `open_full_stale` — the Anchor remains the attended override and must not compare against the stale blob's
    `expected`. New: it takes the deposited proof (`session::tpm_proof_take()`; none → `TPM_REQUIRED`), decodes it
-   (`TPM_PARSE`), verifies it with `tpm_attest::verify_nv_certify` against **the Anchor message's** `ak_pk` and
-   `nv_name` and the **live nonce** (`TPM_SIG` / `TPM_INDEX` / `TPM_NONCE` as today), and obtains `live_counter`.
-   The message's values, not the sealed ones: on a first anchor the blob has no anchor yet; on a re-pin to a
-   replaced TPM the owner-signed values rule. Nonce and proof are consumed whatever the verdict (REQ-r9 Q5).
+   (`TPM_PARSE`), verifies it with `tpm_attest::verify_nv_certify` and the **live nonce** (`TPM_SIG` /
+   `TPM_INDEX` / `TPM_NONCE` as today), and obtains `live_counter`. **Which identity the proof is verified
+   against (auditor's correction, 2026-11-18):** when the state is already TPM-bound (every anchor after the
+   first) the **sealed `TpmAnchor.ak_pk`/`nv_name`** — the identity bound at this enclave's first anchor, inside
+   the blob the host cannot change — and the message's `ak_pk`/`nv_name` must **equal** the sealed ones, any
+   difference → **`ANCHOR_TPM_MISMATCH`** (the owner builds the Anchor from a host-supplied `tpm-info`, so a host
+   could otherwise hand the owner the identity of a TPM it owns plus a valid proof from it and re-point the
+   anti-rollback counter to itself — caught, not trusted). Only the **first, binding anchor** (no sealed anchor
+   yet) verifies against the message's values: trust-on-first-use, the labeled residual of THREAT-MODEL "TPM
+   identity at anchor time". Nonce and proof are consumed whatever the verdict (REQ-r9 Q5).
 2. **Core (`state.rs`, `apply_anchor(msg, boot_challenge, live_counter)`).** All existing checks (owner signature,
    enclave id, next nonce, this load's challenge, `seq_seen ≤ seq`, well-formed material). New:
    `live_counter < msg.counter` → refuse with a new reason **`ANCHOR_COUNTER_BEHIND`** (a counter only moves
@@ -67,6 +73,8 @@ owner's attested value as a lower bound.
 | deposits a proof above the truth | cannot: the value is under the AK's signature (`TPM_SIG`) |
 | replays an earlier proof | `extraData` ≠ the live nonce → `TPM_NONCE` |
 | withholds the proof / the TPM | `TPM_REQUIRED` — the Anchor does not apply; the pause stays (REQ-r9 row 8) |
+| hands the owner another TPM's identity through `tpm-info` and a valid proof from that TPM, on a **bound** state | `ANCHOR_TPM_MISMATCH` — the proof is verified against the sealed identity and the message must equal it (auditor 2026-11-18) |
+| the same on the **first** anchor | the labeled trust-on-first-use residual, unchanged (THREAT-MODEL "TPM identity at anchor time"; hardening SHOULD: `TPM2_Certify` of our AK by the provider-certified key before pinning) |
 | restores an old blob and restarts | unchanged: `STATE_STALE`; the override still needs the owner's signature over this load's challenge and the next nonce |
 | substitutes the TPM before setup/anchor | unchanged residual (THREAT-MODEL "TPM identity at anchor time") |
 
@@ -81,7 +89,10 @@ owner's attested value as a lower bound.
 5. the override still works: old blob expects *N*, TPM at *N*+*k*, owner's Anchor with a live proof → applied,
    `expected` *N*+*k*+1, armed; a proven `FREEZE` then goes through.
 6. all REQ-r9 vectors unchanged (replayed Anchor → `POLICY_NONCE`, `seq_seen` ahead → `ARM_SEQ_BEHIND`, …).
-7. e2e: the software transport gets a "feed persists *k* times inside the anchor window" knob; the anchor must
+7. re-anchor on a bound state whose message `ak_pk`/`nv_name` ≠ the sealed ones (a valid proof from that other
+   key) → `ANCHOR_TPM_MISMATCH`, state unchanged, proof consumed; the first anchor with message-carried identity →
+   applied (TOFU, unchanged).
+8. e2e: the software transport gets a "feed persists *k* times inside the anchor window" knob; the anchor must
    apply clean. `e2e-tss-local`: the same against the laptop's PTT.
 
 ## 5. Consequences and rollout
@@ -90,16 +101,27 @@ owner's attested value as a lower bound.
   (sealing is MRENCLAVE-bound; FAQ "How do I move to a new enclave build"): the cheapest moment is **before the
   T2 wallet is funded** — `7180f2b6` holds 0 sat today. Owner cost: one init/quote/verify + mandate + anchor
   round (3× PIN + touch, one recovery passphrase), the retired record kept.
+- **The TPM identity is bound for the wallet's life.** A replaced or reset TPM behind a living enclave cannot be
+  re-bound by an Anchor (`ANCHOR_TPM_MISMATCH`); the path is a new wallet — or a later re-bind REQ with its own
+  ceremony, if ever needed. `tpm-teardown` while a state is anchored stays forbidden (deploy/README). On Azure a
+  re-placement loses the sealed state anyway (`STATE_UNSEALABLE` → new wallet → first anchor), so the constraint
+  bites only an operator who recreates the objects under a living wallet.
 - Until it lands: the worked example re-anchors on a repeat (race-free from `STATE_STALE`); no host-image change
   for a case (a) closes.
 - Docs: DESIGN §2.5/§10 (R9 row), REQ-r9 §2 row 5 (done 2026-11-18), THREAT-MODEL row (done), FAQ EN/RU (done),
   deploy/README (done); this file gets the RESP and the impl addendum.
 
-## 6. Questions for the auditor
+## 6. Questions for the auditor — answered 2026-11-18 (same day)
 
-- Q1 the new reason's name: `ANCHOR_COUNTER_BEHIND` (one string in `reason.rs`), or reuse `STATE_STALE`? I prefer a
-  distinct name: the owner must tell "my anchor was below the live counter" from "my blob is stale".
-- Q2 verifying the deposited proof against the **message's** `ak_pk`/`nv_name` (owner-signed) rather than the
-  sealed ones — agree? (No sealed anchor exists on a first anchor; on a re-pin the message's values must rule.)
-- Q3 dropping the proof-less Anchor entirely (fail-closed `TPM_REQUIRED`) — agree?
-- Q4 the host-side guard: skip (my proposal), or keep as a message for the owner?
+- Q1 reason name `ANCHOR_COUNTER_BEHIND` — **agreed**.
+- Q2 the draft verified against the **message's** `ak_pk`/`nv_name` — **corrected by the auditor: SEALED.** A
+  bound state verifies against the sealed `TpmAnchor` and requires message == sealed; the message's identity is
+  trusted only at the first, binding anchor (§2.1, §3, vector 7, §5 consequence). Adopted in full.
+- Q3 drop the proof-less Anchor (`TPM_REQUIRED` if none) — **agreed**, no proof-less fallback.
+- Q4 the host-side guard (b) — **skip**, agreed.
+- Q5 (new) the mismatch reason's name `ANCHOR_TPM_MISMATCH` — one more string in `reason.rs`; or fold it into
+  `TPM_INDEX`/`TPM_SIG`? I prefer the distinct name for the same reason as Q1.
+- Q6 (new) the §5 consequence — the TPM identity is bound for the wallet's life, a replaced TPM under a living
+  wallet means a new wallet — stated as designed, not as a gap. Agree?
+- The auditor's IMPL-PASS will check firsthand: the verification roots on the sealed `TpmAnchor` (not the
+  message), the §4 break-tests fire at the intended lines, and no proof-less path survives.
