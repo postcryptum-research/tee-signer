@@ -610,6 +610,29 @@ itself when the counter agrees — no `arm` at night. When it does not agree (th
 state was restored from a backup, someone replaced the TPM) the signer pauses with `STATE_STALE` and
 the plugin page tells you; you repeat the four anchor steps — the pause is the protection working.
 
+### The signer said `STATE_STALE` seconds after my anchor. Did the TPM betray me?
+
+No — the counter moved while your anchor was in flight. Every state the daemon writes advances the
+TPM counter, and the daemon writes state on its own whenever a new block arrives (the header feed).
+Your anchor pins the value the TPM certified when you asked; if a block is fed between that
+`tpm-certify` and your `submit`, the counter is already one ahead when the anchor lands, and the
+enclave, seeing a counter it did not expect, does the only safe thing: it pauses. Nothing is lost
+and nothing was signed. This can happen only when you anchor a state that is **live** (a wallet's
+first anchor, or a re-pin while payouts run). Repeat the four anchor steps: from `STATE_STALE` the
+pause itself protects you — the feed is refused and writes nothing, so nothing moves the counter but
+your anchor, and it lands clean. (Seen live on signet 2026-11-18; the fix that removes the window
+is REQ-r9a.)
+
+### After a restart with the TPM the status shows `boot_armed: false`. Is the auto-arm broken?
+
+Not decided yet — nothing has asked. The enclave arms a new load at its **first** state-changing
+call after the restart, when the counter proof that comes with that call checks out: on a quiet node
+that is the next block fed to the enclave (minutes), or your next owner operation. A status read is
+not such a call; it only reports. Read the status again after the next block (`best_height` moved):
+`boot_armed` turns `true` with nobody touching a key. If it stays `false` after a block was fed,
+look at the daemon's log for `STATE_STALE` or `TPM_…` — then the pause is real and the four anchor
+steps are the answer.
+
 ### Why does the enclave have two keys?
 
 The wallet key holds the money, so the only thing it ever signs is a Bitcoin transaction the
