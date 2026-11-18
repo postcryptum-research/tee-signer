@@ -1,6 +1,6 @@
 # REQ-r9a — the Anchor pins the LIVE counter: closing the anchor-window race (design REQ)
 
-**Date:** 2026-11-18. **Status:** draft, revised the same day with the auditor's answers (§6; the sealed-identity correction is load-bearing); DESIGN-PASS wanted; the implementation waits for the
+**Date:** 2026-11-18. **Status:** design review **closed by the auditor the same day** (in messages, §6 — the sealed-identity correction is load-bearing; the RESP file is the auditor's to write); the implementation waits for the
 owner's scope decision (§5: a new MRENCLAVE, hence a ceremony signature and a new T2 wallet).
 **Scope:** `core/src/state.rs` (`apply_anchor`), `enclave/rcore/src/ops.rs` (`apply_message`, the Anchor branch),
 `core/src/reason.rs` (one new reason), vectors; the host daemon is unchanged. Builds on REQ-r9 (design + impl, both
@@ -62,7 +62,12 @@ owner's attested value as a lower bound.
    via `open_full_fresh`. `freshness_table_is_complete` unchanged.
 5. **Host.** Unchanged. The optional host-side guard (refuse an Anchor whose `counter` ≠ the live read under the
    lock, with a clear message) is **not** adopted: redundant once (a) lands, never a boundary (auditor 2026-11-18).
-6. **owner-cli.** Unchanged in behaviour; the printed prediction after `anchor` becomes "`tpm_expected` ≥ N+1".
+6. **owner-cli / operator-facing text.** Unchanged in behaviour; the printed prediction after `anchor` becomes
+   "`tpm_expected` ≥ N+1". The refusal `ANCHOR_TPM_MISMATCH` must be surfaced with the sanctioned path in the
+   message itself (owner-cli's reason text, the plugin page's status line), not only in the docs — so an operator
+   who hits it does not retry into a wall: *"the host presented a TPM identity (key / counter Name) different from
+   the one this wallet is bound to — do not retry; a replaced TPM under a living wallet means a new wallet, or a
+   re-bind ceremony (REQ pending)"* (auditor's refinement, 2026-11-18).
 
 ## 3. Threat analysis (delta to REQ-r9 §2)
 
@@ -119,9 +124,12 @@ owner's attested value as a lower bound.
   trusted only at the first, binding anchor (§2.1, §3, vector 7, §5 consequence). Adopted in full.
 - Q3 drop the proof-less Anchor (`TPM_REQUIRED` if none) — **agreed**, no proof-less fallback.
 - Q4 the host-side guard (b) — **skip**, agreed.
-- Q5 (new) the mismatch reason's name `ANCHOR_TPM_MISMATCH` — one more string in `reason.rs`; or fold it into
-  `TPM_INDEX`/`TPM_SIG`? I prefer the distinct name for the same reason as Q1.
-- Q6 (new) the §5 consequence — the TPM identity is bound for the wallet's life, a replaced TPM under a living
-  wallet means a new wallet — stated as designed, not as a gap. Agree?
+- Q5 the mismatch reason's name `ANCHOR_TPM_MISMATCH` — **agreed, distinct**: a security-relevant verdict (the host
+  handed the enclave a different TPM) must not collapse into a benign malformation; owner and logs must tell an
+  attack from an error.
+- Q6 the §5 consequence — the TPM identity is bound for the wallet's life — **agreed, designed, not a gap**:
+  re-binding the anti-rollback root is a trust event that belongs behind a ceremony (the owner re-verifies the
+  new TPM), never automatable; the only living-enclave case is an operator re-provisioning the NV objects under a
+  living wallet, correctly refused. Refinement adopted in §2.6: the refusal text names the sanctioned path.
 - The auditor's IMPL-PASS will check firsthand: the verification roots on the sealed `TpmAnchor` (not the
   message), the §4 break-tests fire at the intended lines, and no proof-less path survives.
