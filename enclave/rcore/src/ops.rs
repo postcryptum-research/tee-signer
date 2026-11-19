@@ -586,11 +586,14 @@ fn apply_message(input: &[u8]) -> Response {
     let result = match &msg {
         // REQ-r7: the boot-arm takes THIS load's challenge as data; the core stays pure
         Message::Arm { .. } => s.apply_arm(&msg, &session::challenge()),
-        // REQ-r9a: the live, attested counter of the deposited proof pins the TPM; the core stays pure
-        Message::Anchor { .. } => match anchor_live_counter(&s, &msg) {
-            Ok(live) => s.apply_anchor(&msg, &session::challenge(), live),
-            Err(r) => Err(r),
-        },
+        // REQ-r9a: the live, attested counter of the deposited proof pins the TPM; the core stays pure.
+        // A refusal from the core after a verified proof (ANCHOR_COUNTER_BEHIND, owner signature, this
+        // load's challenge, seq) clears the flag the proof set: `tpm_last_fresh` means "the last
+        // proof-gated op applied on a fresh proof", uniformly — STATE_STALE on the Fresh path is the
+        // same shape and already reads false (auditor's ruling, 2026-11-19).
+        Message::Anchor { .. } => anchor_live_counter(&s, &msg).and_then(|live| {
+            s.apply_anchor(&msg, &session::challenge(), live).inspect_err(|_| session::tpm_set_last_fresh(false))
+        }),
         _ => s.apply_message(&msg),
     };
     match result {

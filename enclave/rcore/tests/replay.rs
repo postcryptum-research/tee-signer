@@ -787,11 +787,12 @@ fn tpm_counter_freshness_r9() {
     owner.sign(&mut bad);
     let r = anchor_call(&tpm, &unbound, &bad);
     assert!(!r.ok && r.reasons == vec!["ARM_SEQ_BEHIND"], "{:?}", r.reasons);
+    // the proof behind that Anchor verified, the core refused the message: the flag reads false all the same
+    assert!(!status_of(&unbound).tpm_last_fresh, "a core refusal behind a verified proof clears the flag");
     let mut sha1_name = tpm.name;
     sha1_name[1] = 0x04;
     let mut bad = mk(1, challenge, tpm.ak.pk, sha1_name, tpm.counter, 0);
     owner.sign(&mut bad);
-    assert!(status_of(&unbound).tpm_last_fresh, "the previous Anchor's proof was verified before its refusal");
     let r = anchor_call(&tpm, &unbound, &bad);
     assert!(!r.ok && r.reasons == vec!["POLICY_INVALID"], "{:?}", r.reasons);
     assert!(!status_of(&unbound).tpm_last_fresh, "a malformed identity clears the flag (no proof was verified)");
@@ -1035,13 +1036,20 @@ fn anchor_pins_the_live_counter_r9a() {
     // --- vector 3: the host's live proof certifies a counter BELOW what the owner saw → ANCHOR_COUNTER_BEHIND,
     // proof consumed, state unchanged ---
     let a3 = mk(3, st.boot_challenge, tpm.ak.pk, tpm.name, tpm.counter);
+    assert!(status_of(&live1).tpm_last_fresh, "the Unfreeze that made live1 applied on a fresh proof");
     let n = nonce_issue();
     assert!(call(op::TPM_PROOF, &tpm.certify_as(&n, &tpm.name, tpm.counter - 1, &tpm.ak).encode()).ok);
     let r = bare_apply(&live1, &a3);
     assert!(!r.ok && r.reasons == vec!["ANCHOR_COUNTER_BEHIND"], "{:?}", r.reasons);
+    assert!(!status_of(&live1).tpm_last_fresh, "the proof verified, the value was refused: the flag clears");
     let r = bare_apply(&live1, &a3);
     assert!(!r.ok && r.reasons == vec!["TPM_REQUIRED"], "the proof was consumed: {:?}", r.reasons);
     assert!(status_of(&live1).tpm_expected == 505 && status_of(&live1).nonce == 2, "unchanged");
+    // prime the flag with a proven op (blob discarded), then a proof-less refusal must clear it
+    assert!(fresh_call(&tpm, op::FREEZE, &live1).ok);
+    assert!(status_of(&live1).tpm_last_fresh);
+    let r = bare_apply(&live1, &a3);
+    assert!(!r.ok && r.reasons == vec!["TPM_REQUIRED"], "{:?}", r.reasons);
     assert!(!status_of(&live1).tpm_last_fresh, "a proof-less refusal clears the flag");
 
     // --- vector 4: foreign AK → TPM_SIG; wrong Name → TPM_INDEX; replayed nonce → TPM_NONCE; truncated →
