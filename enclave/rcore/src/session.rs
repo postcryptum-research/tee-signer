@@ -158,12 +158,14 @@ pub fn tpm_proof_take() -> Option<([u8; 32], alloc::vec::Vec<u8>)> {
     Some((nonce, out))
 }
 
-/// REQ-r9: record the verdict of the last proof (for `STATUS`).
+/// REQ-r9: record the verdict of the last proof-gated call (for `STATUS`): true only when a proof
+/// was verified fresh; false after any refusal on the proof path, a missing proof included.
 pub fn tpm_set_last_fresh(fresh: bool) {
     TPM_LAST_FRESH.store(fresh, Ordering::Release);
 }
 
-/// REQ-r9: whether the last verified proof in this load was fresh.
+/// REQ-r9: whether the last proof-gated call in this load verified a fresh proof. Reported by
+/// `STATUS` only; no decision reads it — the refusal itself is authoritative.
 pub fn tpm_last_fresh() -> bool {
     TPM_LAST_FRESH.load(Ordering::Acquire)
 }

@@ -210,6 +210,7 @@ fn open_full_fresh(sealed: &[u8]) -> Result<(Envelope, State), Response> {
     let (env, state) = open_full_stale(sealed)?;
     if let Some(anchor) = state.tpm.as_ref() {
         let Some((nonce, bytes)) = session::tpm_proof_take() else {
+            session::tpm_set_last_fresh(false);
             return Err(refuse(Reason::TpmRequired.into()));
         };
         let Ok(proof) = proto::TpmProof::decode(&bytes) else {
@@ -235,14 +236,25 @@ fn open_full_fresh(sealed: &[u8]) -> Result<(Envelope, State), Response> {
 /// anchor), over the live nonce. Nonce and proof are consumed whatever the verdict (REQ-r9 Q5), so
 /// a refused Anchor leaves nothing a second attempt could reuse. No proof → `TPM_REQUIRED`: there
 /// is no path on which the message's static counter is trusted (C4).
+/// Every refusing path, the proof-less one included, leaves `tpm_last_fresh` false, so a `STATUS` read
+/// right after a refused Anchor reports this call's verdict, not the previous op's (auditor's note at the
+/// IMPL-PASS, 2026-11-19; the flag is diagnostic — no decision reads it).
 fn anchor_live_counter(s: &State, msg: &Message) -> Result<u64, signer_core::reason::Refusal> {
     let Some((nonce, bytes)) = session::tpm_proof_take() else {
+        session::tpm_set_last_fresh(false);
         return Err(Reason::TpmRequired.into());
     };
-    let (ak_pk, nv_name) = s.anchor_identity(msg)?;
+    let (ak_pk, nv_name) = match s.anchor_identity(msg) {
+        Ok(identity) => identity,
+        Err(r) => {
+            session::tpm_set_last_fresh(false);
+            return Err(r);
+        }
+    };
     // a malformed identity (not a P-256 point, not a SHA-256 Name) is a structural refusal, judged
     // before any proof is read against it — the same POLICY_INVALID the core gives in apply_anchor
     if !(signer_core::tpm_attest::TpmAnchor { ak_pk, nv_name, expected: 0 }).well_formed() {
+        session::tpm_set_last_fresh(false);
         return Err(Reason::PolicyInvalid.into());
     }
     let Ok(proof) = proto::TpmProof::decode(&bytes) else {

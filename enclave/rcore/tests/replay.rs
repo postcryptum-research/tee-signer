@@ -791,8 +791,10 @@ fn tpm_counter_freshness_r9() {
     sha1_name[1] = 0x04;
     let mut bad = mk(1, challenge, tpm.ak.pk, sha1_name, tpm.counter, 0);
     owner.sign(&mut bad);
+    assert!(status_of(&unbound).tpm_last_fresh, "the previous Anchor's proof was verified before its refusal");
     let r = anchor_call(&tpm, &unbound, &bad);
     assert!(!r.ok && r.reasons == vec!["POLICY_INVALID"], "{:?}", r.reasons);
+    assert!(!status_of(&unbound).tpm_last_fresh, "a malformed identity clears the flag (no proof was verified)");
     let mut bad = mk(3, challenge, tpm.ak.pk, tpm.name, tpm.counter, 0);
     owner.sign(&mut bad);
     let r = anchor_call(&tpm, &unbound, &bad);
@@ -1040,6 +1042,7 @@ fn anchor_pins_the_live_counter_r9a() {
     let r = bare_apply(&live1, &a3);
     assert!(!r.ok && r.reasons == vec!["TPM_REQUIRED"], "the proof was consumed: {:?}", r.reasons);
     assert!(status_of(&live1).tpm_expected == 505 && status_of(&live1).nonce == 2, "unchanged");
+    assert!(!status_of(&live1).tpm_last_fresh, "a proof-less refusal clears the flag");
 
     // --- vector 4: foreign AK → TPM_SIG; wrong Name → TPM_INDEX; replayed nonce → TPM_NONCE; truncated →
     // TPM_PARSE; the same Anchor again without a deposit → TPM_REQUIRED ---
@@ -1073,15 +1076,22 @@ fn anchor_pins_the_live_counter_r9a() {
     // valid proof from that TPM → ANCHOR_TPM_MISMATCH, proof consumed, state unchanged ---
     let rogue = SoftTpm::new(0xf7, 0x5C, tpm.counter + 40);
     let a7 = mk(3, st.boot_challenge, rogue.ak.pk, rogue.name, rogue.counter);
+    // a proven op first (its blob is discarded): the flag reads true going into the mismatch
+    assert!(fresh_call(&tpm, op::FREEZE, &live1).ok);
+    assert!(status_of(&live1).tpm_last_fresh);
     let r = anchor_call(&rogue, &live1, &a7);
     assert!(!r.ok && r.reasons == vec!["ANCHOR_TPM_MISMATCH"], "{:?}", r.reasons);
+    assert!(!status_of(&live1).tpm_last_fresh, "a mismatch clears the flag — the rogue proof was never verified");
     let r = bare_apply(&live1, &a7);
     assert!(!r.ok && r.reasons == vec!["TPM_REQUIRED"], "the rogue proof was consumed: {:?}", r.reasons);
     let st = status_of(&live1);
     assert!(st.tpm_expected == 505 && st.nonce == 2 && st.tpm_bound, "unchanged: {st:?}");
     // the same forged identity with the honest TPM's proof is the mismatch too (identity before signature)
+    assert!(fresh_call(&tpm, op::FREEZE, &live1).ok);
+    assert!(status_of(&live1).tpm_last_fresh);
     let r = anchor_call(&tpm, &live1, &a7);
     assert!(!r.ok && r.reasons == vec!["ANCHOR_TPM_MISMATCH"], "{:?}", r.reasons);
+    assert!(!status_of(&live1).tpm_last_fresh, "the honest proof was not verified either: identity first");
 
     // --- vector 5 + 7b (positive): the blob is STALE (expects 505, the TPM moved on to 507 — a rollback, or
     // two persists the blob never saw); an unattended reload stays unarmed; the owner's same-identity re-pin
