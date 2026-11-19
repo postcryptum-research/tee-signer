@@ -197,7 +197,7 @@ is TPM-bound and no counter proof was presented for this call), `TPM_PARSE` (the
 NV attestation), `TPM_NONCE` (the proof is not over the nonce this enclave issued for this call — a replay),
 `TPM_INDEX` (another counter index than the pinned one), `TPM_SIG` (not signed by the pinned attestation key),
 `STATE_STALE` (the TPM certifies a counter other than the one this blob expects: a rollback, a crash between
-seal and increment, or a spurious increment — the owner's `Anchor` resolves it), and from R9a (IMPL-PASS 2026-11-19, in `main`; on T2 with the next ceremony-signed build)
+seal and increment, or a spurious increment — the owner's `Anchor` resolves it), and from R9a (IMPL-PASS 2026-11-19; on T2 since 2026-11-19, ceremony-signed build `2073c234…`)
 `ANCHOR_TPM_MISMATCH` (an `Anchor` on a TPM-bound state names another attestation key or counter index than the
 sealed ones: the host handed the owner the identity of a TPM it controls — the TPM identity is bound for the
 wallet's life; a replaced TPM under a living wallet means a new wallet or a re-bind ceremony, never a retry),

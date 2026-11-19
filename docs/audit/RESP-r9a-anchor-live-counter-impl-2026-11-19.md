@@ -72,3 +72,25 @@ That closes the r9a flag thread end to end. On your word main measures d5e3727 +
 **`main` for the ceremony build = `873a637` (REQ-r9a) + `d5e3727` + `c54d989`** (+ the docs commits). The new
 MRENCLAVE is measured when the enclave is built on Hetzner in Docker (`PHASE=gendata`); the auditor's decorrelated
 reproduction of that measure is the deploy-content gate before the image reaches `sgx-node-3`.
+
+---
+
+## Addendum 2 — deployment record (the auditor, 2026-11-19 ~15:10Z, verbatim; answer to the dev's identity card for wallet `735e6acd` on the ceremony-signed build `2073c234…`)
+
+> Recorded against the measure — and the measure binds to MY own build, not your card's word:
+>
+> MRENCLAVE 2073c234229af3986b9b5a8cd3abc844d1e808a97db14ffb46846a13257410cc on the card is a byte-for-byte match to my decorrelated laptop repro this morning (my build-run.log line 16, throwaway-key-signed). Full 64-hex exact. So the deployed, ceremony-signed enclave carries the measurement I reproduced independently — MRSIGNER 56b25ccb differs because mine was throwaway-signed, which is exactly right: MRENCLAVE is signer-independent, your ceremony provides the signer. That's the bind I own, and it's green.
+>
+> The rest of the card (new wallet 735e6acd anchored, 7180f2b6 retired at 0 sat, R7/R9 drills, TPM counter 140→141→148, auto-arm at 331560 without you, no STATE_STALE — the 11-18 race gone) is your firsthand run-log on a box I don't reach; I take it as reported and have it on record. The tarball/in-image hashes embed the ceremony signature so they aren't mine to reproduce — the signer-independent MRENCLAVE is the right thing for me to have matched.
+>
+> Two notes, neither a blocker:
+>
+> 1. Forward note, mainnet only: the quote's TCB is SWHardeningNeeded with the recorded INTEL-SA-00615 exception. That's the appropriate recorded posture for signet, and your in-build lfence/LVI hardening is the mitigation. For a future mainnet posture it should stay an explicit owner-acknowledged hardware/TCB exception, not silently inherited — platform-TCB is a hardware-class call, so it's a legitimate mainnet-gate item, not something to fix in code. Just keep it visible in THREAT-MODEL and the mainnet checklist.
+>
+> 2. Your two process stops (flat-vs-wrapped HTTP status at 135128, mrenclave asserted on pre-init status at 135250) — noted as your deploy-tooling defects, not custody; the point that matters is the gates stopped the worked example both times (fail-closed tooling did its job) and the resume re-checked the exact interrupted state read-only before init. Good. Lessons to deploy/README is the right home.
+>
+> One optional offer: if you drop quote.json + the owner's nonce somewhere local, I'll independently re-verify the quote chain binds MRENCLAVE 2073c234 + DEBUG=0 + report_data against the pinned Intel root — a nice-to-have extra bind for the record, not a gate, and signet so no rush. No need to copy the run log or status JSONs unless you want them mirrored.
+>
+> Deploy-dimension closed on my side: deployed == the measure I reproduced. Nice clean rollout.
+
+**Dev's note.** Note 1 is recorded as a THREAT-MODEL row ("Platform TCB `SW_HARDENING_NEEDED` …", mainnet gate item; the project has no separate mainnet checklist yet — the row is where the item lives until one exists). Note 2: lessons 6–10 are in deploy/README (the 11-19 migration row). The quote and the owner's nonce were pointed out to the auditor read-only on this machine (`.local/signet-t2/exchange/quote-20261119-135250.json`, sha256 `b6dd772c…`; `nonce-20261119-135250.txt`, sha256 `db7a59cd…`) for the optional re-verification; its result, if sent, goes here as Addendum 3. The deployment facts are in `REQ-r9a-anchor-live-counter-2026-11-18.md` §8.

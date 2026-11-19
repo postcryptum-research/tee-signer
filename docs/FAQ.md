@@ -621,9 +621,10 @@ and nothing was signed. This can happen only when you anchor a state that is **l
 first anchor, or a re-pin while payouts run). Repeat the four anchor steps: from `STATE_STALE` the
 pause itself protects you — the feed is refused and writes nothing, so nothing moves the counter but
 your anchor, and it lands clean. (Seen live on signet 2026-11-18. The fix that removes the window,
-REQ-r9a, is in `main` since 2026-11-19: the anchor takes the counter the TPM certifies at the moment it
-lands, not the one you saw a minute earlier. It is an enclave change, so a node receives it with its
-next ceremony-signed build; on a node still on the earlier build the repeat is the procedure.)
+REQ-r9a, is in `main` since 2026-11-19 and on the signet T2 node since the same day (build `2073c234…`):
+the anchor takes the counter the TPM certifies at the moment it lands, not the one you saw a minute
+earlier. It is an enclave change, so a node receives it with a ceremony-signed build; on a node still on
+an earlier build the repeat is the procedure.)
 
 ### After a restart with the TPM the status shows `boot_armed: false`. Is the auto-arm broken?
 
