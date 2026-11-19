@@ -620,8 +620,10 @@ enclave, seeing a counter it did not expect, does the only safe thing: it pauses
 and nothing was signed. This can happen only when you anchor a state that is **live** (a wallet's
 first anchor, or a re-pin while payouts run). Repeat the four anchor steps: from `STATE_STALE` the
 pause itself protects you — the feed is refused and writes nothing, so nothing moves the counter but
-your anchor, and it lands clean. (Seen live on signet 2026-11-18; the fix that removes the window
-is REQ-r9a.)
+your anchor, and it lands clean. (Seen live on signet 2026-11-18. The fix that removes the window,
+REQ-r9a, is in `main` since 2026-11-19: the anchor takes the counter the TPM certifies at the moment it
+lands, not the one you saw a minute earlier. It is an enclave change, so a node receives it with its
+next ceremony-signed build; on a node still on the earlier build the repeat is the procedure.)
 
 ### After a restart with the TPM the status shows `boot_armed: false`. Is the auto-arm broken?
 

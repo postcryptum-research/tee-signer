@@ -1,7 +1,6 @@
 # REQ-r9a — the Anchor pins the LIVE counter: closing the anchor-window race (design REQ)
 
-**Date:** 2026-11-18. **Status:** **DESIGN-PASS** — `RESP-r9a-anchor-live-counter-2026-11-18.md` (the auditor, same day; conditions C1–C6 binding, the sealed-identity correction load-bearing); the implementation waits for the
-owner's scope decision (§5: a new MRENCLAVE, hence a ceremony signature and a new T2 wallet).
+**Date:** 2026-11-18. **Status:** **DESIGN-PASS + IMPL-PASS** — design `RESP-r9a-anchor-live-counter-2026-11-18.md` (the auditor, same day; conditions C1–C6 binding, the sealed-identity correction load-bearing); implementation (§7, branch `r9a` @ `873a637`) `RESP-r9a-anchor-live-counter-impl-2026-11-19.md` (firsthand at the SHA, no findings), **merged to `main` 2026-11-19**. The owner took the scope decision 2026-11-18 (§5: a new MRENCLAVE, hence a ceremony signature and a new T2 wallet); T2 receives the fix with that ceremony-signed build.
 **Scope:** `core/src/state.rs` (`apply_anchor`), `enclave/rcore/src/ops.rs` (`apply_message`, the Anchor branch),
 `core/src/reason.rs` (one new reason), vectors; the host daemon is unchanged. Builds on REQ-r9 (design + impl, both
 PASSED 2026-11-10/11) and amends its §2.5.
