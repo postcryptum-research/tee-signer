@@ -1,0 +1,49 @@
+name: fuzz-smoke
+
+# REQ-r10 §4 (2): a short coverage-guided run of every fuzz target on each push to main and on PRs — 60 s
+# per target with the pinned nightly, the per-target limits of fuzz/run.sh. Advisory at first (RESP-r10: the
+# long discovery run never gates a change); the deterministic gate is the `fuzz-replay` job in ci.yml.
+# A crash here is a finding: the artifact is uploaded for the findings path (fuzz/README.md).
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  NIGHTLY: "nightly-2026-06-21"    # fuzz builds only; every gate stays on the repo's 1.92.0 pin
+
+jobs:
+  smoke:
+    name: 60 s per target (nightly, libFuzzer)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install "$NIGHTLY" --profile minimal
+      - run: rustup toolchain install 1.92.0 --profile minimal && cargo +1.92.0 install cargo-fuzz --locked --version 0.13.2
+      - name: run every target for 60 s
+        run: |
+          set -euo pipefail
+          cd fuzz
+          for t in proto_decode mandate_decode mandate_compare message_decode state_decode tpm_attest receipt_decode encoding_dec bip39 cross_type; do
+            echo "::group::$t"
+            if ls "findings/$t" 2>/dev/null | grep -qv FINDING.md; then
+              # an OPEN finding (fuzz/findings/<t>/FINDING.md): keep exploring past it; its class will recur in artifacts/ — advisory.
+              # libFuzzer's fork mode returns its error code (77) after ignored crashes, so the exit is not a verdict here.
+              FUZZ_IGNORE_CRASHES=1 ./run.sh "$t" 60 1 || echo "$t: non-zero exit with an open finding present (expected in fork mode)"
+              n=$(ls "artifacts/$t" 2>/dev/null | wc -l); echo "$t: $n crash artifact(s) with an open finding present (see FINDING.md; new classes need the findings path, classified on the laptop with examples/explain.rs)"
+            else
+              ./run.sh "$t" 60 1   # no open finding: any crash fails the job
+            fi
+            echo "::endgroup::"
+          done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore

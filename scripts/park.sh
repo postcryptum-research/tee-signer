@@ -15,6 +15,8 @@ echo "== laptop: debug build profiles under $ROOT (release binaries stay)"
 for d in owner/owner-cli host/signerd core enclave/rcore tools/seed-leak-vector; do
   [ -d "$ROOT/$d/target/debug" ] && { du -sh "$ROOT/$d/target/debug" | awk '{print "   removing "$1" "$2}'; rm -rf "$ROOT/$d/target/debug"; }
 done
+if [ -d "$ROOT/fuzz/target" ]; then du -sh "$ROOT/fuzz/target" | awk '{print "   removing "$1" "$2" (fuzz builds, stable + nightly — throwaway; corpus/regressions/findings stay)"}'; rm -rf "$ROOT/fuzz/target"; fi
+n_art=$(find "$ROOT/fuzz/artifacts" -type f 2>/dev/null | wc -l); [ "$n_art" -gt 0 ] && echo "   !!! fuzz/artifacts: $n_art crash file(s) not yet filed into fuzz/findings or fuzz/regressions (REQ-r10 findings path)"
 echo "== laptop: sizes to know about (not touched)"
 du -sh "$ROOT"/{owner/owner-cli,host/signerd,core,enclave/rcore}/target 2>/dev/null | awk '{print "   "$1" "$2}'
 [ -d /tmp/claude-1000 ] && echo "   scratch /tmp/claude-1000: $(du -sh /tmp/claude-1000 2>/dev/null | cut -f1) (shared between sessions; clean by hand if needed)"

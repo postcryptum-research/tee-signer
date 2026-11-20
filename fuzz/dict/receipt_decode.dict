@@ -1,0 +1,5 @@
+receipt_version="\x01\x00"
+list1="\x01\x00\x00\x00"
+label_cold="\x04\x00cold"
+opt_none="\x00"
+opt_some="\x01"

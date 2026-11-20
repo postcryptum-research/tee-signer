@@ -20,6 +20,10 @@ target/
 *.so
 *.signed.so
 build/
+# fuzz (REQ-r10): crash artifacts are filed by hand into fuzz/findings or fuzz/regressions, never committed raw
+fuzz/artifacts/
+fuzz/coverage/
+fuzz/fuzz-*.log
 # editor / os
 .vscode/
 .idea/

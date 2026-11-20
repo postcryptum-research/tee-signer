@@ -1,0 +1,8 @@
+version="\x01\x00"
+net_signet="\x02"
+purpose84="\x54\x00\x00\x00"
+opt_none="\x00"
+opt_some="\x01"
+bool1="\x01"
+list1="\x01\x00\x00\x00"
+label_cold="\x04\x00cold"

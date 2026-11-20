@@ -49,3 +49,13 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libtss2-dev libpcsclite-dev clang pkg-config
       - run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt && rustup default "$RUST_TOOLCHAIN"
       - run: cd owner/owner-cli && cargo test
+
+  fuzz-replay:
+    name: fuzz replay (corpus + regressions on stable, REQ-r10)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt && rustup default "$RUST_TOOLCHAIN"
+      - run: cd fuzz && cargo fmt --check
+      - run: cd fuzz && cargo clippy --no-default-features --all-targets -- -D warnings
+      - run: cd fuzz && cargo test --no-default-features

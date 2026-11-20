@@ -68,6 +68,7 @@ units, wallets and repositories are **never touched**. Rules inherited from trus
 cd core  && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 cd host  && cargo test
 cd owner && cargo test
+cd fuzz  && cargo test --no-default-features   # the fuzz replay gate (REQ-r10); discovery runs: fuzz/run.sh <target>, laptop only
 # enclave builds are SERVER-SIDE (SGX SDK + hardware): make SGX_MODE=HW SGX_DEBUG=1 on T1 hardware
 ```
 

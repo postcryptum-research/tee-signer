@@ -1,0 +1,9 @@
+# TPMS_ATTEST (TPM 2.0 Part 2 §10.12.8): magic, type, SHA-256 name alg, TPM2B lengths (BE)
+tpm_generated="\xff\x54\x43\x47"
+st_attest_nv="\x80\x14"
+alg_sha256="\x00\x0b"
+len32="\x00\x20"
+len34="\x00\x22"
+len8="\x00\x08"
+len0="\x00\x00"
+safe1="\x01"

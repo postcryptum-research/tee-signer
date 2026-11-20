@@ -1,0 +1,117 @@
+[package]
+name = "tee-signer-fuzz"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+license = "Apache-2.0"
+description = "tee-signer fuzz harness (REQ-r10): coverage-guided fuzzing of the host-facing decoders and verifiers of signer-core — OUTSIDE the TCB, nothing here ships"
+publish = false
+
+# A standalone package on purpose: not a member of any workspace that ships. `core/Cargo.toml` and
+# `core/Cargo.lock` are untouched by anything here (C-R10 / REQ-r10 §3); `core/PROVENANCE.md` does not move.
+[package.metadata]
+cargo-fuzz = true
+
+[features]
+# The libFuzzer binaries (`fuzz_targets/*`) need the pinned nightly (`run.sh`). The replay gate
+# (`cargo test --no-default-features`) is pure Rust on the repo's stable 1.92.0 and never links libFuzzer.
+default = ["libfuzzer"]
+libfuzzer = ["dep:libfuzzer-sys"]
+
+[dependencies]
+signer-core = { path = "../core", features = ["std"] }
+libfuzzer-sys = { version = "0.4", optional = true }
+arbitrary = { version = "1", features = ["derive"] }
+bitcoin = { version = "0.32", features = ["std"] }
+p256 = { version = "0.13", features = ["ecdsa", "arithmetic", "std"] }
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lib]
+path = "src/lib.rs"
+
+# One libFuzzer binary per target; the body of each lives in `src/targets.rs` and is also what the
+# stable replay test calls (REQ-r10 §3 "one body, two runners").
+[[bin]]
+name = "proto_decode"
+path = "fuzz_targets/proto_decode.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "mandate_decode"
+path = "fuzz_targets/mandate_decode.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "mandate_compare"
+path = "fuzz_targets/mandate_compare.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "message_decode"
+path = "fuzz_targets/message_decode.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "state_decode"
+path = "fuzz_targets/state_decode.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "tpm_attest"
+path = "fuzz_targets/tpm_attest.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "receipt_decode"
+path = "fuzz_targets/receipt_decode.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "encoding_dec"
+path = "fuzz_targets/encoding_dec.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "bip39"
+path = "fuzz_targets/bip39.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "cross_type"
+path = "fuzz_targets/cross_type.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[profile.release]
+debug = 1

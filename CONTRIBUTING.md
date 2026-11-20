@@ -37,6 +37,7 @@ cd core           && cargo fmt --check && cargo clippy --all-targets -- -D warni
 cd enclave/rcore  && cargo fmt --check && cargo clippy --features nosgx,test-init --all-targets -- -D warnings && cargo test --features nosgx,test-init
 cd host/signerd   && cargo test --features nosgx
 cd owner/owner-cli && cargo test        # needs libtss2-dev, libpcsclite-dev, clang, pkg-config
+cd fuzz  && cargo test --no-default-features   # the fuzz replay gate (REQ-r10); discovery runs: fuzz/run.sh <target>, laptop only
 ```
 
 The enclave itself is built only through the pinned Docker recipe (`docs/REPRODUCIBLE-BUILD.md`);
