@@ -1,0 +1,9 @@
+# gitleaks fingerprints (commit:file:rule:line) of the verified false positives — each pinned to the exact
+# commit and line, so a future secret of the same shape in the same file is still a finding.
+# Pre-publication history scan 2026-11-20; reasons in .gitleaks.toml. Add a line only with its reason.
+# the string `-----BEGIN ENCRYPTED PRIVATE KEY-----` inside a grep that checks a PEM header type
+3ff0b1db2b3a6ff1d8cb4fd7147f51cd5f0263e1:scripts/owner-secrets-check.sh:private-key:20
+# the MRSIGNER (a public SIGSTRUCT hash) of the dev signing key, quoted in the R5 audit note
+e3d14c568c1081ca3db87a42a94a43f55ead4ce4:docs/audit/REQ-r5-t2-azure-impl-2026-11-03.md:generic-api-key:44
+# a compressed secp256k1 PUBLIC key in the no_std lab log
+4fb7512d20f6d70eebaa3ab71e2954c80605890f:docs/studies/NOSTD-ENCLAVE-LAB-2026-11-03.md:generic-api-key:959

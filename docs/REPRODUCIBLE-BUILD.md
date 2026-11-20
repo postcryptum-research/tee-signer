@@ -93,7 +93,11 @@ measurement, a wrong signer and an unbound quote — those refusals are part of 
 - **Covers:** every page of the enclave image (code and initial data of `rcore` + `signer-core` +
   the SDK trusted runtime) and the launch configuration (`Enclave.config.xml`: heap, stack, TCS
   number, `DisableDebug`, ProdID, SVN, `MiscSelect`). A one-byte source change in the enclave, a
-  dependency bump in `enclave/rcore/Cargo.lock`, or a different toolchain changes it.
+  dependency bump in `enclave/rcore/Cargo.lock`, or a different toolchain changes it. So does a
+  **line shift** in a file whose panic locations the binary embeds — checked on the deployed build
+  2026-11-19: `core/src/{classify,headers,judge,sign}.rs` and `rcore/src/session.rs` appear as
+  `file:line` data in `enclave.so`, which is why even a comment or license header added to those
+  files is a new measurement (and why such headers are batched into the next ceremony build).
 - **Does not cover:** the signer (`MRSIGNER` is a separate field), the signing date, the host daemon
   `signerd`, the owner tool, the BTCPay plugin, this documentation. A host-side change ships without a
   new measurement; an enclave change cannot.

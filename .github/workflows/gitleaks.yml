@@ -2,7 +2,8 @@ name: gitleaks
 
 # Secret scan over the FULL history on every push and pull request. Must stay green: a red run blocks
 # the merge. The image is pinned by digest (the same build used for the pre-publication history scan
-# on 2026-11-20); false positives are allowlisted in .gitleaks.toml with the reason next to each.
+# on 2026-11-20); the three verified false positives are excluded by exact commit:file:rule:line fingerprints
+# in .gitleaksignore (reasons next to each), never by a pattern — a new hit anywhere is a finding.
 on:
   push:
   pull_request:

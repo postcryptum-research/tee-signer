@@ -2,6 +2,7 @@
 name = "seed-leak-vector"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
 description = "R4 negative vector only: from a mnemonic the owner recovered offline, the BIP84 private descriptors for a throwaway node wallet — plays 'the seed leaked'. Never part of the product."
 
 [dependencies]
