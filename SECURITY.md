@@ -12,8 +12,9 @@ A third-party audit comes before any mainnet funds.
 
 Report it privately through GitHub: the **Report a vulnerability** button on the repository's
 Security tab. Only the maintainers see the report. Please do not open a public issue for it.
-<!-- owner: enable "Private vulnerability reporting" in the repository settings; once the public name is
-     fixed, the direct link is https://github.com/<org>/<repo>/security/advisories/new -->
+Direct link: <https://github.com/postcryptum-research/tee-signer/security/advisories/new>.
+<!-- owner: the link works only once "Private vulnerability reporting" is enabled in the repository settings
+     (Settings → Code security) — do it when the repository is created. -->
 
 We aim to acknowledge a report within 5 business days.
 

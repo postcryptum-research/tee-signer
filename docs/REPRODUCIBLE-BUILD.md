@@ -30,7 +30,7 @@ addendum 2). Earlier measurements and the commits they came from are in the `doc
 ## Build
 
 ```bash
-git clone <repository> tee-signer && cd tee-signer
+git clone https://github.com/postcryptum-research/tee-signer.git && cd tee-signer
 git checkout 4dd6285                      # the commit of the measurement you are verifying
 SIGN=dev ENCLAVE_KEY=$PWD/out/dev-key.pem OUT=$PWD/out/build-1 docker/build-enclave.sh
 ```

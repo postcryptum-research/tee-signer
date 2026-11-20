@@ -1,6 +1,9 @@
 # tee-signer — a Bitcoin spending key sealed in an SGX enclave that signs only inside an owner-signed mandate
 
-**Working name.** The product name is the owner's choice; the repository is published under the working name.
+**The name is generic on purpose.** The mechanism — a TEE that alone holds the key and enforces an owner-signed
+policy around it, with the owner's authority in a secure element — is not tied to one chain or one signature
+scheme, and the name leaves room for other networks and schemes behind the same gate. What exists today is one
+signing module: Bitcoin PSBT, signet.
 **Status (2026-11-19):** signet only; nothing here has touched mainnet. Rounds R1–R9a each carry a DESIGN-PASS
 and an IMPL-PASS from the independent auditor (`docs/audit/`). The current ceremony-signed build,
 `MRENCLAVE 2073c234…10cc`, is live on the project's T2 node (Azure DCsv3, DCAP-attested, freshness anchored to
@@ -135,6 +138,10 @@ Threat model with honest tiers and stated residuals: [`docs/THREAT-MODEL.md`](do
 accidents and recovery: [`docs/CONTINUITY.md`](docs/CONTINUITY.md); the audit discipline every enclave
 change goes through: [`docs/audit/PROTOCOL.md`](docs/audit/PROTOCOL.md). To report a vulnerability:
 [`SECURITY.md`](SECURITY.md).
+
+The project was developed privately as `77ph/BTCPayTEE`; the audit record in `docs/audit/` names that
+repository and its issue #1. It stays private as the operations home — every commit the record refers to is
+in this repository's history.
 
 ## Reading order
 
