@@ -8,8 +8,9 @@ reference. Nothing is fixed quietly.
 ## F-2026-11-20-01 — `compare` treats a changed checkpoint at the same height as tightening (C-R10-5)
 
 **Status:** RESOLVED on branch `r10-f01-checkpoint` (fix REQ `docs/audit/REQ-r10-f01-checkpoint-impl-2026-11-20.md`,
-DESIGN-PASS CONDITIONAL `docs/audit/RESP-r10-f01-checkpoint-design-2026-11-21.md`; IMPL-PASS pending, merge after
-it, a new MRENCLAVE with the next ceremony build). The four reproducers now live in `regressions/mandate_compare/`
+DESIGN-PASS CONDITIONAL `docs/audit/RESP-r10-f01-checkpoint-design-2026-11-21.md`; **IMPL-PASS**
+`docs/audit/RESP-r10-f01-checkpoint-impl-2026-11-21.md`, clean at `10f6770`, merged via PR #2; a new MRENCLAVE with the
+next ceremony build). The four reproducers now live in `regressions/mandate_compare/`
 and pass C-R10-5 in both directions; the entry below is kept as the record. Note the auditor's re-ruling of the
 frozen path: a re-pin while the chain is frozen applies at once (never through the timelock, which cannot run
 while frozen) and is checkpoint-only — see the RESP. Originally: OPEN — **ruled a DEFECT by the auditor, 2026-11-20, two legs** (reported the same day; phase 1, first

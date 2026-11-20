@@ -1,6 +1,9 @@
 # REQ-r10-F01 — the checkpoint in `compare` and at install: fix of fuzz finding F-2026-11-20-01 (impl REQ)
 
-**Date:** 2026-11-20 (drafted), 2026-11-21 (sent; implementation sent for IMPL-PASS the same day). **Status:** **IMPL-PASS CONDITIONAL** at `6e05716` →
+**Date:** 2026-11-20 (drafted), 2026-11-21 (sent; implementation sent for IMPL-PASS the same day). **Status:** **IMPL-PASS (clean) at `10f6770`** — the auditor re-ran his own boundary-gate mutation and vector 15
+reddened it (`RESP-r10-f01-checkpoint-impl-2026-11-21.md`, second part); merged to `main` via PR #2. Deploy consequence §5:
+the rebuild (ENFORCE=1, the auditor's decorrelated build as the deploy-content gate), the ceremony signing and the
+deploy are the owner's; the auditor reproduces the new MRENCLAVE when the build is cut. Before: IMPL-PASS CONDITIONAL at `6e05716` →
 `RESP-r10-f01-checkpoint-impl-2026-11-21.md` (same day; legs 1–3 and the brick fix verified firsthand, the reproducers
 retired); the one condition — a vector that only the current-period boundary gate refuses, and its hollow mutation —
 **discharged on the branch** (§4 vector 15, §7: `scripts/hollow-f01.sh` 7/7), sent back for the clean pass. Branch

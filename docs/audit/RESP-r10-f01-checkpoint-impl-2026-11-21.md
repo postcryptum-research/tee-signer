@@ -1,4 +1,4 @@
-# RESP-r10-F01 (impl) — IMPL-PASS CONDITIONAL at `6e05716` (branch `r10-f01-checkpoint`, PR #2)
+# RESP-r10-F01 (impl) — IMPL-PASS CONDITIONAL at `6e05716`, **clean IMPL-PASS at `10f6770`** (branch `r10-f01-checkpoint`, PR #2)
 
 **From the auditor (the `security-audit-playbook` session), 2026-11-21, in answer to the implementation sent at
 `6e05716`. Transcribed verbatim by the dev; this header is the only addition. The one condition (a vector that only
@@ -26,3 +26,17 @@ That's the whole condition. The code is right; this makes the gate non-hollow so
 Non-blocking observation (pre-existing, not introduced by this fix): an ordinary (checkpoint-unchanged) PolicyUpdate while frozen goes to `pending` and can never activate (best is frozen), and it then blocks a subsequent re-pin via the `pending.is_some()` guard (412) until a Cancel clears it. It's recoverable (Cancel → re-pin), so not a brick — but you might consider refusing a checkpoint-unchanged PolicyUpdate while frozen, since while frozen the only useful update is a re-pin. Your call, separate from this REQ.
 
 So: add the two test items, nothing else. Nothing merges without the clean pass; MRENCLAVE bump, ceremony and deploy are the owner's, direct — and since this IS an enclave change, the ENFORCE=1 + my decorrelated-build repro conditions bind to that rebuild.
+
+---
+
+## Clean pass at `10f6770` (the auditor, 2026-11-21, after the two additions; verbatim)
+
+REQ-r10-F01 — CLEAN IMPL-PASS. The condition is met; nothing else outstanding.
+
+I re-ran MY OWN mutation at 10f6770, not just the script: I set the boundary gate `r.height < period_start_height` → `false` (equality checks kept) and ran checkpoint_install_validates_every_field_fail_closed. It now FAILS at transitions.rs:660 (unwrap_err on an Ok value — the gate-defeated build wrongly ACCEPTS the checkpoint). The dump is exactly the vector I asked for: height 251999 (previous period, r at b-1), period_start_time 151200000 and period_bits 545259519 == the current chain values, best 252005 — current-period fields stamped on a previous-period header, so only the boundary gate can refuse it. It was GREEN before vector 15 and is RED now. The hollow spot is closed; reverted clean.
+
+Vector 15 and hollow-f01.sh (7/7, with my mutation as case 4) are the right additions. I credit your 7/7 run; my independent re-run of case 4 confirms it.
+
+So the full F-01 fix stands: leg 1 compare line, the brick-free frozen path (apply-at-once, checkpoint-only), leg 2 field validation with the now-tested current-period boundary gate, leg 3 new_at_init → Result, the F-01 reproducers retired to regressions/, and every protection site mutation-reddened. Clean.
+
+You may merge PR #2 to main. The rebuild (ENFORCE=1, my decorrelated build as the deploy-content gate), the ceremony signing and the deploy are the owner's, direct — and since this is an enclave change, my decorrelated-build reproduction of the new MRENCLAVE binds to that rebuild; flag me when the build is cut and I'll reproduce it. The non-blocking follow-up you parked in §8 (a checkpoint-unchanged update while frozen parking in pending until a Cancel) is fine to carry separately. Good work.
