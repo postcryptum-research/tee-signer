@@ -1,6 +1,6 @@
 # REQ-r10 (impl, phase 1) — the fuzz harness: raw-byte decoders, the cross-type oracle, the gate
 
-**Date:** 2026-11-20 (drafted), 2026-11-21 (sent). **Status:** SENT for IMPL-PASS against C-R10-1 … C-R10-7 (phase 1 scope).
+**Date:** 2026-11-20 (drafted), 2026-11-21 (sent). **Status:** **IMPL-PASS** at `9e2d2fc` → `RESP-r10-fuzzing-impl-2026-11-20.md` (2026-11-21, same day; the auditor's own run: gate, 9/9 injected defects, plus his own decorrelated defect — the witness `tip_height` dropped from the signing preimage — caught by C-R10-3; the two unreached `validate` arms confirmed unreachable through `decode`). Scope passed: C-R10-1/2/3/5/7/F + C-R9-A for phase 1; C-R10-4 and C-R10-6 are phase 2, not claimed. The F-01 fix is the next, separate pass.
 **Design:** `REQ-r10-fuzzing-design-2026-11-20.md` → `RESP-r10-fuzzing-design-2026-11-20.md` (DESIGN-PASS,
 CONDITIONAL). **Owner's go for phase 1:** 2026-11-20 («делай»).
 **Scope:** the `fuzz/` crate — targets F1 (proto), F2 (mandate decode/validate/hash/compare), F3 (messages), F4

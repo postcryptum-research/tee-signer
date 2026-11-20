@@ -1,8 +1,11 @@
 # REQ-r10-F01 — the checkpoint in `compare` and at install: fix of fuzz finding F-2026-11-20-01 (impl REQ)
 
-**Date:** 2026-11-20. **Status:** DRAFT — sent once the phase-1 harness is on `main` (the finding public first,
-then the fix; order accepted by the auditor 2026-11-20). Implementation on branch `r10-f01-checkpoint`, no merge
-without IMPL-PASS, a new MRENCLAVE with the next ceremony build, nothing deploys without the owner's GO.
+**Date:** 2026-11-20 (drafted), 2026-11-21 (sent). **Status:** SENT — the next, separate pass after the harness's
+IMPL-PASS (`RESP-r10-fuzzing-impl-2026-11-20.md` at `9e2d2fc`; the auditor: "not folded into this one — it changes
+`core/` and re-grades on its own merits"; he rules Q1 and Q2 in this pass). The finding went public first
+(`fuzz/findings/`, `9e2d2fc`), then this fix. **No `core/` code is written before this REQ's DESIGN-PASS** (hard
+rule 1: Q1 and Q2 shape the code); then implementation on branch `r10-f01-checkpoint`, no merge without IMPL-PASS,
+a new MRENCLAVE with the next ceremony build, nothing deploys without the owner's GO.
 **Finding:** `fuzz/findings/mandate_compare/FINDING.md` (F-2026-11-20-01; C-R10-5 fired after 82 executions).
 **Ruling (auditor, 2026-11-20):** DEFECT, two legs, severity medium; plus the constructor-side invariant from the
 reflexivity observation. The oracle is not weakened.
