@@ -12,7 +12,7 @@ pin, README), `docker/build-enclave.sh` (`SIGN=ceremony`, `PHASE=gendata|catsig`
 
 ## 1. C-R6-1 — `hw-signer` pin equals the audited behaviour
 
-`hw-signer = { git = "https://github.com/77ph/TPM_sign", rev = "9fa47b6", default-features =
+`hw-signer = { git = "https://github.com/postcryptum-research/agent-keys", rev = "9fa47b6", default-features =
 false, features = ["tpm"] }`. The crate's history since the audit-fix commit `96d56ad`
 ("Audit 2026-10-20: fix F1–F7 and the code part of F8"): `git diff 96d56ad..9fa47b6 --stat --
 signer/crates/hw-signer` = `Cargo.toml +6` (optional `yubikey`/`zeroize` deps + the

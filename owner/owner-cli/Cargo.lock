@@ -1573,7 +1573,7 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 [[package]]
 name = "hw-signer"
 version = "0.1.0"
-source = "git+https://github.com/77ph/TPM_sign?rev=d41b2c9#d41b2c94474b810ae84af95b77097ca46a43cd28"
+source = "git+https://github.com/postcryptum-research/agent-keys?rev=d41b2c9#d41b2c94474b810ae84af95b77097ca46a43cd28"
 dependencies = [
  "p256 0.13.2",
  "rand_core 0.6.4",

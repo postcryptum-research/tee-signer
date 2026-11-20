@@ -60,7 +60,7 @@ tee-signer is that recommendation made automatic.
 3. **The mandate changes rarely and never from the host.** It is signed by
    the merchant's **owner key** on a separate device (YubiKey, TPM, Apple
    Secure Enclave or a phone — through the `hw-signer` backends of
-   [TPM_sign](https://github.com/77ph/TPM_sign)), with a nonce, and a
+   [agent-keys](https://github.com/postcryptum-research/agent-keys), formerly TPM_sign), with a nonce, and a
    loosening change takes effect only after a **timelock**, during which
    the owner can cancel. Routine signing inside the mandate needs nobody.
 4. **Budget windows run on Bitcoin time.** The enclave follows the block
