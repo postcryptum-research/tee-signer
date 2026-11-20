@@ -1,7 +1,10 @@
 # REQ-r10-F01 — the checkpoint in `compare` and at install: fix of fuzz finding F-2026-11-20-01 (impl REQ)
 
-**Date:** 2026-11-20 (drafted), 2026-11-21 (sent; implementation sent for IMPL-PASS the same day). **Status:** **IMPL on
-branch `r10-f01-checkpoint`, SENT for IMPL-PASS** against `C-F01-1 … 6` — §7 has what was run. Design: **DESIGN-PASS (CONDITIONAL)** at `3473e41` →
+**Date:** 2026-11-20 (drafted), 2026-11-21 (sent; implementation sent for IMPL-PASS the same day). **Status:** **IMPL-PASS CONDITIONAL** at `6e05716` →
+`RESP-r10-f01-checkpoint-impl-2026-11-21.md` (same day; legs 1–3 and the brick fix verified firsthand, the reproducers
+retired); the one condition — a vector that only the current-period boundary gate refuses, and its hollow mutation —
+**discharged on the branch** (§4 vector 15, §7: `scripts/hollow-f01.sh` 7/7), sent back for the clean pass. Branch
+`r10-f01-checkpoint`, PR #2; merge only on the clean pass. §7 has what was run. Design: **DESIGN-PASS (CONDITIONAL)** at `3473e41` →
 `RESP-r10-f01-checkpoint-design-2026-11-21.md` (same day): the unfrozen legs approved as drafted; the frozen path
 **re-ruled** — a frozen re-pin applies at once (both forward and same-height), never through the timelock (§2a);
 Q1 answered that way, Q2 = `Result`, Q3 = spell it out; conditions `C-F01-1 … C-F01-6` in `CONDITIONS.md`.
@@ -131,7 +134,11 @@ fail-closed in release too (`debug_assert!` is a no-op in release: a silent foot
     chain is reset from it and the freeze is cleared — this catches both the option-(ii) brick and leg 1 without
     the frozen carve-out;
 13. chain frozen, a FORWARD re-pin ⇒ applies at once, chain reset;
-14. chain frozen, a re-pin that also changes a non-checkpoint field ⇒ refused (`PolicyInvalid`, C-F01-2).
+14. chain frozen, a re-pin that also changes a non-checkpoint field ⇒ refused (`PolicyInvalid`, C-F01-2);
+15. **(the auditor's condition, RESP impl)** a real previous-period header, every field as recorded, stamped with the
+    CURRENT period's `period_start_time`/`period_bits` ⇒ `PolicyInvalid` — the forgery that passes every equality
+    check and that only the current-period boundary gate refuses; with the gate alone removed this vector is the
+    one that goes red.
 
 `fuzz/injected-defects.sh` gains the case "leg-2 `bits` check dropped ⇒ caught by the install vector" once the
 install path has a fuzz target (phase 2, F4 structured).
@@ -171,19 +178,31 @@ chain-view impact gated on a frozen chain).
   cargo test --features nosgx,test-init` — green. `cd host/signerd && cargo test --features nosgx` — green.
 - `cd fuzz && cargo test --no-default-features` — green with the four F-01 reproducers in `regressions/` (2181 inputs
   replayed); `cargo clippy --no-default-features --all-targets -- -D warnings` green.
-- **Hollow red/green (vector 11), log `.local/fuzz-runs/f01-hollow-2026-11-21.log`** — each guard removed in turn,
-  `cargo test --test transitions`, sources restored byte-identical after: leg 2 `bits` check dropped → RED
-  (`checkpoint_install_validates_every_field_fail_closed`, "wrong bits"); leg 2 period fields unchecked → RED (same
-  test); frozen at-once re-pin disabled (the old shape) → RED (`frozen_repin_applies_at_once_and_is_checkpoint_only`
-  — the brick regression bites); frozen checkpoint-only check dropped → RED (same test, the non-checkpoint cases);
-  leg 1 compare line reverted to `height >=` → RED (`classifier_fails_toward_loosening`, the same-height rows);
-  leg 3 `validate` dropped from `new_at_init` → RED (`new_at_init_refuses_an_invalid_mandate`). 6/6.
+- **Hollow red/green (vector 11) — `scripts/hollow-f01.sh`, 7/7**, re-runnable on a clean `core/src` (it restores
+  with git): each protection site the fix adds is removed in turn and `cargo test --test transitions` must go RED —
+  leg 1 compare line reverted to `height >=` (`classifier_fails_toward_loosening`, the same-height rows); leg 2
+  `bits` check dropped; leg 2 period-field equality dropped with the gate kept; **leg 2 current-period boundary gate
+  dropped with the equality checks kept — the auditor's mutation, RED only through vector 15** (it was GREEN before
+  that vector existed: the previous-period vector 6 was refused by the equality check first, so the gate was never
+  the sole refuser — the RESP's condition); frozen at-once re-pin disabled (the pre-fix shape — the brick regression
+  bites); frozen checkpoint-only check dropped; `validate` dropped from `new_at_init`. The first, manual run (6/6,
+  before the condition) is in `.local/fuzz-runs/f01-hollow-2026-11-21.log`; the script's run in
+  `f01-hollow-script-2026-11-21.log`.
 - `fuzz/run.sh mandate_compare 120 1` against the fixed core: 7.15 M executions, **0 crashes** (the target that fired
   F-01 after 82 executions before the fix), corpus re-grown past the old crash frontier (`cov` 2156 → 2261), `cmin`'d.
 - `fuzz/injected-defects.sh` with the tenth case, on the committed branch tree (the script needs a clean `core/`):
   **10/10 caught**, `core/` restored clean after each; the reverted compare line is caught by the first mandate pair
   that differs only in `checkpoint.period_bits` (a corpus file), the four F-01 regressions behind it. Log
   `.local/fuzz-runs/injected-defects-f01-2026-11-21.log`.
+
+## 8. Deferred (the auditor's non-blocking observation, RESP impl)
+
+Pre-existing, not introduced here: an ordinary (checkpoint-unchanged) `PolicyUpdate` while the chain is frozen goes
+to `pending` and cannot activate (best is frozen), and then blocks a later re-pin through the `pending.is_some()`
+guard until a `Cancel` clears it — recoverable, not a brick. The auditor's suggestion: refuse a checkpoint-unchanged
+`PolicyUpdate` while frozen, since the only useful update while frozen is a re-pin. Not in this REQ (scope); carried
+as a follow-up item for the next `core/` round, where it needs its own vector (frozen + checkpoint unchanged ⇒
+refused) and a POLICY.md sentence.
 
 ## 6. Questions to the auditor — answered in `RESP-r10-f01-checkpoint-design-2026-11-21.md`
 
