@@ -25,7 +25,7 @@ TWO-LENSES: это SOFTWARE stand-in (nosgx) = протокол-bench; реал�
 ---
 
 **Dev's note after the pass (same day):** the owner froze the laptop-TPM agent («замораживаем идею», 2026-11-10);
-the product path for the counter is a vTPM for the SGX node — [issue #1](https://github.com/77ph/BTCPayTEE/issues/1)
+the product path for the counter is a vTPM for the SGX node — [issue #1](https://github.com/postcryptum-research/tee-signer/issues/1)
 (Azure Trusted Launch on `sgx-node-3`, or a +1 counter VM) — or the operator's own server with a physical TPM.
 Must-hold E (agent handle isolation) therefore applies to whichever agent is written for that path, not to the laptop.
 Merged to `main` after this pass.
