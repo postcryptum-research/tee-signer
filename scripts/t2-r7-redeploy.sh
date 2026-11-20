@@ -8,8 +8,9 @@
 # exchange directory (= /exchange in the sidecar); the laptop never talks to the signer.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-BOX=andrey@94.130.18.162
-NODE=azureuser@52.236.130.102
+[ -f .local/hosts.env ] && . .local/hosts.env   # the real hosts, gitignored
+BOX=${TEE_BUILD_HOST:?set TEE_BUILD_HOST=user@build-box in .local/hosts.env}
+NODE=${TEE_T2_HOST:?set TEE_T2_HOST=user@t2-node in .local/hosts.env}
 RELAY='~/tee-signer-exchange-relay'      # on the box
 NX='~/tee-signer-exchange'               # on the node
 D=.local/signet-t2                       # the owner's directory on the laptop
@@ -44,7 +45,7 @@ say "0. preflight (laptop)"
 [ -x "$OC" ] || { echo "build owner-cli first: cd owner/owner-cli && cargo build"; exit 1; }
 for f in owner.pub recovery.pub nonce.txt; do [ -s "$X/$f" ] || { echo "missing $X/$f"; exit 1; }; done
 [ -s "$D/recovery-r7.key" ] || { echo "missing $D/recovery-r7.key"; exit 1; }
-"$OC" pubkey --key piv:9a | grep -q "^$(cat "$X/owner.pub")$" || { echo "YubiKey 39252737 slot 9a not present or not the owner key — plug it in"; exit 1; }
+"$OC" pubkey --key piv:9a | grep -q "^$(cat "$X/owner.pub")$" || { echo "the owner's YubiKey slot 9a not present or not the owner key — plug it in"; exit 1; }
 ssh -o BatchMode=yes -o ConnectTimeout=20 "$BOX" "mkdir -p -m 700 $RELAY" && echo "box relay ok"
 echo "log: $LOG"
 

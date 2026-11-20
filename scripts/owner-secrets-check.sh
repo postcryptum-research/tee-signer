@@ -45,6 +45,6 @@ if [ -f "$REC" ] && [ -x "$OC" ]; then
 else echo "  (key or owner-cli not on this machine)"; fi
 
 echo "== owner key"
-echo "  YubiKey PIV slot 9a (piv:9a@39252737): generated ON the device, attested (C-R6-3), PIN held by the owner — nothing on disk to open"
+echo "  YubiKey PIV slot 9a (piv:9a): generated ON the device, attested (C-R6-3), PIN held by the owner — nothing on disk to open"
 [ $rc = 0 ] && echo "owner-secrets-check: OK" || echo "owner-secrets-check: FINDINGS"
 exit $rc

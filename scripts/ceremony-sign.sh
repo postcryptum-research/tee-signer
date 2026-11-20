@@ -5,7 +5,8 @@
 #   scripts/ceremony-sign.sh <build-out-dir-on-the-host>   e.g. ~/tee-signer-out/build-5
 set -euo pipefail
 OUT=${1:?build output dir on the build host}
-HOST=${BUILD_HOST:-andrey@94.130.18.162}
+R=$(cd "$(dirname "$0")/.." && pwd); [ -f "$R/.local/hosts.env" ] && . "$R/.local/hosts.env"   # TEE_BUILD_HOST (gitignored)
+HOST=${BUILD_HOST:-${TEE_BUILD_HOST:?set TEE_BUILD_HOST=user@host of the SGX build box, e.g. in .local/hosts.env}}
 KEY=${CEREMONY_KEY:-$HOME/llm-btcpay-tee/.local/ceremony/enclave-ceremony.pem}
 PUB=$(cd "$(dirname "$0")/.." && pwd)/enclave/ceremony/ceremony_pub.pem
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT

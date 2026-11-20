@@ -1,9 +1,9 @@
 # Study: Rust no_std staticlib inside an Intel SGX SDK enclave on SGX1 hardware (lab, 2026-11-03)
 
-> Produced by a lab sub-session on `94.130.18.162` in `~/btcpay-tee-lab/` (working tree left in place for inspection). HW mode, debug launch only (the box has no FLC). Every number below was measured that day; nothing was assumed.
+> Produced by a lab sub-session on the SGX build box in `~/btcpay-tee-lab/` (working tree left in place for inspection). HW mode, debug launch only (the box has no FLC). Every number below was measured that day; nothing was assumed.
 
 
-Date: 2026-11-03T12:44Z - host: aatproject (Intel(R) Xeon(R) CPU E3-1275 v6 @ 3.80GHz), kernel 5.15.0-138-generic, Ubuntu 22.04
+Date: 2026-11-03T12:44Z - host: <build-box> (Intel(R) Xeon(R) CPU E3-1275 v6 @ 3.80GHz), kernel 5.15.0-138-generic, Ubuntu 22.04
 Working tree: /home/andrey/btcpay-tee-lab/ (nothing written outside it except ~/.cargo registry cache)
 
 ## 0. Outcome summary
@@ -1013,7 +1013,7 @@ metadata->enclave_css.body.attribute_mask.xfrm: 0xffffffffffffff1b
 
 ## 10. Reproduce from scratch
 ```
-ssh andrey@94.130.18.162
+ssh <build-box>
 source /opt/intel/sgxsdk/environment
 cd /home/andrey/btcpay-tee-lab/enclave-lab && make clean && make SGX_MODE=HW SGX_DEBUG=1 && ./app selftest && ./app sign
 cd ../hostverify && ~/.cargo/bin/cargo build --release && ./target/release/hostverify verify $(cd ../enclave-lab && ./app sign | grep ^DER= | cut -d= -f2)

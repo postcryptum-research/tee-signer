@@ -260,7 +260,7 @@ fn tpm_handle(locator: &str) -> Option<Result<u32>> {
     Some(u32::from_str_radix(h.trim_start_matches("0x"), 16).map_err(|_| anyhow!("TPM handle: hex like 0x81000100")))
 }
 
-/// `piv:9a` or `piv:9a@39252737` → the PIV slot and, when given, the YubiKey's serial number.
+/// `piv:9a` or `piv:9a@12345678` → the PIV slot and, when given, the YubiKey's serial number.
 fn piv_locator(locator: &str) -> Option<Result<(hw_signer::yubikey_piv::PivSlot, Option<u32>)>> {
     let rest = locator.strip_prefix("piv:")?;
     let (slot, serial) = match rest.split_once('@') {
@@ -2710,9 +2710,9 @@ mod piv_locator_tests {
         let (slot, serial) = piv_locator("piv:9a").unwrap().unwrap();
         assert_eq!(slot, PivSlot::Authentication);
         assert_eq!(serial, None);
-        let (slot, serial) = piv_locator("piv:9c@39252737").unwrap().unwrap();
+        let (slot, serial) = piv_locator("piv:9c@12345678").unwrap().unwrap();
         assert_eq!(slot, PivSlot::Signature);
-        assert_eq!(serial, Some(39252737));
+        assert_eq!(serial, Some(12345678));
         let (slot, _) = piv_locator("piv:82").unwrap().unwrap();
         assert_eq!(hw_signer::yubikey_piv::slot_name(slot), "82");
     }

@@ -2,7 +2,9 @@
 # Sync the working tree to the SGX build host (owner-approved dir ~/tee-signer), keeping the
 # server-side build products (bridge archive, generated edger8r files, signed enclave, keys).
 set -euo pipefail
-HOST=${TEE_SGX_HOST:-andrey@94.130.18.162}
+cd "$(dirname "$0")/.."
+[ -f .local/hosts.env ] && . .local/hosts.env   # TEE_BUILD_HOST=user@build-box (gitignored)
+HOST=${TEE_SGX_HOST:-${TEE_BUILD_HOST:?set TEE_BUILD_HOST=user@host of the SGX build box, e.g. in .local/hosts.env}}
 DEST=${TEE_SGX_DIR:-'~/tee-signer/'}
 cd "$(dirname "$0")/.."
 rsync -a --delete \

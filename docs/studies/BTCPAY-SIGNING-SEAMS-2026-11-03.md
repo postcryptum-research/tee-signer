@@ -2,7 +2,7 @@
 
 > Produced by a research sub-session from shallow clones of `btcpayserver@v2.4.7` (`2868dee`), `NBXplorer@v2.6.22`, `btcpayserver-docker@0daecee`. Every `file:line` was verified against those checkouts on 2026-11-03. Clone paths in the text are the scratch locations used that day.
 
-Sources (shallow clones, all under `/tmp/claude-1000/-home-andrey-llm-btcpay-tee/23be7ea3-a209-4d7f-b04f-54115b296fa3/scratchpad/btcpay-research/`):
+Sources (shallow clones, all under `<scratch>/btcpay-research/`):
 
 | Repo | Ref | Commit |
 |---|---|---|

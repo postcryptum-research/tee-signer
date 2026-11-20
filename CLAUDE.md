@@ -46,7 +46,7 @@ project exists to remove — stop and escalate.
 
 ## Infrastructure isolation (shared SGX host — do not break other projects)
 
-Build/dev host: `94.130.18.162` (`aatproject`, Hetzner; SGX1, no FLC, legacy `/dev/isgx`; debug
+Build/dev host: `<build-box>` (`TEE_BUILD_HOST` in the gitignored `.local/hosts.env`; Hetzner; SGX1, no FLC, legacy `/dev/isgx`; debug
 enclaves only; no attestation). It carries the perp DEX, Phoenix, trust-bridge, ethsigner, rippled,
 two `bitcoind`s, PostgreSQL, nginx — all other projects' processes, ports, sealed state, systemd
 units, wallets and repositories are **never touched**. Rules inherited from trust-bridge

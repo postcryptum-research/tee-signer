@@ -7,6 +7,7 @@
 #   scripts/park.sh --remote   also read-only checks on the Hetzner box and the Azure node
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+[ -f "$ROOT/.local/hosts.env" ] && . "$ROOT/.local/hosts.env"   # TEE_BUILD_HOST / TEE_T2_HOST (gitignored)
 # C-SEC-1 (2026-11-12), run FIRST — it needs the debug owner-cli that the next step removes: the dev-run half of the owner-secrets proof — read-only, reported, never fixes anything
 echo "== laptop: owner-held secrets (C-SEC-1, read-only check)"
 scripts/owner-secrets-check.sh 2>&1 | sed 's/^/   /' || true
@@ -30,8 +31,8 @@ echo "   $(ss -ltn 2>/dev/null | awk '{print $4}' | grep -E ':739[0-9]$' | sort 
 df -h / | tail -1 | awk '{print "   root fs: "$3" used, "$4" free ("$5")"}'
 if [ "${1:-}" = "--remote" ]; then
   echo "== hetzner box (read-only): forwards, build outputs, disk"
-  ssh -o BatchMode=yes -o ConnectTimeout=15 andrey@94.130.18.162 'echo "   forwards: $(pgrep -af "[E]xitOnForwardFailure" | grep -oE "127.0.0.1:739[0-9]:[0-9.]+:[0-9]+" | tr "\n" " ")"; echo "   ~/tee-signer-out: $(du -sh ~/tee-signer-out 2>/dev/null | cut -f1) (build evidence, kept)"; df -h / | tail -1 | awk "{print \"   disk: \"\$3\" used, \"\$4\" free (\"\$5\")\"}"' 2>&1
+  ssh -o BatchMode=yes -o ConnectTimeout=15 "${TEE_BUILD_HOST:?set TEE_BUILD_HOST in .local/hosts.env}" 'echo "   forwards: $(pgrep -af "[E]xitOnForwardFailure" | grep -oE "127.0.0.1:739[0-9]:[0-9.]+:[0-9]+" | tr "\n" " ")"; echo "   ~/tee-signer-out: $(du -sh ~/tee-signer-out 2>/dev/null | cut -f1) (build evidence, kept)"; df -h / | tail -1 | awk "{print \"   disk: \"\$3\" used, \"\$4\" free (\"\$5\")\"}"' 2>&1
   echo "== azure node (read-only): throwaway containers, own dir, disk (C-R5-3)"
-  ssh -o BatchMode=yes -o ConnectTimeout=15 andrey@94.130.18.162 'ssh -o BatchMode=yes -o ConnectTimeout=15 azureuser@52.236.130.102 "stray=\$(docker ps -a --format \"{{.Names}}\" | grep -E \"^tee-.*-test\" | tr \"\\n\" \" \"); echo \"   throwaway containers: \${stray:-none}\"; echo \"   ~/tee-signer: \$(ls ~/tee-signer | tr \"\\n\" \" \")\"; df -h / | tail -1 | awk \"{print \\\"   disk: \\\"\\\$3\\\" used, \\\"\\\$4\\\" free (\\\"\\\$5\\\")\\\"; if (\\\$5+0 >= 90) print \\\"   !!! AZURE NODE DISK AT \\\"\\\$5\\\" — TELL THE OWNER NOW (rule 2026-11-03)\\\"}\""' 2>&1
+  ssh -o BatchMode=yes -o ConnectTimeout=15 "${TEE_BUILD_HOST:?set TEE_BUILD_HOST in .local/hosts.env}" 'ssh -o BatchMode=yes -o ConnectTimeout=15 '"${TEE_T2_HOST:?set TEE_T2_HOST in .local/hosts.env}"' "stray=\$(docker ps -a --format \"{{.Names}}\" | grep -E \"^tee-.*-test\" | tr \"\\n\" \" \"); echo \"   throwaway containers: \${stray:-none}\"; echo \"   ~/tee-signer: \$(ls ~/tee-signer | tr \"\\n\" \" \")\"; df -h / | tail -1 | awk \"{print \\\"   disk: \\\"\\\$3\\\" used, \\\"\\\$4\\\" free (\\\"\\\$5\\\")\\\"; if (\\\$5+0 >= 90) print \\\"   !!! AZURE NODE DISK AT \\\"\\\$5\\\" — TELL THE OWNER NOW (rule 2026-11-03)\\\"}\""' 2>&1
 fi
 echo "== parked"
