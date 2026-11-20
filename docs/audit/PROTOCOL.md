@@ -38,4 +38,4 @@ discharged only by a RESP that names it.
 | `REQ-design-2026-11-03.md` | 2026-11-03 | **DESIGN-PASS (CONDITIONAL)** → `RESP-design-2026-11-03.md`; conditions worked in `CONDITIONS.md` |
 | `REQ-r1-signer-core-2026-11-03.md` | 2026-11-03 | **IMPL-PASS** → `RESP-r1-signer-core-2026-11-03.md` at `e4afa1d`; merged to `main`; eleven deviations ruled as a supplement, all accepted |
 | `REQ-r2-enclave-shell-2026-11-03.md` | 2026-11-03 | **IMPL-PASS** → `RESP-r2-enclave-shell-2026-11-03.md` at `fd64e1e`; merged to `main`; ten deviations accepted; enforce prerequisites carried to R4 (monitor) and R5 (repro build, RELEASE=1 on FLC/DCAP) |
-| `REQ-r10-fuzzing-design-2026-11-20.md` | 2026-11-20 | SENT — fuzzing programme (targets, oracles, harness layout, findings path); design ruling pending; no harness code before it |
+| `REQ-r10-fuzzing-design-2026-11-20.md` | 2026-11-20 | **DESIGN-PASS (CONDITIONAL)** → `RESP-r10-fuzzing-design-2026-11-20.md` (same day); C1–C7 + forward condition carried in `CONDITIONS.md` as `C-R10-*`; phase 1 (the `fuzz/` harness) waits for the owner's go |

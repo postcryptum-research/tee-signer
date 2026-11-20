@@ -1,6 +1,6 @@
 # REQ-r10 — coverage-guided fuzzing of the critical sections (design REQ)
 
-**Date:** 2026-11-20. **Status:** SENT (design). **Owner's ask (2026-11-20):** «кроме покрытия тестами ещё fuzzing для
+**Date:** 2026-11-20. **Status:** **DESIGN-PASS (CONDITIONAL)** 2026-11-20 → `RESP-r10-fuzzing-design-2026-11-20.md` (the auditor, same day; C1–C7 carried as `C-R10-1…7` + forward `C-R10-F` in `CONDITIONS.md`; §6 answered: C-R9-C table + direct invariants for F10, no state-machine model; `#[path]` fixtures; fuzz-replay joins the IMPL-PASS bar). Phase 1 waits for the owner's go. **Owner's ask (2026-11-20):** «кроме покрытия тестами ещё fuzzing для
 критических секций кода» — fuzzing added next to the golden vectors, the hollow-test mutations and the unit tests.
 **Scope of this REQ:** which code is fuzzed, with which oracles, where the harness lives, how a finding is handled.
 **Not in scope:** any change to `core/` or `enclave/` — the harness uses the public API of `signer-core` and the
