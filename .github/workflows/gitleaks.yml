@@ -4,6 +4,9 @@ name: gitleaks
 # the merge. The image is pinned by digest (the same build used for the pre-publication history scan
 # on 2026-11-20); the three verified false positives are excluded by exact commit:file:rule:line fingerprints
 # in .gitleaksignore (reasons next to each), never by a pattern — a new hit anywhere is a finding.
+# Note: gitleaks ALWAYS loads <source>/.gitleaksignore in addition to --gitleaks-ignore-path, so that file is
+# part of the gate — a change to it is reviewed like a change to this workflow (an added fingerprint silences
+# exactly one commit:file:rule:line, nothing else).
 on:
   push:
   pull_request:
