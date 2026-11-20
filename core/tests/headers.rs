@@ -55,7 +55,7 @@ fn signet_state() -> (State, Vec<[u8; 80]>) {
     let hs = load_signet();
     let m = signet_mandate(&w, &cold, &hs[0], 322_560);
     let sig = owner_sig_for(&k, &m, 0);
-    let s = State::new_at_init(ENCLAVE_ID, k.owner.pk, k.recovery.pk, m, sig);
+    let s = State::new_at_init(ENCLAVE_ID, k.owner.pk, k.recovery.pk, m, sig).unwrap();
     (s, hs)
 }
 
@@ -207,7 +207,7 @@ fn regtest_state(max_reorg: u32) -> (State, Header) {
     };
     m.not_after_height = 10_000;
     let sig = owner_sig_for(&k, &m, 0);
-    (State::new_at_init(ENCLAVE_ID, k.owner.pk, k.recovery.pk, m, sig), cp)
+    (State::new_at_init(ENCLAVE_ID, k.owner.pk, k.recovery.pk, m, sig).unwrap(), cp)
 }
 
 fn chain_from(start: &Header, n: usize, t0: u32, salt: u32) -> Vec<Header> {

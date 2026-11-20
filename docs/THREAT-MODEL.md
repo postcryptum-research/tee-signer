@@ -91,6 +91,18 @@ a thief tightening the mandate is a DoS, not a theft.
 Cannot: shorten the timelock without waiting the current timelock; apply a loosening change
 before the timelock; sign transactions (the owner key never signs transactions).
 
+**Residual — V5 ∧ frozen (RESP-r10-F01, 2026-11-21).** While the chain is frozen by a reorg deeper than
+`maxReorg`, the owner's signature is the irreducible root of trust for recovery: the deep reorg invalidated
+the enclave's local view, so there is no header to validate a re-pinned checkpoint against, and the re-pin
+applies at once (the block-height timelock cannot run while the chain is frozen — timelocking it would
+brick the signer). A thief with the owner key who can also force such a reorg (≈ 51 % of mainnet
+hashpower; the signet key on signet; feasible on testnet4) can therefore restart the chain view from
+parameters of their choosing. Bounded by: the re-pin is checkpoint-only (no destination or limit changes
+ride on it), the owner's cancel/rotate path is unchanged, and the precondition is the stolen key **and**
+the deep reorg. Named here, not denied. Until the F-01 fix is the deployed measurement, the deployed
+`2073c234…` build additionally lets a checkpoint-content-only update skip the timelock while unfrozen
+(`deploy/README.md`).
+
 ### V6 — out of scope
 
 Side channels against the enclave's secp256k1 (constant-time implementation is required and

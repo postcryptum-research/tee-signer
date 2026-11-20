@@ -127,8 +127,18 @@ caps the fee burn below the outflow budget.
 
 ### `chain`
 
-`checkpoint.{hash, height}`: the header the enclave starts from. An update may only move the
-checkpoint **forward** to a header the enclave has already verified, or re-pin after a freeze.
+`checkpoint.{hash, height, time, bits, periodStartTime, periodBits}`: the header the enclave starts from,
+with what the verifier needs to continue from it. An update may only move the checkpoint **forward** to a
+header the enclave has already verified, or re-pin after a freeze. **Same height with different content is
+not forward** (fuzz finding F-2026-11-20-01). At install, while the chain is not frozen, a changed checkpoint
+is accepted only if **every** field is pinned by the enclave's own header record: `hash`/`height` a verified
+recent header, `time` and `bits` that header's, `periodStartTime`/`periodBits` the enclave's current-period
+values — which it knows exactly only for a header of the **current retarget period**, so a header of an
+earlier period is refused (`POLICY_INVALID`) rather than trusted on the owner's word. While the chain is
+**frozen** by a reorg deeper than `maxReorg` there is no local header to validate against: a re-pin applies
+**at once** (forward or same-height — the block-height timelock cannot run while frozen), is
+**checkpoint-only** (any other field changed in the same update is refused), and the owner's signature is the
+root of trust for that recovery (`THREAT-MODEL.md`, V5 ∧ frozen).
 
 ### `freshness`
 
@@ -172,7 +182,7 @@ to be provably in the restrictive direction.
 | `limits.maxFeePerWindow` | lowered, or absent → present |
 | `limits.window.blocks` | raised (a longer window with the same budget is tighter) |
 | `rules.payjoin` | moved toward `none`; `rules.opReturn` toward `none`; `rules.rbf` to `false` |
-| `chain.checkpoint` | moved forward |
+| `chain.checkpoint` | unchanged, or moved **strictly forward** — same height with different content is not forward and is loosening (F-2026-11-20-01); a re-pin while the chain is frozen bypasses this table and applies at once, checkpoint-only (see `chain` above) |
 | `freshness.required` | `false → true`; `freshness.maxTipLag` lowered; **`witnessPubKey` changed = loosening** (a new witness could hide a rollback) |
 | `validity.notAfterHeight` | lowered |
 | `timelockBlocks` | raised |
