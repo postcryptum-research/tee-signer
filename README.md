@@ -139,9 +139,9 @@ accidents and recovery: [`docs/CONTINUITY.md`](docs/CONTINUITY.md); the audit di
 change goes through: [`docs/audit/PROTOCOL.md`](docs/audit/PROTOCOL.md). To report a vulnerability:
 [`SECURITY.md`](SECURITY.md).
 
-The project was developed privately as `77ph/BTCPayTEE`; the audit record in `docs/audit/` names that
-repository and its issue #1. It stays private as the operations home — every commit the record refers to is
-in this repository's history.
+The project was developed privately as `77ph/BTCPayTEE` and transferred here on 2026-11-20 with its full
+history and issues; the audit record in `docs/audit/` names the old address and its issue #1 — GitHub redirects
+both to this repository, and every commit the record refers to is in this history.
 
 ## Reading order
 

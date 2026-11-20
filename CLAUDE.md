@@ -2,9 +2,9 @@
 
 **Project:** tee-signer — a policy-enforcing SGX signer for BTCPay Server hot wallets (SMB sibling
 of TRUST). **Read first:** `README.md`, `docs/THREAT-MODEL.md`, `docs/DESIGN.md`, `docs/POLICY.md`.
-**Public mirror (2026-11-20):** <https://github.com/postcryptum-research/tee-signer> — after every IMPL-PASS merge
-`main` is pushed to the private `origin` and to `public` in one step; the private repo stays the issue tracker and
-ops home; `.local/` never leaves the laptop.
+**Public home (2026-11-20):** <https://github.com/postcryptum-research/tee-signer> — this repository itself,
+transferred from the private `77ph/BTCPayTEE` (the old address redirects). One remote, `origin`; everything that
+reaches `main` is public at once, so `.local/` never leaves the laptop and every claim in the docs is a public claim.
 
 ## Roles
 
