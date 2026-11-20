@@ -180,8 +180,10 @@ chain-view impact gated on a frozen chain).
   leg 3 `validate` dropped from `new_at_init` → RED (`new_at_init_refuses_an_invalid_mandate`). 6/6.
 - `fuzz/run.sh mandate_compare 120 1` against the fixed core: 7.15 M executions, **0 crashes** (the target that fired
   F-01 after 82 executions before the fix), corpus re-grown past the old crash frontier (`cov` 2156 → 2261), `cmin`'d.
-- `fuzz/injected-defects.sh` with the tenth case: see the follow-up commit on the branch (the script needs a clean
-  `core/` and runs after the implementation commit).
+- `fuzz/injected-defects.sh` with the tenth case, on the committed branch tree (the script needs a clean `core/`):
+  **10/10 caught**, `core/` restored clean after each; the reverted compare line is caught by the first mandate pair
+  that differs only in `checkpoint.period_bits` (a corpus file), the four F-01 regressions behind it. Log
+  `.local/fuzz-runs/injected-defects-f01-2026-11-21.log`.
 
 ## 6. Questions to the auditor — answered in `RESP-r10-f01-checkpoint-design-2026-11-21.md`
 
