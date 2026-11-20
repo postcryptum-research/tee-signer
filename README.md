@@ -140,8 +140,9 @@ change goes through: [`docs/audit/PROTOCOL.md`](docs/audit/PROTOCOL.md). To repo
 [`SECURITY.md`](SECURITY.md).
 
 The project was developed privately as `77ph/BTCPayTEE` and transferred here on 2026-11-20 with its full
-history and issues; the audit record in `docs/audit/` names the old address and its issue #1 — GitHub redirects
-both to this repository, and every commit the record refers to is in this history.
+history and issues; the audit record in `docs/audit/` names the old address and its issue #1 — the old repository,
+file and commit links redirect here; the issue is [#1](https://github.com/postcryptum-research/tee-signer/issues/1)
+of this repository, and every commit the record refers to is in this history.
 
 ## Reading order
 

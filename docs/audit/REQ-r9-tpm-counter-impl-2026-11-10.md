@@ -143,7 +143,7 @@ already on `main` (286 diffs); the two new core files are rustfmt-clean.
 
 - **The dev agent** (`tee-tpm-agent`, the owner's laptop TPM through `tss-esapi`) — **frozen by the owner
   on 2026-11-10** («замораживаем идею»). The product path is a TPM in front of the node:
-  [issue #1](https://github.com/77ph/BTCPayTEE/issues/1) (a vTPM via Azure Trusted Launch on `sgx-node-3`,
+  [issue #1](https://github.com/postcryptum-research/tee-signer/issues/1) (a vTPM via Azure Trusted Launch on `sgx-node-3`,
   or a +1 counter VM) or the operator's own server with a physical TPM. The `RemoteTpm` client stays for
   the +1-VM option; must-hold E and Q6 apply to that agent when it is written.
 - ~~The `tss` transport for a local `/dev/tpmrm0` (the product path) — when a node has a TPM.~~ **Written
