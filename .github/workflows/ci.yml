@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.92.0"   # the toolchain the enclave image pins (docker/Dockerfile.enclave-build)
+
+jobs:
+  core:
+    name: signer-core (no_std, host tests)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt && rustup default "$RUST_TOOLCHAIN"
+      - run: cd core && cargo fmt --check
+      - run: cd core && cargo clippy --all-targets -- -D warnings
+      - run: cd core && cargo test
+
+  rcore-nosgx:
+    name: rcore (nosgx replay tests)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt && rustup default "$RUST_TOOLCHAIN"
+      - run: cd enclave/rcore && cargo fmt --check
+      - run: cd enclave/rcore && cargo clippy --features nosgx,test-init --all-targets -- -D warnings
+      - run: cd enclave/rcore && cargo test --features nosgx,test-init
+
+  signerd-nosgx:
+    name: signerd (nosgx)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt && rustup default "$RUST_TOOLCHAIN"
+      - run: cd host/signerd && cargo test --features nosgx
+
+  owner-cli:
+    name: owner-cli
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libtss2-dev libpcsclite-dev clang pkg-config
+      - run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt && rustup default "$RUST_TOOLCHAIN"
+      - run: cd owner/owner-cli && cargo test

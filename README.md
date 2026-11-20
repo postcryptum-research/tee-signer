@@ -1,7 +1,13 @@
-# tee-signer — a policy-enforcing TEE signer for BTCPay Server hot wallets
+# tee-signer — a Bitcoin spending key sealed in an SGX enclave that signs only inside an owner-signed mandate
 
-**Working name.** Product name to be chosen by the owner.
-**Status (2026-11-04):** every round so far has an IMPL-PASS from the auditor and is merged
+**Working name.** The product name is the owner's choice; the repository is published under the working name.
+**Status (2026-11-19):** signet only; nothing here has touched mainnet. Rounds R1–R9a each carry a DESIGN-PASS
+and an IMPL-PASS from the independent auditor (`docs/audit/`). The current ceremony-signed build,
+`MRENCLAVE 2073c234…10cc`, is live on the project's T2 node (Azure DCsv3, DCAP-attested, freshness anchored to
+a vTPM monotonic counter, auto-arm after an unattended restart) — rebuild it yourself:
+[`docs/REPRODUCIBLE-BUILD.md`](docs/REPRODUCIBLE-BUILD.md). Vulnerabilities: [`SECURITY.md`](SECURITY.md).
+The BTCPay Server plugin is one integration of the signer, not the whole system.
+**Rounds to 2026-11-04:** every round so far has an IMPL-PASS from the auditor and is merged
 (`docs/audit/`): R1 `signer-core`, R2 enclave shell + daemon + owner tool, R3 BTCPay plugin with
 the four executable gates, R5 **T2 on Azure DCsv3** (reproducible pinned build, non-debug launch,
 DCAP-attested identity card verified on the owner's machine), R6 the owner key inside the
@@ -81,7 +87,23 @@ Both close the November 2026 attack. **T2 is the product.** T1 is the project's 
 server (owner's decision 2026-11-05): the enclave runs there, but not for money — root reads a
 debug enclave.
 
-## Layout (planned)
+## Architecture map
+
+```
+owner's device (YubiKey PIV / TPM 2.0)      owner-cli: builds, diffs and signs mandates; verifies the
+        │  signed owner messages              enclave's DCAP quote against the pinned Intel root
+        │  (mandate, arm, anchor, freeze, …)
+        ▼
+BTCPay Server + plugin ──PSBT──▶ signerd (untrusted host daemon) ──ecalls──▶ SGX enclave (rcore + signer-core, no_std)
+   watch-only xpub,               HTTP API on loopback, header feed,          the seed, the sealed state, the mandate;
+   payout processor               receipts, TPM transport, quote helper        judges every PSBT, refuses on any doubt
+```
+
+Everything left of the enclave is untrusted input to it. The enclave verifies the PSBT, the previous
+transactions, the headers, the policy bytes and the owner's signature against its sealed state and
+the owner's public key.
+
+## Layout
 
 ```
 docs/            THREAT-MODEL.md, DESIGN.md, POLICY.md, audit/ (REQ/RESP cycle)
@@ -99,6 +121,21 @@ vectors/         golden vectors, positive and the refusal suite, from signet
 deploy/          docker fragment for btcpayserver-docker, systemd, isolation table
 ```
 
+## Build and verify
+
+The enclave is built only through the pinned Docker recipe; no SGX hardware is needed to build and
+measure it, and the measurement must match the published `MRENCLAVE` — the recipe, the published
+values and the caveats are in [`docs/REPRODUCIBLE-BUILD.md`](docs/REPRODUCIBLE-BUILD.md). The host-side
+crates test on any machine (`CONTRIBUTING.md`, "Local checks"); CI runs them and a full-history secret
+scan on every push.
+
+## Security
+
+Threat model with honest tiers and stated residuals: [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md);
+accidents and recovery: [`docs/CONTINUITY.md`](docs/CONTINUITY.md); the audit discipline every enclave
+change goes through: [`docs/audit/PROTOCOL.md`](docs/audit/PROTOCOL.md). To report a vulnerability:
+[`SECURITY.md`](SECURITY.md).
+
 ## Reading order
 
 Start with [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md) (one page) and
@@ -107,3 +144,7 @@ things break; Russian: [`HOW_IT_WORKS_ru.md`](docs/HOW_IT_WORKS_ru.md),
 [`FAQ_ru.md`](docs/FAQ_ru.md)). Then `docs/THREAT-MODEL.md` → `docs/DESIGN.md` →
 `docs/POLICY.md` → `docs/CONTINUITY.md` → `docs/audit/PROTOCOL.md`. Working rules for
 sessions: `CLAUDE.md`.
+
+## License
+
+Apache-2.0 — see [`LICENSE`](LICENSE). Contributions: [`CONTRIBUTING.md`](CONTRIBUTING.md).
