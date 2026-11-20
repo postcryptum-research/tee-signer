@@ -416,7 +416,11 @@ fn install(input: &[u8]) -> Response {
     if mandate.wallet != want {
         return refuse(Reason::PolicyWallet.into());
     }
-    let state = State::new_at_init(enclave_id, env.owner_pk, env.recovery_pk, mandate, sig);
+    // RESP-r10-F01 C-F01-3: the state constructor validates the mandate itself (it already passed
+    // above; this is the write-site invariant, not a second opinion)
+    let Ok(state) = State::new_at_init(enclave_id, env.owner_pk, env.recovery_pk, mandate, sig) else {
+        return refuse(Reason::PolicyInvalid.into());
+    };
     env.state = Some(state);
     match seal_or(&mut env) {
         Ok(sealed) => Response::ok(proto::SealedResponse { sealed }.encode()),

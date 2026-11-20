@@ -47,6 +47,9 @@ case_ "Dec::list bound dropped (count above max accepted)" \
   core/src/encoding.rs 's/if n > max_count \{/if n > usize::MAX {/' 'if n > usize::MAX {'
 case_ "C-R10-5: compare no longer reflexive (version check inverted)" \
   core/src/mandate.rs 's/clear\(installed\.version == new\.version\);/clear(installed.version != new.version);/' 'clear(installed.version != new.version);'
+  # F-2026-11-20-01 fixed (RESP-r10-F01 leg 1): the pre-fix compare line brought back must be caught by the four
+  # F-01 reproducers that moved findings/ -> regressions/ (C-R10-5 both directions)
+  core/src/mandate.rs 's/clear\(new\.checkpoint == installed\.checkpoint \|\| new\.checkpoint\.height > installed\.checkpoint\.height\);/clear(new.checkpoint.height >= installed.checkpoint.height);/' 'clear(new.checkpoint.height >= installed.checkpoint.height);'
 
 echo "== core/ restored: $([ -z "$(git status --porcelain core/)" ] && echo clean || echo 'DIRTY — check git status')"
 [ "$rc" = 0 ] && echo "== every injected defect was caught" || echo "== rc=$rc (1 = a defect was NOT caught; 3 = an edit did not apply)"

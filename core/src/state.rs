@@ -155,17 +155,20 @@ pub struct State {
 }
 
 impl State {
-    /// A fresh state at init. The caller has validated `mandate` and verified `mandate_sig`.
+    /// A fresh state at init. Validates `mandate` itself and refuses an invalid one (RESP-r10-F01,
+    /// C-F01-3: "the installed mandate is always validated" is enforced at the write site, not by
+    /// caller discipline — `compare` relies on it). The caller has verified `mandate_sig`.
     pub fn new_at_init(
         enclave_id: [u8; 32],
         owner_pk: [u8; 65],
         recovery_pk: [u8; 65],
         mandate: Mandate,
         mandate_sig: [u8; 64],
-    ) -> Self {
+    ) -> Result<Self, mandate::Invalid> {
+        mandate.validate()?;
         let start = mandate.checkpoint.height;
         let chain = ChainState::from_checkpoint(&mandate.checkpoint);
-        State {
+        Ok(State {
             enclave_id,
             network: mandate.network,
             wallet: mandate.wallet.clone(),
@@ -183,7 +186,7 @@ impl State {
             own_index_bound: [0, 0],
             seq: 0,
             tpm: None,
-        }
+        })
     }
 
     /// REQ-r9 (C-R9-B): the one place the expected counter moves by `+1` — called by the shell's
@@ -418,19 +421,30 @@ impl State {
                     return Err(Reason::PolicyWallet.into());
                 }
                 // the checkpoint is the trust root: unchanged, or a header this enclave verified
-                // itself, or — only while the chain is frozen by a deep reorg — a fresh re-pin
-                let mut repin = false;
+                // itself with every field as recorded (RESP-r10-F01 leg 2), or — only while the chain
+                // is frozen by a deep reorg — a fresh re-pin, which applies at once (C-F01-1)
                 if new.checkpoint != s.mandate.checkpoint {
-                    let known = s
-                        .chain
-                        .recent
-                        .iter()
-                        .any(|r| r.hash == new.checkpoint.hash && r.height == new.checkpoint.height);
                     if s.chain.frozen {
-                        repin = true;
-                    } else if !known || new.checkpoint.height > best {
-                        return Err(Reason::PolicyInvalid.into());
+                        // Frozen re-pin. The deep reorg invalidated the local view, so there is no
+                        // header to validate the checkpoint against and the owner's signature is the
+                        // root of trust for recovery (THREAT-MODEL.md, V5 ∧ frozen). It applies AT
+                        // ONCE, forward or same-height: the block-height timelock cannot run while
+                        // `apply_headers` refuses every header, so a re-pin routed through `pending`
+                        // would never activate and the signer would stay frozen for good. Checkpoint-
+                        // only (C-F01-2): nothing else may change in the same step, so the recovery
+                        // path is not a policy-change path.
+                        let mut rest = new.clone();
+                        rest.checkpoint = s.mandate.checkpoint;
+                        if rest != s.mandate {
+                            return Err(Reason::PolicyInvalid.into());
+                        }
+                        s.nonce = next;
+                        s.chain = ChainState::from_checkpoint(&new.checkpoint);
+                        s.mandate = new;
+                        s.mandate_sig = *msg.sig();
+                        return Ok(s);
                     }
+                    checkpoint_pinned(&s.chain, &new.checkpoint, best)?;
                 }
                 let change = match mandate::compare(&s.mandate, &new) {
                     Ok(c) => c,
@@ -438,14 +452,6 @@ impl State {
                     Err(mandate::Immutable::Wallet) => return Err(Reason::PolicyWallet.into()),
                 };
                 s.nonce = next;
-                if repin {
-                    // a re-pin is a loosening (new trust root) unless it applies at once by
-                    // being a tightening elsewhere; either way the chain restarts from it when
-                    // the mandate takes effect — for a tightening, now
-                    if change == mandate::Change::Tightening {
-                        s.chain = ChainState::from_checkpoint(&new.checkpoint);
-                    }
-                }
                 match change {
                     mandate::Change::Tightening => {
                         s.mandate = new;
@@ -621,4 +627,30 @@ impl State {
         s.tpm = Some(anchor);
         Ok(s)
     }
+}
+
+/// RESP-r10-F01 leg 2: on the unfrozen path a changed checkpoint is accepted only if **every** field
+/// is pinned by this enclave's own chain view — validate or refuse, never document-and-trust.
+/// `hash`/`height` must be a verified recent header `r` at or below `best`; `time` and `bits` must be
+/// `r`'s; `period_start_time`/`period_bits` must be the current period's values, which the enclave
+/// knows exactly only while `r` lies in the current retarget period (`apply_headers` keeps the
+/// previous period's start time but not its bits exactly on every network) — a header of an earlier
+/// period is not re-pinnable while unfrozen. Anything else is `POLICY_INVALID`.
+fn checkpoint_pinned(chain: &ChainState, c: &Checkpoint, best: u32) -> Result<(), Refusal> {
+    let invalid = || Refusal::one(Reason::PolicyInvalid);
+    if c.height > best {
+        return Err(invalid());
+    }
+    let r = chain.recent.iter().find(|r| r.hash == c.hash && r.height == c.height).ok_or_else(invalid)?;
+    if c.time != r.time || c.bits != r.bits {
+        return Err(invalid());
+    }
+    let period_start_height = best.saturating_sub(best.checked_rem(crate::headers::INTERVAL).unwrap_or(0));
+    if r.height < period_start_height
+        || c.period_start_time != chain.period_start_time
+        || c.period_bits != chain.period_bits
+    {
+        return Err(invalid());
+    }
+    Ok(())
 }

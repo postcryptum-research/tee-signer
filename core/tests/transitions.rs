@@ -189,6 +189,16 @@ fn classifier_fails_toward_loosening() {
             }),
             Change::Loosening,
         ),
+        // F-2026-11-20-01 (RESP-r10-F01 leg 1): same height with different content is not "forward"
+        ("checkpoint same height, other hash", Box::new(|m| m.checkpoint.hash[0] ^= 1), Change::Loosening),
+        ("checkpoint same height, other time", Box::new(|m| m.checkpoint.time += 1), Change::Loosening),
+        ("checkpoint same height, other bits", Box::new(|m| m.checkpoint.bits ^= 1), Change::Loosening),
+        (
+            "checkpoint same height, other period start",
+            Box::new(|m| m.checkpoint.period_start_time += 1),
+            Change::Loosening,
+        ),
+        ("checkpoint same height, other period bits", Box::new(|m| m.checkpoint.period_bits ^= 1), Change::Loosening),
         (
             "freshness enabled (a precondition added)",
             Box::new(|m| {
@@ -215,6 +225,10 @@ fn classifier_fails_toward_loosening() {
         let mut m = base.clone();
         f(&mut m);
         assert_eq!(compare(&base, &m), Ok(want), "{name}");
+        // C-R10-5 (the fuzz oracle, both directions): two distinct mandates are never mutually tightening
+        if m != base && want == Change::Tightening {
+            assert_eq!(compare(&m, &base), Ok(Change::Loosening), "{name}: reverse direction");
+        }
     }
     // witness key set when required: adding a key is tightening only together with required
     let mut with_key = base.clone();
@@ -286,10 +300,10 @@ fn update_refusals() {
     unknown.checkpoint.hash = [0xcd; 32];
     let e = s1.apply_message(&update(&k, &k.owner, &unknown, 2)).unwrap_err();
     assert_eq!(first_reason(&e), "POLICY_INVALID");
-    // a verified recent header is accepted as the new checkpoint (and the chain view is kept)
+    // a verified recent header is accepted as the new checkpoint (and the chain view is kept) — with
+    // every field as this enclave recorded it (RESP-r10-F01 leg 2)
     let mut known = base.clone();
-    known.checkpoint.height = H - 3;
-    known.checkpoint.hash = header_hash(H - 3);
+    known.checkpoint = pinned_checkpoint(&s1, H - 3);
     known.destinations.unlisted.max_per_tx = 400_000; // tightening; the checkpoint moves forward (250_000 → H-3)
     let s_known = s1.apply_message(&update(&k, &k.owner, &known, 2)).unwrap();
     assert!(s_known.pending.is_none(), "forward checkpoint to a verified header + tightening applies at once");
@@ -560,4 +574,150 @@ mod hollow {
         let g = Guards { window_caps: false, ..Default::default() };
         assert!(matches!(judge_with_guards(&s, &c, None, g), Verdict::Accept { .. }));
     }
+}
+
+/// The checkpoint this enclave would accept for its own recent header at `height`: every field from
+/// the record and the chain's current-period values (RESP-r10-F01 leg 2).
+fn pinned_checkpoint(s: &State, height: u32) -> Checkpoint {
+    let r = s.chain.recent.iter().find(|r| r.height == height).expect("a recent header");
+    Checkpoint {
+        hash: r.hash,
+        height: r.height,
+        time: r.time,
+        bits: r.bits,
+        period_start_time: s.chain.period_start_time,
+        period_bits: s.chain.period_bits,
+    }
+}
+
+/// F-2026-11-20-01, leg 2 (RESP-r10-F01): on the unfrozen path a changed checkpoint is accepted only
+/// when every field is pinned by the enclave's own header record; the period fields only within the
+/// current retarget period. Vectors 3–8 of the fix REQ.
+#[test]
+fn checkpoint_install_validates_every_field_fail_closed() {
+    let (w, cold, k) = fx();
+    let base = base_mandate(&w, &cold);
+    let s1 = init_state(base.clone(), &k, H);
+    let good = pinned_checkpoint(&s1, H - 3);
+    let refused = |name: &str, c: Checkpoint| {
+        let mut m = base.clone();
+        m.checkpoint = c;
+        let e = s1.apply_message(&update(&k, &k.owner, &m, 1)).unwrap_err();
+        assert_eq!(first_reason(&e), "POLICY_INVALID", "{name}");
+    };
+    // the real hash with any other field forged is an internally inconsistent checkpoint — refused,
+    // never documented-and-trusted
+    refused("wrong time", Checkpoint { time: good.time + 1, ..good });
+    refused("wrong bits", Checkpoint { bits: good.bits ^ 1, ..good });
+    refused("wrong period start", Checkpoint { period_start_time: good.period_start_time + 1, ..good });
+    refused("wrong period bits", Checkpoint { period_bits: good.period_bits ^ 1, ..good });
+    refused("wrong hash", Checkpoint { hash: [0xcd; 32], ..good });
+    // the installed height with different content (the F-01 reproducer at install): leg 1 would make it
+    // loosening, leg 2 refuses it first — it is not this enclave's record of height 250_000
+    let mut same_h = base.checkpoint;
+    same_h.time += 1;
+    refused("same height, other content", same_h);
+    // positive: a genuine mid-period header, all fields the enclave's own
+    let mut m = base.clone();
+    m.checkpoint = good;
+    let s2 = s1.apply_message(&update(&k, &k.owner, &m, 1)).unwrap();
+    assert!(s2.pending.is_none(), "forward to a verified header, nothing else changed: applies at once");
+    assert_eq!(s2.mandate.checkpoint, good);
+    assert_eq!(s2.chain.best.unwrap().height, H, "the chain view is kept, not reset");
+
+    // the retarget boundary: best just past one, so `recent` straddles it
+    let b = 252_000; // 125 * 2016
+    let mut s3 = init_state(base.clone(), &k, b + 5);
+    s3.chain.period_start_time = rec(b).time; // what apply_headers would have recorded at the boundary
+    s3.chain.period_bits = rec(b).bits;
+    // a header of the PREVIOUS period: its period fields are not derivable while unfrozen — refused even
+    // with every field matching the record (fail-closed, vector 6)
+    let prev = s3.chain.recent.iter().find(|r| r.height == b - 1).unwrap();
+    let mut m = base.clone();
+    m.checkpoint = Checkpoint {
+        hash: prev.hash,
+        height: prev.height,
+        time: prev.time,
+        bits: prev.bits,
+        period_start_time: s3.chain.prev_period_start_time,
+        period_bits: prev.bits,
+    };
+    let e = s3.apply_message(&update(&k, &k.owner, &m, 1)).unwrap_err();
+    assert_eq!(first_reason(&e), "POLICY_INVALID", "previous-period header is not re-pinnable while unfrozen");
+    // boundary-aligned (the period's first block): accepted — period fields equal its own time/bits
+    let mut m = base.clone();
+    m.checkpoint = pinned_checkpoint(&s3, b);
+    assert_eq!((m.checkpoint.period_start_time, m.checkpoint.period_bits), (m.checkpoint.time, m.checkpoint.bits));
+    let s4 = s3.apply_message(&update(&k, &k.owner, &m, 1)).unwrap();
+    assert_eq!(s4.mandate.checkpoint.height, b);
+    // mid-period: accepted with the chain's period values
+    let mut m = base.clone();
+    m.checkpoint = pinned_checkpoint(&s3, b + 3);
+    let s5 = s3.apply_message(&update(&k, &k.owner, &m, 1)).unwrap();
+    assert_eq!(s5.mandate.checkpoint.height, b + 3);
+}
+
+/// RESP-r10-F01 C-F01-1/2 (the brick regression): while the chain is frozen by a deep reorg a re-pin —
+/// same height with different content, or forward — applies AT ONCE, resets the chain from the new
+/// checkpoint and clears the freeze; it is checkpoint-only. Vectors 12–14 of the fix REQ.
+#[test]
+fn frozen_repin_applies_at_once_and_is_checkpoint_only() {
+    let (w, cold, k) = fx();
+    let base = base_mandate(&w, &cold);
+    let mut s1 = init_state(base.clone(), &k, H);
+    s1.chain.frozen = true;
+    // same-height, different content (a reorg deeper than max_reorg landing at the same tip height)
+    let mut same = base.clone();
+    same.checkpoint.hash = [0xaa; 32];
+    same.checkpoint.time += 600;
+    let s2 = s1.apply_message(&update(&k, &k.owner, &same, 1)).unwrap();
+    assert!(s2.pending.is_none(), "a frozen re-pin never waits: the block-height timelock cannot run while frozen");
+    assert_eq!(s2.mandate.checkpoint, same.checkpoint);
+    assert!(!s2.chain.frozen, "the freeze is cleared");
+    assert_eq!(s2.chain.best.unwrap().hash, [0xaa; 32], "the chain restarts from the new checkpoint");
+    assert_eq!(s2.chain.best.unwrap().height, base.checkpoint.height);
+    assert_eq!(s2.nonce, 1);
+    // forward
+    let mut fwd = base.clone();
+    fwd.checkpoint.height = H + 7;
+    fwd.checkpoint.hash = [0xbb; 32];
+    let s3 = s1.apply_message(&update(&k, &k.owner, &fwd, 1)).unwrap();
+    assert!(s3.pending.is_none() && !s3.chain.frozen);
+    assert_eq!(s3.chain.best.unwrap().height, H + 7);
+    assert_eq!(s3.mandate.checkpoint, fwd.checkpoint);
+    // checkpoint-only: a frozen re-pin that also changes any other field is refused (C-F01-2) — whether
+    // that change would be tightening or loosening when unfrozen
+    for (name, f) in [
+        (
+            "loosening elsewhere",
+            Box::new(|m: &mut Mandate| m.destinations.unlisted.max_per_tx *= 2) as Box<dyn Fn(&mut Mandate)>,
+        ),
+        ("tightening elsewhere", Box::new(|m: &mut Mandate| m.limits.max_fee_abs /= 2)),
+        ("trusted removed", Box::new(|m: &mut Mandate| m.destinations.trusted.clear())),
+        ("timelock raised", Box::new(|m: &mut Mandate| m.timelock_blocks += 1)),
+    ] {
+        let mut m = same.clone();
+        f(&mut m);
+        let e = s1.apply_message(&update(&k, &k.owner, &m, 1)).unwrap_err();
+        assert_eq!(first_reason(&e), "POLICY_INVALID", "frozen re-pin with {name}");
+    }
+    // and while frozen with the checkpoint UNCHANGED, an ordinary update still takes the ordinary path
+    let mut tight = base.clone();
+    tight.limits.max_fee_abs /= 2;
+    let s4 = s1.apply_message(&update(&k, &k.owner, &tight, 1)).unwrap();
+    assert!(s4.chain.frozen, "no re-pin, no reset: the chain stays frozen");
+    assert_eq!(s4.mandate.limits.max_fee_abs, tight.limits.max_fee_abs);
+}
+
+/// RESP-r10-F01 C-F01-3: the state constructor refuses an invalid mandate (vector 10).
+#[test]
+fn new_at_init_refuses_an_invalid_mandate() {
+    let (w, cold, k) = fx();
+    let mut bad = base_mandate(&w, &cold);
+    bad.destinations.trusted.push(bad.destinations.trusted[0].clone()); // duplicate label
+    let sig = owner_sig_for(&k, &bad, 0);
+    assert_eq!(State::new_at_init(ENCLAVE_ID, k.owner.pk, k.recovery.pk, bad, sig).map(|_| ()), Err(Invalid::Label));
+    let good = base_mandate(&w, &cold);
+    let sig = owner_sig_for(&k, &good, 0);
+    assert!(State::new_at_init(ENCLAVE_ID, k.owner.pk, k.recovery.pk, good, sig).is_ok());
 }

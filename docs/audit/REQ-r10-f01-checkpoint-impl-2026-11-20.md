@@ -1,6 +1,7 @@
 # REQ-r10-F01 — the checkpoint in `compare` and at install: fix of fuzz finding F-2026-11-20-01 (impl REQ)
 
-**Date:** 2026-11-20 (drafted), 2026-11-21 (sent). **Status:** **DESIGN-PASS (CONDITIONAL)** at `3473e41` →
+**Date:** 2026-11-20 (drafted), 2026-11-21 (sent; implementation sent for IMPL-PASS the same day). **Status:** **IMPL on
+branch `r10-f01-checkpoint`, SENT for IMPL-PASS** against `C-F01-1 … 6` — §7 has what was run. Design: **DESIGN-PASS (CONDITIONAL)** at `3473e41` →
 `RESP-r10-f01-checkpoint-design-2026-11-21.md` (same day): the unfrozen legs approved as drafted; the frozen path
 **re-ruled** — a frozen re-pin applies at once (both forward and same-height), never through the timelock (§2a);
 Q1 answered that way, Q2 = `Result`, Q3 = spell it out; conditions `C-F01-1 … C-F01-6` in `CONDITIONS.md`.
@@ -135,6 +136,25 @@ fail-closed in release too (`debug_assert!` is a no-op in release: a silent foot
 `fuzz/injected-defects.sh` gains the case "leg-2 `bits` check dropped ⇒ caught by the install vector" once the
 install path has a fuzz target (phase 2, F4 structured).
 
+## 4a. What the branch does, file by file
+
+| Path | Change |
+|---|---|
+| `core/src/mandate.rs` | `compare`: the checkpoint line (leg 1), with the F-01 reference; nothing else |
+| `core/src/state.rs` | `apply_message`, `PolicyUpdate` arm: a changed checkpoint while **frozen** is handled first — checkpoint-only check (`new` with the installed checkpoint must equal the installed mandate, else `POLICY_INVALID`), then `chain = from_checkpoint(new)`, install, return (C-F01-1/2); while **unfrozen** `checkpoint_pinned(&chain, &new.checkpoint, best)` (leg 2, new private fn at the end of the file: hash/height a recent record `r` ≤ best, time/bits `r`'s, period fields the chain's and `r` in the current retarget period, else `POLICY_INVALID`); the old `repin` flag and its post-`compare` reset are gone; `new_at_init` → `Result<State, Invalid>`, `mandate.validate()?` first (C-F01-3); `activate_pending` unchanged |
+| `enclave/rcore/src/ops.rs` | `init`: `let Ok(state) = State::new_at_init(…) else { refuse(POLICY_INVALID) }` |
+| `core/tests/transitions.rs` | five same-height compare rows; the compare table now also asserts the reverse direction is `Loosening` for every tightening row (C-R10-5 in both directions on the vectors themselves); `update_refusals`' known-header case carries every pinned field; new `checkpoint_install_validates_every_field_fail_closed` (vectors 3–8: wrong time / bits / period start / period bits / hash, the installed height with other content, mid-period positive, the retarget boundary — previous-period header refused with every field matching the record, boundary-aligned positive, mid-period positive), new `frozen_repin_applies_at_once_and_is_checkpoint_only` (vectors 12–14 + four non-checkpoint changes each refused + an ordinary update while frozen with the checkpoint unchanged leaves the chain frozen), new `new_at_init_refuses_an_invalid_mandate` (vector 10) |
+| `core/tests/common/mod.rs`, `core/tests/headers.rs` | the three `new_at_init` callers unwrap |
+| `docs/POLICY.md` | `chain` section and the §5 `chain.checkpoint` row spelled out (C-F01-4) |
+| `docs/THREAT-MODEL.md` | V5: the residual V5 ∧ frozen, bounded and named (C-F01-5) |
+| `fuzz/regressions/mandate_compare/` | the four F-01 reproducers, moved from `findings/` (`FINDING.md` entry kept, marked RESOLVED with the RESP reference); the gate asserts they pass C-R10-5 both ways |
+| `fuzz/injected-defects.sh` | tenth case: the pre-fix compare line brought back is caught by those reproducers |
+| `fuzz/corpus/mandate_compare/` | re-grown and `cmin`'d on the branch (the fuzzer now explores past the checkpoint mutations) |
+
+Not touched: the host, the owner tooling, the enclave shell, the wire format (no encoding change; `State::encode` and
+the vectors' `state_hex` are byte-identical). `core/Cargo.lock`, `core/PROVENANCE.md` unchanged. **MRENCLAVE changes**
+(§5).
+
 ## 5. Build and deployment consequence
 
 `signer-core` changes ⇒ MRENCLAVE changes. Reproducible build on the box in Docker (`REPRODUCIBLE-BUILD.md`),
@@ -142,6 +162,26 @@ the auditor's decorrelated build as the deploy-content gate, ceremony signing by
 owner's script — the R9a procedure. Until then `main` carries the fix with the label "not yet the deployed
 measurement" in `deploy/README.md`, and the deployed `2073c234…` is documented as carrying F-01 (severity medium,
 chain-view impact gated on a frozen chain).
+
+## 7. What was run (laptop, 2026-11-21)
+
+- `cd core && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` — green (transitions: 10
+  tests incl. the three new; vectors, headers, judge, unit tests unchanged and green: the fix changes no wire byte).
+- `cd enclave/rcore && cargo fmt --check && cargo clippy --features nosgx,test-init --all-targets -- -D warnings &&
+  cargo test --features nosgx,test-init` — green. `cd host/signerd && cargo test --features nosgx` — green.
+- `cd fuzz && cargo test --no-default-features` — green with the four F-01 reproducers in `regressions/` (2181 inputs
+  replayed); `cargo clippy --no-default-features --all-targets -- -D warnings` green.
+- **Hollow red/green (vector 11), log `.local/fuzz-runs/f01-hollow-2026-11-21.log`** — each guard removed in turn,
+  `cargo test --test transitions`, sources restored byte-identical after: leg 2 `bits` check dropped → RED
+  (`checkpoint_install_validates_every_field_fail_closed`, "wrong bits"); leg 2 period fields unchecked → RED (same
+  test); frozen at-once re-pin disabled (the old shape) → RED (`frozen_repin_applies_at_once_and_is_checkpoint_only`
+  — the brick regression bites); frozen checkpoint-only check dropped → RED (same test, the non-checkpoint cases);
+  leg 1 compare line reverted to `height >=` → RED (`classifier_fails_toward_loosening`, the same-height rows);
+  leg 3 `validate` dropped from `new_at_init` → RED (`new_at_init_refuses_an_invalid_mandate`). 6/6.
+- `fuzz/run.sh mandate_compare 120 1` against the fixed core: 7.15 M executions, **0 crashes** (the target that fired
+  F-01 after 82 executions before the fix), corpus re-grown past the old crash frontier (`cov` 2156 → 2261), `cmin`'d.
+- `fuzz/injected-defects.sh` with the tenth case: see the follow-up commit on the branch (the script needs a clean
+  `core/` and runs after the implementation commit).
 
 ## 6. Questions to the auditor — answered in `RESP-r10-f01-checkpoint-design-2026-11-21.md`
 

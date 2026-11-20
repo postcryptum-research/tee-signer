@@ -654,9 +654,13 @@ pub fn compare(installed: &Mandate, new: &Mandate) -> Result<Change, Immutable> 
     clear(nr.payjoin <= or.payjoin);
     clear(nr.op_return <= or.op_return);
     clear(!nr.rbf || or.rbf);
-    // checkpoint: forward only (equal is fine). Whether the new checkpoint is a verified header is
-    // the chain module's check at install time, not a classification question.
-    clear(new.checkpoint.height >= installed.checkpoint.height);
+    // checkpoint: unchanged, or moved strictly forward (POLICY.md §5). Same height with different
+    // content is neither — it fails toward loosening like every field that is not provably
+    // tightening (fuzz finding F-2026-11-20-01, RESP-r10-F01 leg 1). Whether the new checkpoint is
+    // a header this enclave verified, with every field as recorded, is the install path's check
+    // (`State::apply_message`), not a classification question; a re-pin while the chain is frozen
+    // never reaches `compare` at all.
+    clear(new.checkpoint == installed.checkpoint || new.checkpoint.height > installed.checkpoint.height);
     let (of, nf) = (&installed.freshness, &new.freshness);
     clear(nf.required || !of.required);
     clear(nf.max_tip_lag <= of.max_tip_lag);

@@ -188,7 +188,8 @@ pub fn owner_sig_for(keys: &Keys, mandate: &Mandate, nonce: u64) -> [u8; 64] {
 /// Initial state with a verified best header at `height` and `recent` holding the last 10.
 pub fn init_state(mandate: Mandate, keys: &Keys, height: u32) -> State {
     let sig = owner_sig_for(keys, &mandate, 0);
-    let mut s = State::new_at_init(ENCLAVE_ID, keys.owner.pk, keys.recovery.pk, mandate, sig);
+    let mut s = State::new_at_init(ENCLAVE_ID, keys.owner.pk, keys.recovery.pk, mandate, sig)
+        .expect("fixture mandate is valid");
     set_best(&mut s, height);
     s
 }
