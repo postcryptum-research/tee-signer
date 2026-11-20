@@ -1,7 +1,11 @@
 # REQ-r10-F01 — the checkpoint in `compare` and at install: fix of fuzz finding F-2026-11-20-01 (impl REQ)
 
-**Date:** 2026-11-20 (drafted), 2026-11-21 (sent). **Status:** SENT — the next, separate pass after the harness's
-IMPL-PASS (`RESP-r10-fuzzing-impl-2026-11-20.md` at `9e2d2fc`; the auditor: "not folded into this one — it changes
+**Date:** 2026-11-20 (drafted), 2026-11-21 (sent). **Status:** **DESIGN-PASS (CONDITIONAL)** at `3473e41` →
+`RESP-r10-f01-checkpoint-design-2026-11-21.md` (same day): the unfrozen legs approved as drafted; the frozen path
+**re-ruled** — a frozen re-pin applies at once (both forward and same-height), never through the timelock (§2a);
+Q1 answered that way, Q2 = `Result`, Q3 = spell it out; conditions `C-F01-1 … C-F01-6` in `CONDITIONS.md`.
+Implementation on branch `r10-f01-checkpoint`, IMPL-PASS before merge. Sent originally as the next, separate pass after
+the harness's IMPL-PASS (`RESP-r10-fuzzing-impl-2026-11-20.md` at `9e2d2fc`; the auditor: "not folded into this one — it changes
 `core/` and re-grades on its own merits"; he rules Q1 and Q2 in this pass). The finding went public first
 (`fuzz/findings/`, `9e2d2fc`), then this fix. **No `core/` code is written before this REQ's DESIGN-PASS** (hard
 rule 1: Q1 and Q2 shape the code); then implementation on branch `r10-f01-checkpoint`, no merge without IMPL-PASS,
@@ -14,7 +18,7 @@ reflexivity observation. The oracle is not weakened.
 if the auditor wants the rule spelled out; `rcore::ops::init` only if `new_at_init` changes signature. The host
 and the owner tooling are unchanged.
 
-## 1. Leg 1 — `compare`: the checkpoint rule
+## 1. Leg 1 — `compare`: the checkpoint rule (the unfrozen path; a frozen re-pin never reaches `compare`, §2a)
 
 Today: `clear(new.checkpoint.height >= installed.checkpoint.height)` — a checkpoint with the same height and
 different content (hash, time, bits, period fields) passes as "forward", so a content-only change is
@@ -59,9 +63,35 @@ the previous period is refused while unfrozen; the owner picks a header of the c
 since the last retarget boundary) or waits one block after a boundary. Boundary-aligned checkpoints
 (`period_start_time == time`, `period_bits == bits`) pass by construction.
 
-The frozen path (deep-reorg recovery) has, by definition, no local header to validate against; its control is
-the owner's signature plus the timelock that leg 1 restores for a content-only re-pin. See Q1 for the forward
-re-pin.
+### 2a. The frozen path — re-ruled by the auditor: a re-pin applies at once, or the signer is bricked
+
+As drafted (the timelock as the frozen path's control) the fix would have **permanently bricked** a frozen signer,
+the auditor showed firsthand: the timelock is block-height anchored (`activation_height = best + timelock_blocks`,
+`activate_pending` fires only when `best >= activation_height`), `apply_headers` refuses every header while the
+chain is frozen, and `chain.best` is written only by `apply_headers` — so while frozen `best` is pinned and a
+re-pin routed to `pending` never activates, the chain is never reset, the freeze is never cleared. Leg 1 as
+drafted already did that to the same-height re-pin (a reorg deeper than `max_reorg` landing at the same tip
+height is a real recovery case: leg 1 makes it `Loosening`, the old `repin` branch reset the chain only for
+`Tightening`).
+
+**Ruling (C-F01-1):** while the chain is frozen, a `PolicyUpdate` whose checkpoint differs from the installed one
+is a re-pin and applies **at once** — forward or same-height — handled *before* `compare`: the chain is reset from
+the new checkpoint, the mandate installed, the owner's signature stored; no timelock, because the block-height
+timelock cannot run while frozen. The compare/timelock machinery is for unfrozen updates.
+
+**Hardening taken (C-F01-2, the auditor's recommendation):** a frozen re-pin is **checkpoint-only** — it is refused
+(`PolicyInvalid`) when the new mandate differs from the installed one in any field but the checkpoint. Recovery
+needs the new trust root and nothing else; the frozen path does not double as a destination/limit-change path, so
+a stolen owner key cannot swap destinations in one atomic frozen step.
+
+**Residual, labelled (C-F01-5, `THREAT-MODEL.md`):** on the frozen path there is no local reference to validate
+the checkpoint against — the deep reorg invalidated the local view — so leg 2 cannot apply there and nothing can
+replace it; the owner signature is the irreducible root of trust for recovery. Precondition for abuse: V5 (stolen
+owner key) **∧** a reorg deeper than `max_reorg` (≈ 51 % of mainnet hashpower; the signet key on signet; feasible on
+testnet4). Named, not denied.
+
+The unchanged branch of `activate_pending` (a pending mandate with a changed checkpoint activating while frozen
+resets the chain from it) stays: that checkpoint passed leg 2 on the unfrozen path when it was queued.
 
 ## 3. The constructor invariant — `State::new_at_init`
 
@@ -71,10 +101,10 @@ sites validate first (`rcore::ops::init` before `new_at_init`; `apply_message` b
 `s.mandate = new`). The auditor requires the invariant "the installed mandate is always validated" to be
 enforced at the write site, not by caller discipline: `new_at_init` must not store an invalid mandate.
 
-Proposed: `new_at_init` returns `Result<State, Invalid>` and runs `mandate.validate()?` itself (fail-closed in
-release too; the only in-enclave caller, `ops::init`, already refuses `PolicyInvalid` and maps the error to the
-same refusal; `core/tests/common::init_state` and `signerd`'s replay unwrap). Alternative at the auditor's
-minimum: `debug_assert!(mandate.validate().is_ok())` with no signature change. Q2.
+Ruled (Q2, C-F01-3): `new_at_init` returns `Result<State, Invalid>` and runs `mandate.validate()?` itself —
+fail-closed in release too (`debug_assert!` is a no-op in release: a silent footgun). The only in-enclave caller,
+`rcore::ops::init`, already refuses `PolicyInvalid`; the test callers (`core/tests/common::init_state`,
+`core/tests/headers.rs`) unwrap.
 
 ## 4. Vectors and tests (the auditor's break-tests, both directions)
 
@@ -94,8 +124,13 @@ minimum: `debug_assert!(mandate.validate().is_ok())` with no signature change. Q
    first block of the current period) ⇒ accepted;
 8. positive: a genuine mid-period checkpoint with the enclave's own period values ⇒ accepted;
 9. the four F-01 reproducers move `fuzz/findings/` → `fuzz/regressions/` and pass C-R10-5 in both directions;
-10. `new_at_init` with an invalid mandate ⇒ refused (`Result`) or trips (`debug_assert`);
-11. hollow-test (C-R12b style): with the leg-2 field checks removed, vector 4 goes green — proven red/green.
+10. `new_at_init` with an invalid mandate ⇒ refused (`Result`, Q2);
+11. hollow-test (C-R12b style): with the leg-2 field checks removed, vector 4 goes green — proven red/green;
+12. **brick regression (auditor):** chain frozen, a SAME-HEIGHT, different-content re-pin ⇒ applies at once, the
+    chain is reset from it and the freeze is cleared — this catches both the option-(ii) brick and leg 1 without
+    the frozen carve-out;
+13. chain frozen, a FORWARD re-pin ⇒ applies at once, chain reset;
+14. chain frozen, a re-pin that also changes a non-checkpoint field ⇒ refused (`PolicyInvalid`, C-F01-2).
 
 `fuzz/injected-defects.sh` gains the case "leg-2 `bits` check dropped ⇒ caught by the install vector" once the
 install path has a fuzz target (phase 2, F4 structured).
@@ -108,7 +143,7 @@ owner's script — the R9a procedure. Until then `main` carries the fix with the
 measurement" in `deploy/README.md`, and the deployed `2073c234…` is documented as carrying F-01 (severity medium,
 chain-view impact gated on a frozen chain).
 
-## 6. Questions to the auditor
+## 6. Questions to the auditor — answered in `RESP-r10-f01-checkpoint-design-2026-11-21.md`
 
 - **Q1 — forward re-pin while frozen.** `POLICY.md §5` makes a strictly-forward checkpoint tightening, so a
   re-pin after a deep reorg applies at once with no local validation possible. With a stolen owner key that is
@@ -117,7 +152,11 @@ chain-view impact gated on a frozen chain).
   testnet4). Options: (i) keep the spec, label the residual in `THREAT-MODEL.md` (V5 ∧ frozen); (ii) every
   re-pin while frozen is `Loosening` (waits the timelock; liveness cost: a frozen signer stays frozen one
   timelock after a deep reorg). The dev's reading: (ii) is the fail-closed shape and the cost is bounded, but
-  it changes the spec's table — your call.
+  it changes the spec's table — your call. **Ruled: neither.** Option (ii) is a permanent brick (§2a), and so is
+  leg 1 without a frozen carve-out. A frozen re-pin applies at once by necessity; the residual is handled by
+  labelling (V5 ∧ frozen) and by the checkpoint-only hardening, not by a timelock that cannot run.
 - **Q2 — `new_at_init`:** `Result` (hard, signature change, two test callers) or `debug_assert!` (soft)?
+  **Ruled: `Result`** — write-site enforcement, fail-closed in release.
 - **Q3 — `POLICY.md §5` wording:** add "same height with different content is not forward" to the
   `chain.checkpoint` row, and the install rule of §2 as a sentence, or leave the table and let the code speak?
+  **Ruled: spell it out, both** — the spec's "forward" wording without the content caveat is the origin of F-01.
