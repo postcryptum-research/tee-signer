@@ -644,6 +644,25 @@ fn checkpoint_install_validates_every_field_fail_closed() {
     };
     let e = s3.apply_message(&update(&k, &k.owner, &m, 1)).unwrap_err();
     assert_eq!(first_reason(&e), "POLICY_INVALID", "previous-period header is not re-pinnable while unfrozen");
+    // the forgery that ONLY the current-period boundary gate refuses (RESP-r10-F01 impl, the auditor's
+    // condition): a real previous-period header, every field as recorded, stamped with the CURRENT period's start
+    // time and bits — it looks internally consistent and passes every equality check; those period values are
+    // simply not that header's, and nothing but the gate says so
+    let mut m = base.clone();
+    m.checkpoint = Checkpoint {
+        hash: prev.hash,
+        height: prev.height,
+        time: prev.time,
+        bits: prev.bits,
+        period_start_time: s3.chain.period_start_time,
+        period_bits: s3.chain.period_bits,
+    };
+    let e = s3.apply_message(&update(&k, &k.owner, &m, 1)).unwrap_err();
+    assert_eq!(
+        first_reason(&e),
+        "POLICY_INVALID",
+        "previous-period header stamped with the current period's values: only the boundary gate refuses it"
+    );
     // boundary-aligned (the period's first block): accepted — period fields equal its own time/bits
     let mut m = base.clone();
     m.checkpoint = pinned_checkpoint(&s3, b);
