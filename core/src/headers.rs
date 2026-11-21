@@ -42,7 +42,11 @@ fn work_of(rec: &HeaderRec) -> Work {
 
 /// 256-bit little-endian addition with carry; `None` on overflow (a chain with 2^256 work does not
 /// exist, but the arithmetic discipline is the same everywhere: checked, or refuse).
-fn add_work_le(a: &[u8; 32], b: &[u8; 32]) -> Option<[u8; 32]> {
+///
+/// `pub` for the fuzz harness only (REQ-r10 phase 2, C-R10P2-2: a direct no-wrap oracle next to the
+/// `apply_headers` path); not part of the enclave's surface — nothing in the enclave calls it from
+/// outside this module.
+pub fn add_work_le(a: &[u8; 32], b: &[u8; 32]) -> Option<[u8; 32]> {
     let mut out = [0u8; 32];
     let mut carry: u16 = 0;
     for i in 0..32 {
