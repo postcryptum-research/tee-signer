@@ -18,6 +18,7 @@ use signer_core::state::{Pending, PendingOwner};
 use signer_core::update::Message;
 use tee_signer_fuzz::seeds::honest;
 use tee_signer_fuzz::targets::{self, TARGETS};
+use tee_signer_fuzz::{gen, structured};
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -135,6 +136,15 @@ fn honest_objects_pass_their_targets() {
     targets::encoding_dec(&encoding_seed());
     for input in bip39_seeds() {
         targets::bip39(&input);
+    }
+    for input in work_add_seeds() {
+        structured::work_add(&input);
+    }
+    for input in headers_seeds() {
+        structured::headers(&input);
+    }
+    for input in state_ops_seeds() {
+        structured::state_ops(&input);
     }
 }
 
@@ -332,6 +342,142 @@ fn bip39_seeds() -> Vec<Vec<u8>> {
     vec![vec![0x80; 32], vec![0x00; 32], vec![0xff; 32], b"abandon abandon art".to_vec()]
 }
 
+/// C-R10P2-2: the no-wrap boundary, deterministically on both sides.
+fn work_add_seeds() -> Vec<Vec<u8>> {
+    let one = {
+        let mut v = [0u8; 32];
+        v[0] = 1;
+        v
+    };
+    let top = {
+        let mut v = [0u8; 32];
+        v[31] = 0x80;
+        v
+    }; // 2^255
+    let almost = {
+        let mut v = [0xffu8; 32];
+        v[31] = 0x7f;
+        v
+    }; // 2^255 - 1
+    let cat = |a: [u8; 32], b: [u8; 32]| [a.as_slice(), b.as_slice()].concat();
+    vec![
+        cat([0xff; 32], one), // 2^256 - 1 + 1 = 2^256 → None
+        cat(top, top),        // 2^255 + 2^255 = 2^256 → None
+        cat([0xff; 32], [0xff; 32]),
+        cat(almost, top), // 2^256 - 1 → Some
+        cat([0xff; 32], [0; 32]),
+        cat([0; 32], [0; 32]),
+        cat(gen::work_of_bits(gen::REGTEST_BITS), gen::work_of_bits(gen::REGTEST_BITS)),
+    ]
+}
+
+/// F6: raw regtest batches, scripted regtest sessions, the signet chain (clean and mutated), the no-wrap
+/// boundary at the call site.
+fn headers_seeds() -> Vec<Vec<u8>> {
+    let (_s, cp) = gen::regtest_state(3);
+    let mut raw5 = vec![0u8, 2]; // mode 0, max_reorg 3
+    let mut prev = cp;
+    for i in 0..5u32 {
+        prev = gen::mine(&prev, prev.time + 10, 100 + i);
+        raw5.extend_from_slice(&gen::raw(&prev));
+    }
+    let mut raw_garbage = vec![0u8, 2];
+    raw_garbage.extend_from_slice(&[0x5a; 80]);
+    let script = |mr: u8, ops: &[[u8; 3]]| {
+        let mut v = vec![1u8, mr];
+        for o in ops {
+            v.extend_from_slice(o);
+        }
+        v
+    };
+    vec![
+        raw5,
+        raw_garbage,
+        // extend 5; fork d2 k3 (adopted); fork d1 k1 (equal work, not adopted); fork d5 (> max_reorg 4) → frozen; then extend → CHAIN_REORG
+        script(3, &[[0, 0, 5], [1, 2, 3], [1, 1, 1], [1, 5, 2], [0, 0, 2]]),
+        // extend 12 in two halves; fork d0 k1 (a sibling tip, equal work); fork d3 k4 adopted
+        script(7, &[[2, 6, 12], [1, 0, 1], [1, 3, 4]]),
+        // the attach point fell out of recent: max_reorg 1 keeps 13, extend 20 then fork at depth 15
+        script(0, &[[0, 0, 15], [0, 0, 5], [1, 15, 1]]),
+        vec![2, 6, 31],                        // the real signet chain, 32 headers, clean
+        vec![2, 6, 31, 0x10, 0x00, 0x01],      // one bit flipped in header 5
+        vec![2, 6, 63, 0x13, 0x00, 0x80],      // 64 headers, a flip in header 61
+        vec![2, 6, 31, 0x03, 0x4c, 0x01],      // header 10, a merkle-root byte: the proof of work no longer holds
+        vec![4, 6, 31],                        // across the signet retarget boundary (2016 + 32 headers), one batch
+        vec![4, 6, 31, 0, 0, 0, 7],            // the same, split in two at header 63
+        vec![4, 6, 63, 0x05, 0x4c, 0x01, 200], // across the boundary, a flip in the tail, split late
+        vec![2, 6, 31, 0x03, 0x68, 0x01],      // header 10, a bits byte: bits != required
+        vec![5, 2, 1, 2, 4], // regtest past the boundary (+1); fork from the previous period, 4 blocks: adopted
+        vec![5, 2, 0, 1, 1], // at the boundary; fork depth 2 with 1 block: equal work, not adopted
+        vec![5, 0, 3, 7, 2], // max_reorg 1: a fork depth 2 → CHAIN_REORG, frozen
+        [vec![3, 0], vec![0xff; 32]].concat(), // work at 2^256 - 1 → OVERFLOW
+        [vec![3, 0], vec![0; 32]].concat(), // sane → Ok(1), work = the header's
+        [vec![3, 0], {
+            let mut w = vec![0u8; 32];
+            w[31] = 0x80;
+            w
+        }]
+        .concat(), // 2^255 + a header's work → fits
+    ]
+}
+
+/// F4: scripted sessions over the honest state — one per invariant, incl. the negatives.
+fn state_ops_seeds() -> Vec<Vec<u8>> {
+    let r = |k: u8, f: u8, a: u8, b: u8| vec![k, f, a, b, 0, 0, 0, 0];
+    let cat = |rs: &[Vec<u8>]| rs.concat();
+    vec![
+        cat(&[r(0, 4, 0, 0)]),                                 // identical update: tightening, applies now
+        cat(&[r(0, 32, 0, 0)]),                                // a loosening: pending at best + 144
+        cat(&[r(0, 32, 0, 0), r(9, 0, 0, 0), r(2, 0, 0, 0)]), // pending, +1 block (not due), unfreeze: pending untouched
+        cat(&[r(0, 32, 0, 0), r(9, 0, 20, 0), r(2, 0, 0, 0)]), // pending, +161 blocks (due), unfreeze: it activates
+        cat(&[r(0, 32, 0, 0), r(1, 0, 0, 0)]),                // pending, cancel by the owner
+        cat(&[r(0, 32, 0, 0), r(1, 1, 0, 0)]),                // pending, cancel by the recovery key
+        cat(&[r(0, 32, 0, 0), r(0, 4, 0, 0)]),                // a second update while pending: POLICY_PENDING
+        cat(&[r(0, 1, 0, 0)]),                                // signed by a stranger
+        cat(&[r(0, 2, 0, 0)]),                                // wrong nonce
+        cat(&[r(0, 8, 3, 0)]),                                // re-pin to a verified recent header (pinned, forward)
+        cat(&[r(0, 8, 0xff, 0)]),                             // a checkpoint one above the verified chain: refused
+        cat(&[r(0, 64, 0, 0)]),                               // another network: POLICY_NETWORK
+        cat(&[r(0, 128, 0, 0)]),                              // another wallet: POLICY_WALLET
+        cat(&[r(10, 0, 0, 0), r(0, 16 | 32, 0xaa, 0)]), // frozen: a re-pin that also loosens: POLICY_INVALID (C-F01-2)
+        cat(&[r(1, 8, 0, 0)]),                          // cancel addressed to another enclave: POLICY_SIG
+        cat(&[r(0, 16, 0xaa, 0)]),                      // a checkpoint change nobody verified, unfrozen: refused
+        cat(&[r(10, 0, 0, 0), r(0, 4, 0, 0)]),          // frozen: an identical update → CHAIN_REORG (O01)
+        cat(&[r(10, 0, 0, 0), r(0, 32, 0, 0)]),         // frozen: a loosening → CHAIN_REORG (O01)
+        cat(&[r(10, 0, 0, 0), r(0, 16, 0xaa, 0)]),      // frozen: checkpoint-only re-pin → applies, clears the freeze
+        cat(&[r(10, 0, 0, 0), r(0, 16, 0xaa, 0), r(0, 4, 0, 0)]), // and the next ordinary update goes through again
+        cat(&[r(2, 0, 0, 0)]),                          // unfreeze
+        cat(&[r(3, 0, 7, 0)]),                          // rearm with seq 7
+        cat(&[r(4, 0, 0, 0)]),                          // rotate to the witness key (pending owner)
+        cat(&[r(4, 0, 0, 0), r(4, 0, 1, 0)]),           // a second rotation while one is pending
+        cat(&[r(4, 0, 0, 0), r(9, 0, 30, 0), r(1, 0, 0, 0)]), // rotation due: the witness key is the owner; it cancels
+        cat(&[r(4, 0, 2, 0x33)]),                       // rotate to a non-point: refused
+        cat(&[r(4, 0, 3, 0)]),                          // rotate to the recovery key: refused
+        cat(&[r(5, 0, 1, 0), r(0, 4, 0, 0)]),           // recover to the AK key; it updates
+        cat(&[r(5, 2, 1, 0)]),                          // recover signed by the owner: refused
+        cat(&[r(6, 0, 0, 0)]),                          // arm
+        cat(&[r(6, 1, 0, 0)]),                          // arm with another load's challenge
+        cat(&[r(6, 0, 9, 0)]),                          // arm claiming seq 9 the enclave never reached
+        cat(&[r(11, 0, 0, 0), r(6, 0, 0, 0)]),          // the owner's freeze persists through arm (C-R7-6)
+        cat(&[r(7, 0, 5, 6)]),                          // anchor counter 5, live 6
+        cat(&[r(7, 0, 9, 3)]),                          // anchor counter 9, live 3: behind
+        cat(&[r(7, 0, 5, 6), r(7, 0, 6, 8)]),           // re-anchor on the same objects
+        cat(&[r(7, 0, 5, 6), r(7, 8, 6, 8)]),           // re-anchor naming another AK: ANCHOR_TPM_MISMATCH
+        cat(&[r(7, 8, 5, 6)]),                          // first anchor under a foreign (valid) AK: accepted
+        cat(&[r(7, 16, 5, 0x33)]),                      // an AK that is not a point: refused
+        cat(&[r(7, 32, 0, 0)]),                         // a Cancel handed to apply_anchor: refused
+        cat(&[r(6, 32, 0, 0)]),                         // a Cancel handed to apply_arm: refused
+        cat(&[r(6, 2, 0, 0)]),                          // arm by a stranger: POLICY_SIG
+        cat(&[r(6, 4, 0, 0)]),                          // arm with the wrong nonce: POLICY_NONCE
+        cat(&[r(7, 4, 5, 6)]),                          // anchor with the wrong nonce: POLICY_NONCE
+        cat(&[r(8, 0, 1, 0)]),                          // an Arm through apply_message: refused
+        cat(&[r(8, 0, 2, 0)]),                          // an Anchor through apply_message: refused
+        cat(&[r(8, 0, 0, 0)]),                          // a witness token through apply_message: refused
+        cat(&[r(9, 0, 1, 0), r(0, 8, 0, 0)]),           // advance, then re-pin to the new best
+        vec![],
+    ]
+}
+
 fn vectors() -> Vec<serde_json::Value> {
     files(&root().join("../vectors/r1"))
         .into_iter()
@@ -425,6 +571,16 @@ fn write_seeds() {
     }
     for (i, s) in cross_type_seeds().into_iter().enumerate() {
         put("cross_type", &format!("seed-{i:02}"), &s);
+    }
+    // phase 2, pass (i)
+    for (i, s) in work_add_seeds().into_iter().enumerate() {
+        put("work_add", &format!("seed-{i:02}"), &s);
+    }
+    for (i, s) in headers_seeds().into_iter().enumerate() {
+        put("headers", &format!("seed-{i:02}"), &s);
+    }
+    for (i, s) in state_ops_seeds().into_iter().enumerate() {
+        put("state_ops", &format!("seed-{i:02}"), &s);
     }
     // negative seeds: non-canonical and re-tagged inputs that must be REFUSED. They make the stable
     // replay itself a mutation detector (C-R10-7b): drop a `finish()`, a bound or a domain tag in

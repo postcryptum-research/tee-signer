@@ -52,6 +52,18 @@ case_ "C-R10-5: compare no longer reflexive (version check inverted)" \
 case_ "C-R10-5 / F-01: compare's checkpoint rule reverted to height >= (same height, other content = tightening)" \
   core/src/mandate.rs 's/clear\(new\.checkpoint == installed\.checkpoint \|\| new\.checkpoint\.height > installed\.checkpoint\.height\);/clear(new.checkpoint.height >= installed.checkpoint.height);/' 'clear(new.checkpoint.height >= installed.checkpoint.height);'
 
+# --- phase 2, pass (i): F6 / F4 oracles (REQ-r10 phase 2 §2; C-R10-6, C-R10P2-2, C-F01-1, REQ-r10-O01) ---
+case_ "C-R10-6: add_work_le made wrapping (the carry-out check dropped)" \
+  core/src/headers.rs 's/^(\s+)if carry != 0 \{$/\1if false {/' 'if false {'
+case_ "F6: the deep-reorg freeze dropped (a fork deeper than max_reorg is judged on work alone)" \
+  core/src/headers.rs 's/if depth > max_reorg \{/if false {/' 'if false {'
+case_ "F4: the timelock wait dropped (a pending mandate or owner activates at once)" \
+  core/src/state.rs 's/if best >= p\.activation_height \{/if true {/' 'if true {'
+case_ "REQ-r10-O01: the frozen non-re-pin refusal dropped" \
+  core/src/state.rs 's/if s\.chain\.frozen \&\& new\.checkpoint == s\.mandate\.checkpoint \{/if false {/' 'if false {'
+case_ "C-F01-1: the frozen at-once re-pin disabled (through compare and pending again)" \
+  core/src/state.rs 's/^(\s+)if s\.chain\.frozen \{$/\1if false \&\& s.chain.frozen {/' 'if false && s.chain.frozen {'
+
 echo "== core/ restored: $([ -z "$(git status --porcelain core/)" ] && echo clean || echo 'DIRTY — check git status')"
 [ "$rc" = 0 ] && echo "== every injected defect was caught" || echo "== rc=$rc (1 = a defect was NOT caught; 3 = an edit did not apply)"
 exit "$rc"

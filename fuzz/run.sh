@@ -13,6 +13,9 @@ case "$t" in
   mandate_decode|mandate_compare|message_decode|receipt_decode|encoding_dec|cross_type) maxlen=8192; malloc=16 ;;
   tpm_attest)                             maxlen=1024;  malloc=16 ;;
   bip39)                                  maxlen=512;   malloc=16 ;;
+  headers)                                maxlen=8192;  malloc=64 ;;   # a mode byte + up to 64 raw headers, or a script
+  state_ops)                              maxlen=256;   malloc=16 ;;   # 24 eight-byte step records + slack
+  work_add)                               maxlen=64;    malloc=16 ;;
   *) echo "unknown target $t"; exit 2 ;;
 esac
 dirs=("corpus/$t"); flags=()                      # first dir = where libFuzzer writes new inputs

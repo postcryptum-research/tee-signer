@@ -115,3 +115,27 @@ required-features = ["libfuzzer"]
 
 [profile.release]
 debug = 1
+
+[[bin]]
+name = "work_add"
+path = "fuzz_targets/work_add.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "headers"
+path = "fuzz_targets/headers.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "state_ops"
+path = "fuzz_targets/state_ops.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]

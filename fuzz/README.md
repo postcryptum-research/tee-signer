@@ -13,6 +13,7 @@ does) and the vector suite's own fixtures (`core/tests/common/mod.rs`, included 
 | Path | What |
 |---|---|
 | `src/targets.rs` | one body per target, `fn(&[u8])`; every assertion is an oracle and names itself (`C-R10-n`, `C-R9-A`, …) |
+| `src/structured.rs`, `src/gen.rs` | phase 2: the scripted targets (`state_ops`, `headers`, `work_add`) and their generators (a regtest miner on the fixture checkpoint, the regtest/signet fixture states, the reference 256-bit adder) |
 | `src/seeds.rs` | the honest objects the oracles are calibrated on (throwaway test keys only) |
 | `fuzz_targets/*.rs` | the libFuzzer binaries, one line each, calling the bodies |
 | `tests/replay.rs` | **the CI gate**: replays `seeds/` + `corpus/` + `regressions/` on stable 1.92.0 (must pass), asserts every open `findings/` reproducer still fires, calibrates the oracles on the honest set, holds the C-R10-1 re-tag vectors; also the seed writer |
@@ -38,7 +39,12 @@ TEE_FUZZ_SEEDS_OUT=seeds cargo test --no-default-features --test replay -- --ign
 ```
 
 Targets: `proto_decode` `mandate_decode` `mandate_compare` `message_decode` `state_decode`
-`tpm_attest` `receipt_decode` `encoding_dec` `bip39` `cross_type` (REQ-r10 §2, F1–F5, F9, C-R10-1).
+`tpm_attest` `receipt_decode` `encoding_dec` `bip39` `cross_type` (REQ-r10 §2, F1–F5, F9, C-R10-1); phase 2 pass (i):
+`state_ops` (F4: scripted 8-byte step records over the honest state — every `apply_*` entrypoint, the timelock and
+frozen-path rules as the harness's own model), `headers` (F6: raw and scripted regtest sessions against a model
+chain, the real signet chain with a mutation, the no-wrap boundary at the call site), `work_add` (C-R10-6 directly:
+`add_work_le` against a reference adder). Inputs are scripted, not `arbitrary`-driven, so every seed is hand-written
+and every injected defect has a deterministic reproducer.
 
 Limits (`run.sh`): `-max_len` from the `proto` bound the type lives under, `-malloc_limit_mb` **below**
 that bound (an untrusted length that drives an allocation is itself a V2 DoS finding), `-timeout=10`,
