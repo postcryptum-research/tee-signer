@@ -20,7 +20,7 @@ pub mod bounds {
     pub const MAX_TRUSTED: usize = 64;
     /// `timelockBlocks` upper bound (REQ-r10-F02, ≈ one year of blocks): a timelock beyond the chain's remaining
     /// height space would make every later loosening and rotation unqueueable (`OVERFLOW`) — refused loudly at
-    /// install instead. The value is the owner's design call.
+    /// install instead. The value is the owner's design call, confirmed 2026-11-21.
     pub const MAX_TIMELOCK_BLOCKS: u32 = 52_560;
     /// Max label length in bytes.
     pub const MAX_LABEL: usize = 32;

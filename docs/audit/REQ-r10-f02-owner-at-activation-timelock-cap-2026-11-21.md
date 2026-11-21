@@ -36,8 +36,8 @@ by the pass-(i) harness) — a self-inflicted brick of the recovery path that su
 auditor: cap it in `validate` so it fails closed **loudly at install**.
 
 Change: `if self.timelock_blocks == 0 || self.timelock_blocks > bounds::MAX_TIMELOCK_BLOCKS { Err(Invalid::Timelock) }`
-with `MAX_TIMELOCK_BLOCKS = 52_560` (≈ one year of blocks) — **the value is the owner's design call** (REQ-r10 pass (i)
-§4, RESP §3); the dev implements 52 560 unless the owner names another. `POLICY.md`: the `timelockBlocks` row gains
+with `MAX_TIMELOCK_BLOCKS = 52_560` (≈ one year of blocks) — the owner's design call (REQ-r10 pass (i) §4, RESP §3),
+**confirmed by the owner 2026-11-21**. `POLICY.md`: the `timelockBlocks` row gains
 "1 … 52 560". Vectors: 52 560 accepted, 52 561 refused `Invalid::Timelock`, 0 refused (existing); `compare` unchanged
 (a timelock raised within the cap is still tightening). The fuzz harness's `state_ops` model follows the cap
 (`mutate_mandate` may still produce an over-cap timelock ⇒ `POLICY_INVALID`, as it now does for `0`).
@@ -69,5 +69,5 @@ with this REQ).
   bound in `validate`), `core/tests/transitions.rs`, `docs/POLICY.md` (one row), `scripts/hollow-f01.sh`, the moved
   reproducer and `FINDING.md`. No wire change.
 
-The cap value: 52 560 is implemented; **the owner may name another** before the ceremony build (a one-constant change,
-re-reviewed as part of this REQ).
+The cap value: 52 560 is implemented and **confirmed by the owner 2026-11-21** («пусть будет такое») — the design
+call is closed; `MAX_TIMELOCK_BLOCKS = 52_560` is final for this round.
