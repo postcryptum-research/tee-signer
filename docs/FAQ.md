@@ -533,7 +533,9 @@ by design. So an upgrade is a retire-and-reinit, and the coins of the old wallet
 
 The project's own run of this on 2026-11-10 is `scripts/t2-r7-redeploy.sh` (the dev stack: the
 laptop carries the files through a relay box); it is a worked example, not a product tool — and not
-idempotent: a second run retires the wallet it just created.
+idempotent: a second run retires the wallet it just created. The later runs with a ceremony-signed build
+and the vTPM anchor (2026-11-19 and 2026-11-21, the second one with a halt and a stamped resume) are
+recorded step by step in `deploy/README.md`.
 
 ### How do I upgrade the plugin?
 

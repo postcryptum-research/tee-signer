@@ -11,12 +11,17 @@ runs on the node. If it does not, something in the recipe or in this document is
 
 | `MRENCLAVE` | Source | Signer of the deployed enclave | Where it runs |
 |---|---|---|---|
-| `2073c234229af3986b9b5a8cd3abc844d1e808a97db14ffb46846a13257410cc` | `main` at `4dd6285` (2026-11-19) | the ceremony key, `MRSIGNER 56b25ccb4c1e446df1be4b308cd305b2d43e3f44745c10118bd7bad7bb2c0d41` (`enclave/ceremony/`) | the project's signet T2 node since 2026-11-19 (Azure DCsv3, DCAP-attested) |
+| `2ae884224a57301b09afef86aa158a374cf6383e708799fbe2ff4415ee981e96` | `main` at `fae6a84` (2026-11-21; the F-2026-11-20-01 fix, PR #2) | the ceremony key, `MRSIGNER 56b25ccb4c1e446df1be4b308cd305b2d43e3f44745c10118bd7bad7bb2c0d41` (`enclave/ceremony/`) | the project's signet T2 node since 2026-11-21 (`deploy/README.md`) |
+| `2073c234229af3986b9b5a8cd3abc844d1e808a97db14ffb46846a13257410cc` | `main` at `4dd6285` (2026-11-19) | the ceremony key, `MRSIGNER 56b25ccb4c1e446df1be4b308cd305b2d43e3f44745c10118bd7bad7bb2c0d41` (`enclave/ceremony/`) | the project's signet T2 node 2026-11-19 → 2026-11-21, retired (it carried fuzz finding F-2026-11-20-01; `fuzz/findings/mandate_compare/FINDING.md`); was: since 2026-11-19 (Azure DCsv3, DCAP-attested) |
 
-Independent agreement on record for this value: the dev's build from the synced tree, the dev's build
-from a clean `git archive` of `4dd6285`, the ceremony build, and the auditor's build on an unrelated
-machine with a throwaway key — all `2073c234…` (`docs/audit/RESP-r9a-anchor-live-counter-impl-2026-11-19.md`,
+Independent agreement on record for `2ae88422…`: the dev's build from the synced tree, the dev's build from a
+fresh `git clone` of `fae6a84`, the ceremony build, and the auditor's build on an unrelated machine with a
+throwaway key — all `2ae88422…`, and the unsigned `enclave.so` byte-identical across all four
+(`deploy/README.md`, the 2026-11-21 migration row). For `2073c234…`: the synced tree, a clean `git archive` of
+`4dd6285`, the ceremony build and the auditor's build (`docs/audit/RESP-r9a-anchor-live-counter-impl-2026-11-19.md`,
 addendum 2). Earlier measurements and the commits they came from are in the `docs/audit/` round files.
+
+The recipe below uses the current commit; substitute the commit of the row you are verifying.
 
 ## What you need
 
@@ -31,7 +36,7 @@ addendum 2). Earlier measurements and the commits they came from are in the `doc
 
 ```bash
 git clone https://github.com/postcryptum-research/tee-signer.git && cd tee-signer
-git checkout 4dd6285                      # the commit of the measurement you are verifying
+git checkout fae6a84                      # the commit of the measurement you are verifying (2ae88422…)
 SIGN=dev ENCLAVE_KEY=$PWD/out/dev-key.pem OUT=$PWD/out/build-1 docker/build-enclave.sh
 ```
 
@@ -53,7 +58,7 @@ The last lines of the run are the verdict:
 
 ```
 build+gates: OK
-MRENCLAVE: 2073c234229af3986b9b5a8cd3abc844d1e808a97db14ffb46846a13257410cc
+MRENCLAVE: 2ae884224a57301b09afef86aa158a374cf6383e708799fbe2ff4415ee981e96
 outputs: /…/out/build-1
 ```
 
