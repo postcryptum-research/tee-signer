@@ -1,6 +1,6 @@
 # REQ-r10-F02 — `apply_arm`/`apply_anchor` verify against the owner at the operation; `timelock_blocks` capped in `validate` (design ruled + impl REQ)
 
-**Date:** 2026-11-21. **Status:** design **ruled by the auditor** in `RESP-r10-fuzzing-p2i-impl-2026-11-21.md` §2–3
+**Date:** 2026-11-21. **Status:** **DEPLOYED 2026-11-21 17:11Z** with O01 — build of `main` `9139e49`, MRENCLAVE `9a18d5a8…`, T2 wallet `87ddf781` (`deploy/README.md`). Design **ruled by the auditor** in `RESP-r10-fuzzing-p2i-impl-2026-11-21.md` §2–3
 (F-2026-11-21-01 a DEFECT, fix authorized as drafted and break-tested both ways; the cap supported, value the owner's
 call) — **IMPL-PASS at `fc6c709`** → `RESP-r10-f02-owner-at-activation-impl-2026-11-21.md` (same day; the auditor verified that the
 activation on the discarded clone never persists past a failed signature check, the retirement of the old check, and
