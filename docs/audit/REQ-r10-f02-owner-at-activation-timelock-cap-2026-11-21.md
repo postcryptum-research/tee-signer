@@ -4,7 +4,7 @@
 (F-2026-11-21-01 a DEFECT, fix authorized as drafted and break-tested both ways; the cap supported, value the owner's
 call) — **IMPL-PASS at `fc6c709`** → `RESP-r10-f02-owner-at-activation-impl-2026-11-21.md` (same day; the auditor verified that the
 activation on the discarded clone never persists past a failed signature check, the retirement of the old check, and
-the vectors in both directions; hollow 10/10); merged to `main` via PR #5 after CI on the final head. Not yet deployed:
+the vectors in both directions; hollow 10/10); merged to `main` via PR #5 at `dbfc301` after all eight checks passed on the final head. Not yet deployed:
 the next ceremony build carries O01 + F02 (owner-run). §4 has what was run. **Scope:** `core/src/state.rs` (`apply_arm`, `apply_anchor`: two lines moved in each),
 `core/src/mandate.rs` (`validate`: one bound), vectors, `POLICY.md`; no wire change; MRENCLAVE changes ⇒ the next
 ceremony build, together with O01 (owner-run, the auditor's content gate).
