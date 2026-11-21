@@ -425,46 +425,90 @@ fn expected_update(s: &State, new: &Mandate) -> Outcome {
     }
 }
 
+/// What the accepted operation itself does to what is in flight (the activation of a DUE pending happens
+/// first, on every operation): `Clears` voids both pendings (Cancel, Recover); `Installs` puts a new mandate in
+/// place (a tightening or a re-pin — only possible once no pending is left, so after a due one activated);
+/// `Queues` leaves a new pending mandate; `QueuesOwner` leaves a new pending owner; `Plain` touches neither.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Effect {
+    Plain,
+    Clears,
+    Installs,
+    Queues,
+    QueuesOwner,
+}
+
 /// The invariants every accepted operation leaves behind. `before` is the state as it was (nothing
-/// activated), `clears` says the operation itself voids what is in flight (Cancel, Recover). The timelock
-/// model is the harness's own: a pending is due iff `best >= activation_height`, and nothing else may
-/// install it early or hold it back.
-fn state_invariants(before: &State, after: &State, nonce_consumed: bool, clears: bool) {
+/// activated). The timelock model is the harness's own: a pending is due iff `best >= activation_height`,
+/// and nothing else may install it early or hold it back.
+fn state_invariants(before: &State, after: &State, nonce_consumed: bool, effect: Effect) {
     assert!(after.mandate.validate().is_ok(), "F4: the installed mandate is invalid");
     let best = before.chain.best.map(|b| b.height).unwrap_or(0);
     if let Some(p) = &before.pending {
         if best >= p.activation_height {
-            assert!(after.pending.is_none(), "F4: a due pending mandate did not activate on an accepted operation");
-            if !clears {
+            match effect {
+                Effect::Queues => assert!(
+                    after.pending.as_ref().is_some_and(|q| q != p),
+                    "F4: a due pending mandate did not activate before the new loosening was queued"
+                ),
+                _ => assert!(
+                    after.pending.is_none(),
+                    "F4: a due pending mandate did not activate on an accepted operation"
+                ),
+            }
+            if matches!(effect, Effect::Plain | Effect::QueuesOwner) {
                 assert_eq!(
                     after.mandate, p.mandate,
                     "F4: a due pending mandate activated but is not the installed one"
                 );
             }
-        } else if !clears {
-            assert_eq!(after.pending.as_ref(), Some(p), "F4: a pending mandate changed before its activation height");
-            assert_eq!(
-                after.mandate, before.mandate,
-                "F4: the installed mandate changed while a loosening was pending and not yet due"
+        } else {
+            // not due: a PolicyUpdate cannot be accepted with it in flight (POLICY_PENDING)
+            assert!(
+                !matches!(effect, Effect::Installs | Effect::Queues),
+                "F4: a policy update was accepted while a pending mandate was in flight"
             );
+            if effect != Effect::Clears {
+                assert_eq!(
+                    after.pending.as_ref(),
+                    Some(p),
+                    "F4: a pending mandate changed before its activation height"
+                );
+                assert_eq!(
+                    after.mandate, before.mandate,
+                    "F4: the installed mandate changed while a loosening was pending and not yet due"
+                );
+            }
         }
     }
     if let Some(p) = &before.pending_owner {
         if best >= p.activation_height {
-            assert!(after.pending_owner.is_none(), "F4: a due pending owner did not activate on an accepted operation");
-            if !clears {
+            match effect {
+                Effect::QueuesOwner => assert!(
+                    after.pending_owner.as_ref().is_some_and(|q| q != p),
+                    "F4: a due pending owner did not activate before the new rotation was queued"
+                ),
+                _ => assert!(
+                    after.pending_owner.is_none(),
+                    "F4: a due pending owner did not activate on an accepted operation"
+                ),
+            }
+            if effect != Effect::Clears {
                 assert_eq!(after.owner_pk, p.new_owner_pk, "F4: a due pending owner activated but is not the owner");
             }
-        } else if !clears {
-            assert_eq!(
-                after.pending_owner.as_ref(),
-                Some(p),
-                "F4: a pending owner changed before its activation height"
-            );
-            assert_eq!(
-                after.owner_pk, before.owner_pk,
-                "F4: the owner changed while a rotation was pending and not yet due"
-            );
+        } else {
+            assert!(effect != Effect::QueuesOwner, "F4: a rotation was accepted while one was in flight");
+            if effect != Effect::Clears {
+                assert_eq!(
+                    after.pending_owner.as_ref(),
+                    Some(p),
+                    "F4: a pending owner changed before its activation height"
+                );
+                assert_eq!(
+                    after.owner_pk, before.owner_pk,
+                    "F4: the owner changed while a rotation was pending and not yet due"
+                );
+            }
         }
     }
     let bytes = after.encode();
@@ -573,7 +617,7 @@ pub fn state_ops(data: &[u8]) {
                                 after.chain.best, proj.chain.best,
                                 "F4: a non-re-pin update moved the chain view"
                             );
-                            state_invariants(&before, &after, true, false);
+                            state_invariants(&before, &after, true, Effect::Installs);
                             s = after;
                         }
                         Outcome::Pending(act) => {
@@ -588,7 +632,7 @@ pub fn state_ops(data: &[u8]) {
                                 after.mandate, proj.mandate,
                                 "F4: a loosening changed the installed mandate before its timelock"
                             );
-                            state_invariants(&before, &after, true, false);
+                            state_invariants(&before, &after, true, Effect::Queues);
                             s = after;
                         }
                         Outcome::Repin => {
@@ -603,7 +647,7 @@ pub fn state_ops(data: &[u8]) {
                                 after.pending.is_none() && after.mandate == new,
                                 "C-F01-1: the re-pin did not install at once"
                             );
-                            state_invariants(&before, &after, true, false);
+                            state_invariants(&before, &after, true, Effect::Installs);
                             s = after;
                         }
                     }
@@ -630,7 +674,7 @@ pub fn state_ops(data: &[u8]) {
                         after.pending.is_none() && after.pending_owner.is_none(),
                         "F4: cancel left something pending"
                     );
-                    state_invariants(&before, &after, true, true);
+                    state_invariants(&before, &after, true, Effect::Clears);
                     s = after;
                 }
             }
@@ -658,7 +702,7 @@ pub fn state_ops(data: &[u8]) {
                             "F4: rearm did not arm or moved seq wrongly"
                         );
                     }
-                    state_invariants(&before, &after, true, false);
+                    state_invariants(&before, &after, true, Effect::Plain);
                     s = after;
                 }
             }
@@ -711,7 +755,12 @@ pub fn state_ops(data: &[u8]) {
                             "F4: recover left something in flight"
                         );
                     }
-                    state_invariants(&before, &after, true, kind == 5);
+                    state_invariants(
+                        &before,
+                        &after,
+                        true,
+                        if kind == 5 { Effect::Clears } else { Effect::QueuesOwner },
+                    );
                     s = after;
                 }
             }
@@ -764,7 +813,7 @@ pub fn state_ops(data: &[u8]) {
                             "R9: the anchor did not pin the live counter"
                         );
                     }
-                    state_invariants(&before, &after, true, false);
+                    state_invariants(&before, &after, true, Effect::Plain);
                     s = after;
                 }
             }
