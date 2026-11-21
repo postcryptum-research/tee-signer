@@ -17,5 +17,7 @@
 #[path = "../../core/tests/common/mod.rs"]
 #[allow(dead_code, clippy::all)]
 pub mod fixtures;
+pub mod gen;
 pub mod seeds;
+pub mod structured;
 pub mod targets;
