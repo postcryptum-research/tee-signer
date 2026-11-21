@@ -109,7 +109,6 @@ fn signet_headers() -> &'static Vec<[u8; 80]> {
         .expect("the signet header vector");
         text.lines()
             .filter(|l| !l.trim().is_empty())
-            .take(64)
             .map(|l| {
                 let v = hex::decode(l.trim()).expect("hex");
                 let mut a = [0u8; 80];
@@ -146,12 +145,14 @@ fn signet_state() -> State {
 ///   k, op 1 fork at depth d with k blocks, op 2 extend by k delivered as two batches split at d;
 /// - mode 2: the real signet chain (first 64 headers) with one byte mutated at an arbitrary position;
 /// - mode 3: the no-wrap boundary at the call site — the fixture's work set to the 32 input bytes, then
-///   one mined header: `OVERFLOW` iff the reference sum reaches 2^256, else exactly the reference sum.
+///   one mined header: `OVERFLOW` iff the reference sum reaches 2^256, else exactly the reference sum;
+/// - mode 4: the real signet chain ACROSS its retarget boundary (header 2016 of the vector = 324 576) —
+///   2016 + n headers in two batches split at an arbitrary point, optional one-byte mutation in the tail.
 pub fn headers(data: &[u8]) {
     let Some((&mode, rest)) = data.split_first() else { return };
     let Some((&mr, rest)) = rest.split_first() else { return };
     let max_reorg = 1 + u32::from(mr % 8);
-    match mode % 4 {
+    match mode % 5 {
         0 => {
             let (mut s, _cp) = gen::regtest_state(max_reorg);
             let hs: Vec<Header> = rest
@@ -173,10 +174,12 @@ pub fn headers(data: &[u8]) {
         }
         1 => scripted_regtest(max_reorg, rest),
         2 => {
-            let hs = signet_headers();
+            // header 0 of the vector is the fixture's checkpoint; the chain to feed starts after it
+            let hs = &signet_headers()[1..65];
             let n = 1 + usize::from(rest.first().copied().unwrap_or(31)) % hs.len();
             let mut raw: Vec<[u8; 80]> = hs[..n].to_vec();
-            if rest.len() >= 4 {
+            let mutated = rest.len() >= 4;
+            if mutated {
                 let pos = (usize::from(rest[1]) << 8 | usize::from(rest[2])) % (n * 80);
                 raw[pos / 80][pos % 80] ^= rest[3].max(1);
             }
@@ -186,6 +189,37 @@ pub fn headers(data: &[u8]) {
             chain_invariants(&before, &s, &r);
             if let Ok(k) = r {
                 assert!(k as usize <= n, "F6: more growth than headers fed");
+            }
+            if !mutated {
+                assert_eq!(r.as_ref().ok(), Some(&(n as u32)), "F6: the real signet chain was refused: {r:?}");
+                assert_eq!(s.chain.best.unwrap().height as usize, 322_560 + n);
+            }
+        }
+        4 => {
+            let hs = &signet_headers()[1..]; // after the checkpoint header
+            let n = 2016 + 1 + usize::from(rest.first().copied().unwrap_or(31)) % 64;
+            let mut raw: Vec<[u8; 80]> = hs[..n.min(hs.len())].to_vec();
+            if rest.len() >= 4 && rest[3] != 0 {
+                let pos = (usize::from(rest[1]) << 8 | usize::from(rest[2])) % (64 * 80);
+                let idx = raw.len() - 64 + pos / 80; // the mutation lands in the last 64 headers
+                raw[idx][pos % 80] ^= rest[3];
+            }
+            let split = (usize::from(rest.get(4).copied().unwrap_or(0)) * 9) % raw.len();
+            let mut s = signet_state();
+            let before = s.clone();
+            let r1 = apply_headers(&mut s, &raw[..split]);
+            chain_invariants(&before, &s, &r1);
+            let mid = s.clone();
+            let r2 = apply_headers(&mut s, &raw[split..]);
+            chain_invariants(&mid, &s, &r2);
+            if rest.len() < 4 || rest[3] == 0 {
+                // the untouched real chain is accepted whole, across the boundary
+                assert_eq!(
+                    (r1.as_ref().ok(), r2.as_ref().ok()),
+                    (Some(&(split as u32)), Some(&((raw.len() - split) as u32))),
+                    "F6: the real signet chain was refused: {r1:?} / {r2:?}"
+                );
+                assert_eq!(s.chain.best.unwrap().height as usize, 322_560 + raw.len());
             }
         }
         _ => {
@@ -418,8 +452,13 @@ fn expected_update(s: &State, new: &Mandate) -> Outcome {
     match compare(installed, new) {
         Ok(Change::Tightening) => Outcome::Now,
         Ok(Change::Loosening) => {
+            // the activation height is checked arithmetic in the enclave: a timelock that does not fit the
+            // chain's height space is refused OVERFLOW rather than wrapped (the owner chose that timelock)
             let best = s.chain.best.map(|b| b.height).unwrap_or(0);
-            Outcome::Pending(best.saturating_add(installed.timelock_blocks))
+            match best.checked_add(installed.timelock_blocks) {
+                Some(act) => Outcome::Pending(act),
+                None => Outcome::Refuse(Reason::Overflow),
+            }
         }
         Err(_) => unreachable!("network and wallet were checked equal"),
     }
@@ -542,12 +581,14 @@ fn check_err(result: &Result<State, Refusal>, want: Reason, what: &str) {
 /// Scripted 8-byte records `[kind, flags, a, b, c, d, e, f]` over the honest fixture state (the vector
 /// suite's keys and mandate; the chain driven through the fixture helpers — the header path is F6).
 /// kinds: 0 PolicyUpdate (a structured mutation of the installed mandate; flags: 1 wrong key, 2 wrong
-/// nonce, 4 identical, 8 re-pin to recent header `best - a % 11`, 16 frozen-style checkpoint-only re-pin, 32 a
-/// deterministic loosening),
-/// 1 Cancel (flags 1: recovery key, 2 wrong key, 4 wrong nonce), 2 Unfreeze, 3 Rearm (seq = a‖b),
+/// nonce, 4 identical, 8 re-pin to recent header `best - a % 11` (a = 0xff: one above best), 16 frozen-style
+/// checkpoint-only re-pin, 32 a deterministic loosening, 64 another network, 128 another wallet),
+/// 1 Cancel (flags 1: recovery key, 2 wrong key, 4 wrong nonce, 8 another enclave's id), 2 Unfreeze, 3 Rearm (seq = a‖b),
 /// 4 RotateOwner (a % 4: witness / AK / garbage / the recovery key), 5 Recover (same targets),
-/// 6 Arm (flags 1 wrong challenge, 2 wrong key, 4 wrong nonce; seq_seen = a), 7 Anchor (counter a,
-/// live counter b), 8 WitnessToken (always refused), 9 advance the chain by 1 + 8·a blocks,
+/// 6 Arm (flags 1 wrong challenge, 2 wrong key, 4 wrong nonce, 32 a Cancel handed to apply_arm; seq_seen = e),
+/// 7 Anchor (counter a, live counter b, seq_seen = e; flags 8 a foreign AK — the witness key, 16 a non-point AK,
+/// 32 a Cancel handed to apply_anchor), 8 WitnessToken / Arm / Anchor through apply_message (a % 3; always
+/// refused), 9 advance the chain by 1 + 8·a blocks,
 /// 10 freeze the chain (a deep reorg happened), 11 the owner's freeze.
 pub fn state_ops(data: &[u8]) {
     let h = honest();
@@ -580,10 +621,19 @@ pub fn state_ops(data: &[u8]) {
                     mutate_mandate(&proj.mandate, &mut u).unwrap_or_else(|| proj.mandate.clone())
                 };
                 if flags & 8 != 0 {
-                    if let Some(cp) = pinned_checkpoint(&proj, best.saturating_sub(u32::from(a % 11))) {
+                    if let Some(mut cp) = pinned_checkpoint(&proj, best.saturating_sub(u32::from(a % 11))) {
+                        if a == 0xff {
+                            cp.height = best + 1; // one above the verified chain: not pinnable
+                        }
                         new = proj.mandate.clone();
                         new.checkpoint = cp;
                     }
+                }
+                if flags & 64 != 0 {
+                    new.network = if new.network == Network::Regtest { Network::Testnet4 } else { Network::Regtest };
+                }
+                if flags & 128 != 0 {
+                    new.wallet.fingerprint[0] ^= 0xff;
                 }
                 if flags & 16 != 0 {
                     new = proj.mandate.clone();
@@ -661,10 +711,13 @@ pub fn state_ops(data: &[u8]) {
                 } else {
                     owner_key
                 };
-                let mut m = Message::Cancel { enclave_id: eid, nonce, sig: [0; 64] };
+                let cancel_eid = if flags & 8 != 0 { [0x5c; 32] } else { eid };
+                let mut m = Message::Cancel { enclave_id: cancel_eid, nonce, sig: [0; 64] };
                 signer.sign(&mut m);
                 let r = s.apply_message(&m);
-                if wrong_key {
+                if flags & 8 != 0 {
+                    check_err(&r, Reason::PolicySig, "cancel addressed to another enclave");
+                } else if wrong_key {
                     check_err(&r, Reason::PolicySig, "cancel by a stranger");
                 } else if wrong_nonce {
                     check_err(&r, Reason::PolicyNonce, "cancel with the wrong nonce");
@@ -739,6 +792,8 @@ pub fn state_ops(data: &[u8]) {
                     check_err(&r, Reason::PolicyPending, "rotate while a rotation is pending");
                 } else if bad_target {
                     check_err(&r, Reason::PolicyInvalid, "rotate/recover to a non-key or the recovery key");
+                } else if kind == 4 && best.checked_add(proj.mandate.timelock_blocks).is_none() {
+                    check_err(&r, Reason::Overflow, "rotate whose activation height does not fit u32");
                 } else {
                     let after = r.expect("F4: an honest rotate/recover was refused");
                     if kind == 4 {
@@ -767,16 +822,25 @@ pub fn state_ops(data: &[u8]) {
             6 | 7 => {
                 let challenge = if flags & 1 != 0 { WRONG_CHALLENGE } else { HONEST_CHALLENGE };
                 let signer = if wrong_key { ring.stranger(&proj.owner_pk) } else { owner_key };
-                let seq_seen = u64::from(a);
+                let seq_seen = u64::from(rec[4]);
                 let (counter, live) = (u64::from(a), u64::from(b));
-                let mut m = if kind == 6 {
+                let ak_pk: [u8; 65] = if flags & 16 != 0 {
+                    [b; 65]
+                } else if flags & 8 != 0 {
+                    ring.witness.pk
+                } else {
+                    h.ak.pk
+                };
+                let mut m = if flags & 32 != 0 {
+                    Message::Cancel { enclave_id: eid, nonce, sig: [0; 64] } // the wrong message type for apply_arm/apply_anchor
+                } else if kind == 6 {
                     Message::Arm { enclave_id: eid, nonce, boot_challenge: challenge, seq_seen, sig: [0; 64] }
                 } else {
                     Message::Anchor {
                         enclave_id: eid,
                         nonce,
                         boot_challenge: challenge,
-                        ak_pk: h.ak.pk,
+                        ak_pk,
                         nv_name: h.anchor.nv_name,
                         counter,
                         seq_seen,
@@ -789,7 +853,10 @@ pub fn state_ops(data: &[u8]) {
                 } else {
                     s.apply_anchor(&m, &HONEST_CHALLENGE, live)
                 };
-                if wrong_key {
+                let ak_ok = signer_core::update::parse_p256_pubkey(&ak_pk).is_some();
+                if flags & 32 != 0 {
+                    check_err(&r, Reason::PolicyInvalid, "a non-Arm/Anchor message handed to apply_arm/apply_anchor");
+                } else if wrong_key {
                     check_err(&r, Reason::PolicySig, "arm/anchor by a stranger");
                 } else if wrong_nonce {
                     check_err(&r, Reason::PolicyNonce, "arm/anchor with the wrong nonce");
@@ -797,8 +864,12 @@ pub fn state_ops(data: &[u8]) {
                     check_err(&r, Reason::ArmChallenge, "arm/anchor with another load's challenge");
                 } else if seq_seen > proj.seq {
                     check_err(&r, Reason::ArmSeqBehind, "arm/anchor claiming a seq the enclave never reached");
+                } else if kind == 7 && proj.tpm.as_ref().is_some_and(|t| t.ak_pk != ak_pk) {
+                    check_err(&r, Reason::AnchorTpmMismatch, "anchor naming another AK than the bound one");
                 } else if kind == 7 && live < counter {
                     check_err(&r, Reason::AnchorCounterBehind, "anchor whose certified counter is behind the live one");
+                } else if kind == 7 && !ak_ok {
+                    check_err(&r, Reason::PolicyInvalid, "anchor whose AK is not a point");
                 } else {
                     let after = r.expect("F4: an honest arm/anchor was refused");
                     assert_eq!(after.frozen, proj.frozen, "C-R7-6: arm/anchor changed the owner's freeze");
@@ -809,8 +880,8 @@ pub fn state_ops(data: &[u8]) {
                     if kind == 7 {
                         assert_eq!(
                             after.tpm,
-                            Some(TpmAnchor { ak_pk: h.ak.pk, nv_name: h.anchor.nv_name, expected: live }),
-                            "R9: the anchor did not pin the live counter"
+                            Some(TpmAnchor { ak_pk, nv_name: h.anchor.nv_name, expected: live }),
+                            "R9: the anchor did not pin the live counter under the named AK"
                         );
                     }
                     state_invariants(&before, &after, true, Effect::Plain);
@@ -818,16 +889,44 @@ pub fn state_ops(data: &[u8]) {
                 }
             }
             8 => {
-                let mut m = Message::WitnessToken {
-                    enclave_id: eid,
-                    tip_hash: s.chain.best.map(|r| r.hash).unwrap_or([0; 32]),
-                    tip_height: best,
-                    last_seen_seq: u64::from(a),
-                    issued: u64::from(b) * 600,
-                    sig: [0; 64],
+                // the three messages apply_message never accepts, whoever signs them
+                let mut m = match a % 3 {
+                    0 => Message::WitnessToken {
+                        enclave_id: eid,
+                        tip_hash: s.chain.best.map(|r| r.hash).unwrap_or([0; 32]),
+                        tip_height: best,
+                        last_seen_seq: u64::from(b),
+                        issued: u64::from(b) * 600,
+                        sig: [0; 64],
+                    },
+                    1 => Message::Arm {
+                        enclave_id: eid,
+                        nonce,
+                        boot_challenge: HONEST_CHALLENGE,
+                        seq_seen: 0,
+                        sig: [0; 64],
+                    },
+                    _ => Message::Anchor {
+                        enclave_id: eid,
+                        nonce,
+                        boot_challenge: HONEST_CHALLENGE,
+                        ak_pk: h.ak.pk,
+                        nv_name: h.anchor.nv_name,
+                        counter: u64::from(b),
+                        seq_seen: 0,
+                        sig: [0; 64],
+                    },
                 };
-                ring.witness.sign(&mut m);
-                check_err(&s.apply_message(&m), Reason::PolicyInvalid, "a witness token through apply_message");
+                if a % 3 == 0 {
+                    ring.witness.sign(&mut m)
+                } else {
+                    owner_key.sign(&mut m)
+                }
+                check_err(
+                    &s.apply_message(&m),
+                    Reason::PolicyInvalid,
+                    "a witness token / arm / anchor through apply_message",
+                );
                 assert_eq!(s, before, "F4: a refused message changed the state");
             }
             9 => {

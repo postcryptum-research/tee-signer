@@ -402,6 +402,10 @@ fn headers_seeds() -> Vec<Vec<u8>> {
         vec![2, 6, 31],                        // the real signet chain, 32 headers, clean
         vec![2, 6, 31, 0x10, 0x00, 0x01],      // one bit flipped in header 5
         vec![2, 6, 63, 0x13, 0x00, 0x80],      // 64 headers, a flip in header 61
+        vec![2, 6, 31, 0x03, 0x4c, 0x01],      // header 10, a merkle-root byte: the proof of work no longer holds
+        vec![4, 6, 31],                        // across the signet retarget boundary (2016 + 32 headers), one batch
+        vec![4, 6, 31, 0, 0, 0, 7],            // the same, split in two at header 63
+        vec![4, 6, 63, 0x05, 0x4c, 0x01, 200], // across the boundary, a flip in the tail, split late
         [vec![3, 0], vec![0xff; 32]].concat(), // work at 2^256 - 1 → OVERFLOW
         [vec![3, 0], vec![0; 32]].concat(),    // sane → Ok(1), work = the header's
         [vec![3, 0], {
@@ -428,6 +432,11 @@ fn state_ops_seeds() -> Vec<Vec<u8>> {
         cat(&[r(0, 1, 0, 0)]),                                // signed by a stranger
         cat(&[r(0, 2, 0, 0)]),                                // wrong nonce
         cat(&[r(0, 8, 3, 0)]),                                // re-pin to a verified recent header (pinned, forward)
+        cat(&[r(0, 8, 0xff, 0)]),                             // a checkpoint one above the verified chain: refused
+        cat(&[r(0, 64, 0, 0)]),                               // another network: POLICY_NETWORK
+        cat(&[r(0, 128, 0, 0)]),                              // another wallet: POLICY_WALLET
+        cat(&[r(10, 0, 0, 0), r(0, 16 | 32, 0xaa, 0)]),       // frozen: a re-pin that also loosens: refused
+        cat(&[r(1, 8, 0, 0)]),                                // cancel addressed to another enclave: POLICY_SIG
         cat(&[r(0, 16, 0xaa, 0)]),                            // a checkpoint change nobody verified, unfrozen: refused
         cat(&[r(10, 0, 0, 0), r(0, 4, 0, 0)]),                // frozen: an identical update → CHAIN_REORG (O01)
         cat(&[r(10, 0, 0, 0), r(0, 32, 0, 0)]),               // frozen: a loosening → CHAIN_REORG (O01)
@@ -449,6 +458,13 @@ fn state_ops_seeds() -> Vec<Vec<u8>> {
         cat(&[r(7, 0, 5, 6)]),                     // anchor counter 5, live 6
         cat(&[r(7, 0, 9, 3)]),                     // anchor counter 9, live 3: behind
         cat(&[r(7, 0, 5, 6), r(7, 0, 6, 8)]),      // re-anchor on the same objects
+        cat(&[r(7, 0, 5, 6), r(7, 8, 6, 8)]),      // re-anchor naming another AK: ANCHOR_TPM_MISMATCH
+        cat(&[r(7, 8, 5, 6)]),                     // first anchor under a foreign (valid) AK: accepted
+        cat(&[r(7, 16, 5, 0x33)]),                 // an AK that is not a point: refused
+        cat(&[r(7, 32, 0, 0)]),                    // a Cancel handed to apply_anchor: refused
+        cat(&[r(6, 32, 0, 0)]),                    // a Cancel handed to apply_arm: refused
+        cat(&[r(8, 0, 1, 0)]),                     // an Arm through apply_message: refused
+        cat(&[r(8, 0, 2, 0)]),                     // an Anchor through apply_message: refused
         cat(&[r(8, 0, 0, 0)]),                     // a witness token through apply_message: refused
         cat(&[r(9, 0, 1, 0), r(0, 8, 0, 0)]),      // advance, then re-pin to the new best
         vec![],
