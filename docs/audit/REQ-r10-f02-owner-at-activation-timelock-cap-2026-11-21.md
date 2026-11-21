@@ -2,8 +2,8 @@
 
 **Date:** 2026-11-21. **Status:** design **ruled by the auditor** in `RESP-r10-fuzzing-p2i-impl-2026-11-21.md` §2–3
 (F-2026-11-21-01 a DEFECT, fix authorized as drafted and break-tested both ways; the cap supported, value the owner's
-call) — implementation on branch `r10-f02-owner-at-activation` after PR #4 lands (the finding's reproducer lives
-there), IMPL-PASS before merge. **Scope:** `core/src/state.rs` (`apply_arm`, `apply_anchor`: two lines moved in each),
+call) — **implemented on branch `r10-f02-owner-at-activation`, SENT for IMPL-PASS** (same day; §4 has what was run); merge only
+with it. **Scope:** `core/src/state.rs` (`apply_arm`, `apply_anchor`: two lines moved in each),
 `core/src/mandate.rs` (`validate`: one bound), vectors, `POLICY.md`; no wire change; MRENCLAVE changes ⇒ the next
 ceremony build, together with O01 (owner-run, the auditor's content gate).
 
@@ -49,3 +49,25 @@ ceremony build carries O01 + F02 (the owner's two steps as on 2026-11-21; the au
 content gate; the R9a/F-01 migration — a new wallet, the live `1a36ada6` has 0 sat). Until then the deployed
 `2ae88422…` carries the O01 liveness trap (labelled) and F-2026-11-21-01 (LOW; to be labelled in `deploy/README.md`
 with this REQ).
+
+## 4. What was run (laptop, 2026-11-21, the implementation commit `4b1497e`)
+
+- `core`: fmt, clippy `-D warnings`, `cargo test` green — transitions 12 tests incl. the new
+  `arm_and_anchor_verify_against_the_owner_at_the_operation` (no rotation: unchanged; before the activation height the
+  old owner's `Arm` and `Anchor` accepted and the new owner's refused `POLICY_SIG`; at the activation height the new
+  owner's accepted — the rotation activates with the operation, `owner_pk` is the new key, `pending_owner` is gone —
+  and the retired key's refused `POLICY_SIG`, for `Arm` and `Anchor` each; `apply_message` agrees), and the cap in
+  `mandate_codec_and_validate` (52 560 accepted, 52 561 `Invalid::Timelock`).
+- `enclave/rcore` fmt/clippy/test (`nosgx,test-init`) green; `host/signerd --features nosgx` green; `fuzz` gate green
+  (2688 inputs over 13 targets) with the F-2026-11-21-01 reproducer in `regressions/state_ops/` — it passes now — and
+  `fuzz/findings/state_ops/` holding only `FINDING.md` (RESOLVED pending IMPL-PASS); fuzz clippy green.
+- Hollow red/green: `scripts/hollow-f01.sh` now 10 cases — case 9 moves the verification back to the owner before
+  activation (`&self.…` in both functions) ⇒ RED on the new vector; case 10 drops the cap ⇒ RED on the validate test;
+  **10/10**, `core/src` restored clean.
+- Diff of the branch over `main`: `core/src/state.rs` (the two functions: the clone + `activate_pending` moved above the
+  signature check, `s.enclave_id`/`s.owner_pk`, `anchor_identity` on `s`), `core/src/mandate.rs` (one constant, one
+  bound in `validate`), `core/tests/transitions.rs`, `docs/POLICY.md` (one row), `scripts/hollow-f01.sh`, the moved
+  reproducer and `FINDING.md`. No wire change.
+
+The cap value: 52 560 is implemented; **the owner may name another** before the ceremony build (a one-constant change,
+re-reviewed as part of this REQ).
