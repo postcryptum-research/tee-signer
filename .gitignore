@@ -4,6 +4,8 @@
 *.mnemonic
 *.key
 *.pem
+# the ceremony PUBLIC key is pinned in the tree: the Makefile's catsig and a fresh-clone rebuild need it (2026-11-21)
+!enclave/ceremony/ceremony_pub.pem
 *.auth
 .env
 .env.*

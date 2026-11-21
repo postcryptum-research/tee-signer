@@ -12,5 +12,6 @@ rsync -a --delete \
   --exclude 'enclave/App/libenclave_u.a' --exclude 'enclave/App/Enclave_u.*' \
   --exclude 'enclave/Enclave/Enclave_t.*' --exclude 'enclave/Enclave/*.o' --exclude 'enclave/Enclave/*.pem' \
   --exclude 'enclave/enclave.so' --exclude 'enclave/enclave.signed.so' --exclude 'enclave/build' --exclude 'enclave/.config_*' \
+  --exclude 'fuzz/coverage' --exclude 'fuzz/artifacts' \
   --exclude '*.log' \
   ./ "$HOST:$DEST"
