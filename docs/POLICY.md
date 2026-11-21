@@ -71,7 +71,7 @@ as TPM_sign's `permission show`.
 | `chain` | yes | object | the header-chain checkpoint |
 | `freshness` | yes | object | the freshness-witness precondition (`DESIGN.md §3`) |
 | `validity` | yes | object | when the mandate stops working |
-| `timelockBlocks` | yes | u32 ≥ 1 | how long a loosening update waits before activation |
+| `timelockBlocks` | yes | u32, 1 … 52 560 (≈ one year; REQ-r10-F02) | how long a loosening update waits before activation; a larger value is refused at install — it would make every later loosening and rotation unqueueable |
 
 ### `wallet`
 

@@ -46,6 +46,12 @@ fn mandate_codec_and_validate() {
     let mut bad = m.clone();
     bad.timelock_blocks = 0;
     assert_eq!(bad.validate(), Err(Invalid::Timelock));
+    // REQ-r10-F02: the cap — one year of blocks is the last accepted value
+    let mut cap = m.clone();
+    cap.timelock_blocks = bounds::MAX_TIMELOCK_BLOCKS;
+    assert_eq!(cap.validate(), Ok(()));
+    cap.timelock_blocks = bounds::MAX_TIMELOCK_BLOCKS + 1;
+    assert_eq!(cap.validate(), Err(Invalid::Timelock));
     let mut bad = m.clone();
     bad.limits.own_index_gap = 101;
     assert_eq!(bad.validate(), Err(Invalid::Limits));
@@ -786,4 +792,78 @@ fn new_at_init_refuses_an_invalid_mandate() {
     let good = base_mandate(&w, &cold);
     let sig = owner_sig_for(&k, &good, 0);
     assert!(State::new_at_init(ENCLAVE_ID, k.owner.pk, k.recovery.pk, good, sig).is_ok());
+}
+
+/// REQ-r10-F02 (fuzz finding F-2026-11-21-01): `apply_arm` and `apply_anchor` verify the owner's signature against
+/// the owner AT the operation — a due rotation activates first, as in every `apply_message` arm. Both directions:
+/// before the activation height the old owner signs and the new one is refused; at/after it the new owner signs
+/// and the key being retired is refused; without a rotation nothing changes.
+#[test]
+fn arm_and_anchor_verify_against_the_owner_at_the_operation() {
+    let (w, cold, k) = fx();
+    let base = base_mandate(&w, &cold);
+    let s0 = init_state(base.clone(), &k, H);
+    let challenge = [0x11u8; 32];
+    let ak = p256_key(0xd4);
+    let mut nv_name = [0u8; signer_core::tpm_attest::NV_NAME_LEN];
+    nv_name[1] = 0x0B; // TPM_ALG_SHA256
+    let arm = |nonce: u64, signer: &P256Key| {
+        let mut m =
+            Message::Arm { enclave_id: ENCLAVE_ID, nonce, boot_challenge: challenge, seq_seen: 0, sig: [0; 64] };
+        signer.sign(&mut m);
+        m
+    };
+    let anchor = |nonce: u64, signer: &P256Key| {
+        let mut m = Message::Anchor {
+            enclave_id: ENCLAVE_ID,
+            nonce,
+            boot_challenge: challenge,
+            ak_pk: ak.pk,
+            nv_name,
+            counter: 5,
+            seq_seen: 0,
+            sig: [0; 64],
+        };
+        signer.sign(&mut m);
+        m
+    };
+    // control: no rotation in flight — the owner arms and anchors
+    assert!(s0.apply_arm(&arm(1, &k.owner), &challenge).is_ok());
+    assert!(s0.apply_anchor(&anchor(1, &k.owner), &challenge, 6).is_ok());
+    // a rotation to the witness key, due at H + 144
+    let mut rot = Message::RotateOwner { enclave_id: ENCLAVE_ID, nonce: 1, new_owner_pk: k.witness.pk, sig: [0; 64] };
+    k.owner.sign(&mut rot);
+    let s1 = s0.apply_message(&rot).unwrap();
+    assert_eq!(s1.pending_owner.as_ref().unwrap().activation_height, H + 144);
+    // before the activation height: the old owner is still the owner, the new one is not yet
+    let before = s1.clone();
+    assert!(before.apply_arm(&arm(2, &k.owner), &challenge).is_ok(), "old owner arms before the rotation is due");
+    assert_eq!(first_reason(&before.apply_arm(&arm(2, &k.witness), &challenge).unwrap_err()), "POLICY_SIG");
+    assert!(before.apply_anchor(&anchor(2, &k.owner), &challenge, 6).is_ok());
+    assert_eq!(first_reason(&before.apply_anchor(&anchor(2, &k.witness), &challenge, 6).unwrap_err()), "POLICY_SIG");
+    // at the activation height: the rotation activates with the operation — the NEW owner signs, the key being
+    // retired is refused (F-2026-11-21-01: it used to be the other way round for Arm/Anchor only)
+    let mut due = s1.clone();
+    set_best(&mut due, H + 144);
+    let armed = due.apply_arm(&arm(2, &k.witness), &challenge).expect("the new owner arms at the activation height");
+    assert_eq!(armed.owner_pk, k.witness.pk);
+    assert!(armed.pending_owner.is_none() && armed.nonce == 2);
+    assert_eq!(
+        first_reason(&due.apply_arm(&arm(2, &k.owner), &challenge).unwrap_err()),
+        "POLICY_SIG",
+        "the retired key must not arm"
+    );
+    let anchored = due
+        .apply_anchor(&anchor(2, &k.witness), &challenge, 6)
+        .expect("the new owner anchors at the activation height");
+    assert_eq!(anchored.tpm.as_ref().map(|t| t.expected), Some(6));
+    assert_eq!(
+        first_reason(&due.apply_anchor(&anchor(2, &k.owner), &challenge, 6).unwrap_err()),
+        "POLICY_SIG",
+        "the retired key must not re-root the anchor"
+    );
+    // and apply_message agrees (it always did): a Cancel by the new owner at the activation height is accepted
+    let mut c = Message::Cancel { enclave_id: ENCLAVE_ID, nonce: 2, sig: [0; 64] };
+    k.witness.sign(&mut c);
+    assert!(due.apply_message(&c).is_ok());
 }

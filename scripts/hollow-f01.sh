@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/hollow-f01.sh — the hollow red/green of the F-01 fix (REQ-r10-F01 §4 vector 11; RESP-r10-F01 impl, the
-# auditor's condition) and of the REQ-r10-O01 refusal (case 8): every protection site the fix adds is removed in turn and `cargo test --test transitions`
+# auditor's condition), of the REQ-r10-O01 refusal (case 8) and of REQ-r10-F02 (cases 9–10): every protection site the fix adds is removed in turn and `cargo test --test transitions`
 # must turn RED, so no vector is hollow and a refactor cannot drop a guard silently. Sources are restored with git
 # after each case, so core/src must be clean. Report only; nothing ships.
 set -uo pipefail
@@ -37,8 +37,12 @@ case_ "frozen path: the checkpoint-only check dropped" \
   core/src/state.rs 's/if rest != s\.mandate \{/if false {/' 'if false {'
 case_ "REQ-r10-O01: the frozen non-re-pin refusal removed (a loosening parks in pending for ever again)" \
   core/src/state.rs 's/if s\.chain\.frozen \&\& new\.checkpoint == s\.mandate\.checkpoint \{/if false {/' 'if false {'
+case_ "REQ-r10-F02: Arm/Anchor verified against the owner BEFORE a due rotation activates again (F-2026-11-21-01 brought back)" \
+  core/src/state.rs 's/msg\.enclave_id\(\) != \&s\.enclave_id \|\| !msg\.verify\(\&s\.owner_pk\)/msg.enclave_id() != \&self.enclave_id || !msg.verify(\&self.owner_pk)/' '!msg.verify(&self.owner_pk)'
+case_ "REQ-r10-F02: the timelock_blocks cap dropped" \
+  core/src/mandate.rs 's/ \|\| self\.timelock_blocks > bounds::MAX_TIMELOCK_BLOCKS//' 'if self.timelock_blocks == 0 {'
 case_ "leg 3: new_at_init no longer validates" \
   core/src/state.rs 's/^(\s+)mandate\.validate\(\)\?;$/\1let _ = \&mandate; \/\/ HOLLOW/' '// HOLLOW'
 if git diff --quiet -- core/src; then echo "== core/src restored: clean"; else echo "== core/src NOT clean"; rc=4; fi
-[ $rc -eq 0 ] && echo "== every removed guard turned a vector red (8/8)" || echo "== FAILED: a hollow vector or a bad edit (rc=$rc)"
+[ $rc -eq 0 ] && echo "== every removed guard turned a vector red (10/10)" || echo "== FAILED: a hollow vector or a bad edit (rc=$rc)"
 exit $rc
