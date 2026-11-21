@@ -147,12 +147,14 @@ fn signet_state() -> State {
 /// - mode 3: the no-wrap boundary at the call site — the fixture's work set to the 32 input bytes, then
 ///   one mined header: `OVERFLOW` iff the reference sum reaches 2^256, else exactly the reference sum;
 /// - mode 4: the real signet chain ACROSS its retarget boundary (header 2016 of the vector = 324 576) —
-///   2016 + n headers in two batches split at an arbitrary point, optional one-byte mutation in the tail.
+///   2016 + n headers in two batches split at an arbitrary point, optional one-byte mutation in the tail;
+/// - mode 5: regtest mined past the height-2016 boundary (`e` blocks beyond it), then a fork of `k` blocks
+///   attaching `d` deep — in the previous retarget period when `d > e` — judged by the mode-1 rules.
 pub fn headers(data: &[u8]) {
     let Some((&mode, rest)) = data.split_first() else { return };
     let Some((&mr, rest)) = rest.split_first() else { return };
     let max_reorg = 1 + u32::from(mr % 8);
-    match mode % 5 {
+    match mode % 6 {
         0 => {
             let (mut s, _cp) = gen::regtest_state(max_reorg);
             let hs: Vec<Header> = rest
@@ -220,6 +222,78 @@ pub fn headers(data: &[u8]) {
                     "F6: the real signet chain was refused: {r1:?} / {r2:?}"
                 );
                 assert_eq!(s.chain.best.unwrap().height as usize, 322_560 + raw.len());
+            }
+        }
+        5 => {
+            let e = usize::from(rest.first().copied().unwrap_or(0)) % 4;
+            let d = 1 + usize::from(rest.get(1).copied().unwrap_or(0)) % (max_reorg as usize + 2);
+            let k = usize::from(rest.get(2).copied().unwrap_or(3)) % 12;
+            let (mut s, cp) = gen::regtest_state(max_reorg);
+            let mut main = Vec::new();
+            let mut prev = cp;
+            let mut salt = 1u32;
+            for _ in 0..(2016 + e - gen::CP_HEIGHT as usize) {
+                prev = gen::mine(&prev, prev.time + 10, salt);
+                salt += 1;
+                main.push(prev);
+            }
+            let before = s.clone();
+            let r = apply(&mut s, &main);
+            chain_invariants(&before, &s, &r);
+            assert_eq!(
+                r.as_ref().ok(),
+                Some(&(main.len() as u32)),
+                "F6: a regtest chain across the retarget boundary was refused: {r:?}"
+            );
+            assert_eq!(s.chain.best.unwrap().height as usize, 2016 + e);
+            let recent_len = s.chain.recent.len();
+            let attach = main[main.len() - 1 - d];
+            let mut fork = Vec::new();
+            prev = attach;
+            for _ in 0..k {
+                prev = gen::mine(&prev, prev.time + 10, salt);
+                salt += 1;
+                fork.push(prev);
+            }
+            let expect: Result<u32, Reason> = if k == 0 {
+                Ok(0)
+            } else if d >= recent_len {
+                Err(Reason::HeaderInvalid)
+            } else if d as u32 > max_reorg {
+                Err(Reason::ChainReorg)
+            } else if k > d {
+                Ok(k as u32)
+            } else {
+                Ok(0)
+            };
+            if !fork.is_empty() {
+                let before2 = s.clone();
+                let r2 = apply(&mut s, &fork);
+                chain_invariants(&before2, &s, &r2);
+                match (&expect, &r2) {
+                    (Ok(n), Ok(m)) => {
+                        assert_eq!(n, m, "F6: fork across the boundary: growth {m}, model {n} (e {e}, d {d}, k {k})")
+                    }
+                    (Err(x), Err(y)) => assert_eq!(
+                        code(y),
+                        x.code(),
+                        "F6: fork across the boundary: {} vs model {} (e {e}, d {d}, k {k})",
+                        code(y),
+                        x.code()
+                    ),
+                    (x, y) => {
+                        panic!("F6: fork across the boundary: model {x:?} vs enclave {y:?} (e {e}, d {d}, k {k})")
+                    }
+                }
+                if let Ok(n) = expect {
+                    if n > 0 {
+                        assert_eq!(
+                            s.chain.best.unwrap().hash,
+                            gen::hash32(fork.last().unwrap()),
+                            "F6: the adopted fork is not best"
+                        );
+                    }
+                }
             }
         }
         _ => {
@@ -635,16 +709,19 @@ pub fn state_ops(data: &[u8]) {
                 if flags & 128 != 0 {
                     new.wallet.fingerprint[0] ^= 0xff;
                 }
-                if flags & 16 != 0 {
-                    new = proj.mandate.clone();
-                    new.checkpoint.hash = [a; 32];
-                    new.checkpoint.time = new.checkpoint.time.wrapping_add(600);
-                }
                 if flags & 32 != 0 {
                     new = proj.mandate.clone();
                     new.destinations.unlisted.max_per_tx =
                         new.destinations.unlisted.max_per_tx.saturating_mul(2).max(1);
                     // a loosening
+                }
+                if flags & 16 != 0 {
+                    // a checkpoint nobody verified, on top of whatever `new` is by now (with 32: a re-pin that also loosens)
+                    if flags & 32 == 0 {
+                        new = proj.mandate.clone();
+                    }
+                    new.checkpoint.hash = [a; 32];
+                    new.checkpoint.time = new.checkpoint.time.wrapping_add(600);
                 }
                 let signer = if flags & 1 != 0 { ring.stranger(&proj.owner_pk) } else { owner_key };
                 let mut m = Message::PolicyUpdate { enclave_id: eid, nonce, mandate: new.encode(), sig: [0; 64] };

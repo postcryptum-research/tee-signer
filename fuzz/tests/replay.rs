@@ -406,8 +406,12 @@ fn headers_seeds() -> Vec<Vec<u8>> {
         vec![4, 6, 31],                        // across the signet retarget boundary (2016 + 32 headers), one batch
         vec![4, 6, 31, 0, 0, 0, 7],            // the same, split in two at header 63
         vec![4, 6, 63, 0x05, 0x4c, 0x01, 200], // across the boundary, a flip in the tail, split late
+        vec![2, 6, 31, 0x03, 0x68, 0x01],      // header 10, a bits byte: bits != required
+        vec![5, 2, 1, 2, 4], // regtest past the boundary (+1); fork from the previous period, 4 blocks: adopted
+        vec![5, 2, 0, 1, 1], // at the boundary; fork depth 2 with 1 block: equal work, not adopted
+        vec![5, 0, 3, 7, 2], // max_reorg 1: a fork depth 2 → CHAIN_REORG, frozen
         [vec![3, 0], vec![0xff; 32]].concat(), // work at 2^256 - 1 → OVERFLOW
-        [vec![3, 0], vec![0; 32]].concat(),    // sane → Ok(1), work = the header's
+        [vec![3, 0], vec![0; 32]].concat(), // sane → Ok(1), work = the header's
         [vec![3, 0], {
             let mut w = vec![0u8; 32];
             w[31] = 0x80;
@@ -435,38 +439,41 @@ fn state_ops_seeds() -> Vec<Vec<u8>> {
         cat(&[r(0, 8, 0xff, 0)]),                             // a checkpoint one above the verified chain: refused
         cat(&[r(0, 64, 0, 0)]),                               // another network: POLICY_NETWORK
         cat(&[r(0, 128, 0, 0)]),                              // another wallet: POLICY_WALLET
-        cat(&[r(10, 0, 0, 0), r(0, 16 | 32, 0xaa, 0)]),       // frozen: a re-pin that also loosens: refused
-        cat(&[r(1, 8, 0, 0)]),                                // cancel addressed to another enclave: POLICY_SIG
-        cat(&[r(0, 16, 0xaa, 0)]),                            // a checkpoint change nobody verified, unfrozen: refused
-        cat(&[r(10, 0, 0, 0), r(0, 4, 0, 0)]),                // frozen: an identical update → CHAIN_REORG (O01)
-        cat(&[r(10, 0, 0, 0), r(0, 32, 0, 0)]),               // frozen: a loosening → CHAIN_REORG (O01)
-        cat(&[r(10, 0, 0, 0), r(0, 16, 0xaa, 0)]), // frozen: checkpoint-only re-pin → applies, clears the freeze
+        cat(&[r(10, 0, 0, 0), r(0, 16 | 32, 0xaa, 0)]), // frozen: a re-pin that also loosens: POLICY_INVALID (C-F01-2)
+        cat(&[r(1, 8, 0, 0)]),                          // cancel addressed to another enclave: POLICY_SIG
+        cat(&[r(0, 16, 0xaa, 0)]),                      // a checkpoint change nobody verified, unfrozen: refused
+        cat(&[r(10, 0, 0, 0), r(0, 4, 0, 0)]),          // frozen: an identical update → CHAIN_REORG (O01)
+        cat(&[r(10, 0, 0, 0), r(0, 32, 0, 0)]),         // frozen: a loosening → CHAIN_REORG (O01)
+        cat(&[r(10, 0, 0, 0), r(0, 16, 0xaa, 0)]),      // frozen: checkpoint-only re-pin → applies, clears the freeze
         cat(&[r(10, 0, 0, 0), r(0, 16, 0xaa, 0), r(0, 4, 0, 0)]), // and the next ordinary update goes through again
-        cat(&[r(2, 0, 0, 0)]),                     // unfreeze
-        cat(&[r(3, 0, 7, 0)]),                     // rearm with seq 7
-        cat(&[r(4, 0, 0, 0)]),                     // rotate to the witness key (pending owner)
-        cat(&[r(4, 0, 0, 0), r(4, 0, 1, 0)]),      // a second rotation while one is pending
+        cat(&[r(2, 0, 0, 0)]),                          // unfreeze
+        cat(&[r(3, 0, 7, 0)]),                          // rearm with seq 7
+        cat(&[r(4, 0, 0, 0)]),                          // rotate to the witness key (pending owner)
+        cat(&[r(4, 0, 0, 0), r(4, 0, 1, 0)]),           // a second rotation while one is pending
         cat(&[r(4, 0, 0, 0), r(9, 0, 30, 0), r(1, 0, 0, 0)]), // rotation due: the witness key is the owner; it cancels
-        cat(&[r(4, 0, 2, 0x33)]),                  // rotate to a non-point: refused
-        cat(&[r(4, 0, 3, 0)]),                     // rotate to the recovery key: refused
-        cat(&[r(5, 0, 1, 0), r(0, 4, 0, 0)]),      // recover to the AK key; it updates
-        cat(&[r(5, 2, 1, 0)]),                     // recover signed by the owner: refused
-        cat(&[r(6, 0, 0, 0)]),                     // arm
-        cat(&[r(6, 1, 0, 0)]),                     // arm with another load's challenge
-        cat(&[r(6, 0, 9, 0)]),                     // arm claiming seq 9 the enclave never reached
-        cat(&[r(11, 0, 0, 0), r(6, 0, 0, 0)]),     // the owner's freeze persists through arm (C-R7-6)
-        cat(&[r(7, 0, 5, 6)]),                     // anchor counter 5, live 6
-        cat(&[r(7, 0, 9, 3)]),                     // anchor counter 9, live 3: behind
-        cat(&[r(7, 0, 5, 6), r(7, 0, 6, 8)]),      // re-anchor on the same objects
-        cat(&[r(7, 0, 5, 6), r(7, 8, 6, 8)]),      // re-anchor naming another AK: ANCHOR_TPM_MISMATCH
-        cat(&[r(7, 8, 5, 6)]),                     // first anchor under a foreign (valid) AK: accepted
-        cat(&[r(7, 16, 5, 0x33)]),                 // an AK that is not a point: refused
-        cat(&[r(7, 32, 0, 0)]),                    // a Cancel handed to apply_anchor: refused
-        cat(&[r(6, 32, 0, 0)]),                    // a Cancel handed to apply_arm: refused
-        cat(&[r(8, 0, 1, 0)]),                     // an Arm through apply_message: refused
-        cat(&[r(8, 0, 2, 0)]),                     // an Anchor through apply_message: refused
-        cat(&[r(8, 0, 0, 0)]),                     // a witness token through apply_message: refused
-        cat(&[r(9, 0, 1, 0), r(0, 8, 0, 0)]),      // advance, then re-pin to the new best
+        cat(&[r(4, 0, 2, 0x33)]),                       // rotate to a non-point: refused
+        cat(&[r(4, 0, 3, 0)]),                          // rotate to the recovery key: refused
+        cat(&[r(5, 0, 1, 0), r(0, 4, 0, 0)]),           // recover to the AK key; it updates
+        cat(&[r(5, 2, 1, 0)]),                          // recover signed by the owner: refused
+        cat(&[r(6, 0, 0, 0)]),                          // arm
+        cat(&[r(6, 1, 0, 0)]),                          // arm with another load's challenge
+        cat(&[r(6, 0, 9, 0)]),                          // arm claiming seq 9 the enclave never reached
+        cat(&[r(11, 0, 0, 0), r(6, 0, 0, 0)]),          // the owner's freeze persists through arm (C-R7-6)
+        cat(&[r(7, 0, 5, 6)]),                          // anchor counter 5, live 6
+        cat(&[r(7, 0, 9, 3)]),                          // anchor counter 9, live 3: behind
+        cat(&[r(7, 0, 5, 6), r(7, 0, 6, 8)]),           // re-anchor on the same objects
+        cat(&[r(7, 0, 5, 6), r(7, 8, 6, 8)]),           // re-anchor naming another AK: ANCHOR_TPM_MISMATCH
+        cat(&[r(7, 8, 5, 6)]),                          // first anchor under a foreign (valid) AK: accepted
+        cat(&[r(7, 16, 5, 0x33)]),                      // an AK that is not a point: refused
+        cat(&[r(7, 32, 0, 0)]),                         // a Cancel handed to apply_anchor: refused
+        cat(&[r(6, 32, 0, 0)]),                         // a Cancel handed to apply_arm: refused
+        cat(&[r(6, 2, 0, 0)]),                          // arm by a stranger: POLICY_SIG
+        cat(&[r(6, 4, 0, 0)]),                          // arm with the wrong nonce: POLICY_NONCE
+        cat(&[r(7, 4, 5, 6)]),                          // anchor with the wrong nonce: POLICY_NONCE
+        cat(&[r(8, 0, 1, 0)]),                          // an Arm through apply_message: refused
+        cat(&[r(8, 0, 2, 0)]),                          // an Anchor through apply_message: refused
+        cat(&[r(8, 0, 0, 0)]),                          // a witness token through apply_message: refused
+        cat(&[r(9, 0, 1, 0), r(0, 8, 0, 0)]),           // advance, then re-pin to the new best
         vec![],
     ]
 }
