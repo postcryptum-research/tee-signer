@@ -6,8 +6,13 @@ the replay test asserts it **still fires**, until the fix or the auditor's rulin
 
 ## F-2026-11-21-01 — `apply_arm` / `apply_anchor` verify the owner's signature against the owner **before** a due rotation activates (F4)
 
-**Status:** OPEN — found by the `state_ops` target in the post-fix shakeout of phase 2 pass (i) (2026-11-21, two
-workers, within ten minutes); reported to the auditor for a ruling; no fix before it. **Reproducer:**
+**Status:** OPEN — **ruled a DEFECT by the auditor, 2026-11-21, severity LOW** (`RESP-r10-fuzzing-p2i-impl-2026-11-21.md` §2:
+`Anchor` re-pins the rollback-protection root — AK, NV name, expected counter — so one more `Anchor` for the key being
+retired is a one-shot re-rooting of rollback trust, bounded by the new owner's next `Anchor`; the direction is backwards
+for what rotation is for). Fix authorized as drafted (activate first, verify against `s.owner_pk`), break-tested both
+ways, in the next core round (`REQ-r10-f02-owner-at-activation-timelock-cap-2026-11-21.md`); the reproducer moves to
+`regressions/` when that fix lands with its IMPL-PASS. Found by the `state_ops` target in the post-fix shakeout of phase 2
+pass (i) (2026-11-21, two workers, within ten minutes). **Reproducer:**
 `F-2026-11-21-01-arm-anchor-pre-activation-owner` — four scripted steps: `RotateOwner` to the witness key (pending
 owner at `best + timelock`), the chain advanced 561 blocks (the rotation is due), then an `Anchor` signed by the
 **new** owner ⇒ `POLICY_SIG`. `cargo run --no-default-features --example explain -- state_ops <file>` is not wired
