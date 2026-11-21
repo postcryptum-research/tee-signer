@@ -720,12 +720,59 @@ fn frozen_repin_applies_at_once_and_is_checkpoint_only() {
         let e = s1.apply_message(&update(&k, &k.owner, &m, 1)).unwrap_err();
         assert_eq!(first_reason(&e), "POLICY_INVALID", "frozen re-pin with {name}");
     }
-    // and while frozen with the checkpoint UNCHANGED, an ordinary update still takes the ordinary path
+    // while frozen with the checkpoint UNCHANGED nothing else is accepted: `frozen_update_without_repin_is_refused`
+}
+
+/// REQ-r10-O01 (RESP: DESIGN-PASS): while the chain is frozen, a `PolicyUpdate` that does not re-pin the
+/// checkpoint is refused `CHAIN_REORG` before the nonce is consumed — a tightening would be a no-op, a
+/// loosening would park in `pending` for ever and block the re-pin. Vectors 1, 2, 2b, 5, 6 of the REQ.
+#[test]
+fn frozen_update_without_repin_is_refused() {
+    let (w, cold, k) = fx();
+    let base = base_mandate(&w, &cold);
+    let s0 = init_state(base.clone(), &k, H);
+    let mut s1 = s0.clone();
+    s1.chain.frozen = true;
     let mut tight = base.clone();
     tight.limits.max_fee_abs /= 2;
-    let s4 = s1.apply_message(&update(&k, &k.owner, &tight, 1)).unwrap();
-    assert!(s4.chain.frozen, "no re-pin, no reset: the chain stays frozen");
-    assert_eq!(s4.mandate.limits.max_fee_abs, tight.limits.max_fee_abs);
+    let mut loose = base.clone();
+    loose.destinations.unlisted.max_per_tx *= 2;
+    let mut repin = base.clone();
+    repin.checkpoint.hash = [0xaa; 32];
+    // v1: a tightening while frozen ⇒ CHAIN_REORG, and the nonce is NOT consumed — the re-pin at the same
+    // nonce is still accepted afterwards
+    let e = s1.apply_message(&update(&k, &k.owner, &tight, 1)).unwrap_err();
+    assert_eq!(first_reason(&e), "CHAIN_REORG");
+    assert_eq!(s1.nonce, 0);
+    let after = s1.apply_message(&update(&k, &k.owner, &repin, 1)).unwrap();
+    assert!(!after.chain.frozen && after.nonce == 1, "nonce 1 was not consumed by the refused update");
+    // v2: a loosening while frozen ⇒ CHAIN_REORG, nothing parks in pending
+    let e = s1.apply_message(&update(&k, &k.owner, &loose, 1)).unwrap_err();
+    assert_eq!(first_reason(&e), "CHAIN_REORG");
+    let after = s1.apply_message(&update(&k, &k.owner, &repin, 1)).unwrap();
+    assert!(after.pending.is_none() && !after.chain.frozen);
+    // v2b: an identical re-submit while frozen ⇒ CHAIN_REORG too (the no-change corner of compare)
+    let e = s1.apply_message(&update(&k, &k.owner, &base, 1)).unwrap_err();
+    assert_eq!(first_reason(&e), "CHAIN_REORG");
+    // v5 (control): unfrozen, the same updates take the ordinary path
+    let s_t = s0.apply_message(&update(&k, &k.owner, &tight, 1)).unwrap();
+    assert!(s_t.pending.is_none() && s_t.mandate.limits.max_fee_abs == tight.limits.max_fee_abs);
+    let s_l = s0.apply_message(&update(&k, &k.owner, &loose, 1)).unwrap();
+    assert!(s_l.pending.is_some(), "a loosening waits the timelock when unfrozen");
+    // v6: a pending queued unfrozen, then the chain freezes: the re-pin is refused POLICY_PENDING (pending
+    // gates every update, uniformly); Cancel clears it; then the re-pin applies and ends the freeze
+    let mut s2 = s_l.clone();
+    s2.chain.frozen = true;
+    let e = s2.apply_message(&update(&k, &k.owner, &repin, 2)).unwrap_err();
+    assert_eq!(first_reason(&e), "POLICY_PENDING");
+    let mut c = Message::Cancel { enclave_id: ENCLAVE_ID, nonce: 2, sig: [0; 64] };
+    k.owner.sign(&mut c);
+    let s3 = s2.apply_message(&c).unwrap();
+    assert!(s3.pending.is_none() && s3.chain.frozen);
+    let s4 = s3.apply_message(&update(&k, &k.owner, &repin, 3)).unwrap();
+    assert!(!s4.chain.frozen, "the re-pin ends the freeze");
+    assert_eq!(s4.chain.best.unwrap().hash, [0xaa; 32]);
+    assert_eq!(s4.nonce, 3);
 }
 
 /// RESP-r10-F01 C-F01-3: the state constructor refuses an invalid mandate (vector 10).

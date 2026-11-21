@@ -420,6 +420,14 @@ impl State {
                 if new.wallet != s.wallet {
                     return Err(Reason::PolicyWallet.into());
                 }
+                // REQ-r10-O01: while the chain is frozen by a deep reorg the only policy update that helps
+                // is a checkpoint re-pin (below). Anything else is refused: a tightening would be a no-op
+                // behind CHAIN_REORG, a loosening would park in `pending` for ever (`best` cannot move
+                // while frozen — `apply_headers` refuses every header) and block the re-pin itself behind
+                // POLICY_PENDING. Refused before the nonce is consumed.
+                if s.chain.frozen && new.checkpoint == s.mandate.checkpoint {
+                    return Err(Reason::ChainReorg.into());
+                }
                 // the checkpoint is the trust root: unchanged, or a header this enclave verified
                 // itself with every field as recorded (RESP-r10-F01 leg 2), or — only while the chain
                 // is frozen by a deep reorg — a fresh re-pin, which applies at once (C-F01-1)

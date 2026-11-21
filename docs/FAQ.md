@@ -445,7 +445,10 @@ the window's start height, shown at `status`), or raise the budget (timelocked).
 the fee target in BTCPay, or the plugin's fallback fee rate. `FROZEN`: find out who froze and why
 (the monitor's journal says) before you `unfreeze`. `MANDATE_EXPIRED`: install a new mandate with
 a later `notAfterHeight`. `CHAIN_STALE`: the sidecar's header feed from `bitcoind` is down — the
-enclave will not roll a window it cannot see. `INPUT_NO_PREVTX`: the PSBT lacks full previous
+enclave will not roll a window it cannot see. `CHAIN_REORG`: the chain is frozen after a reorg deeper
+than `maxReorg` — the only policy update the enclave accepts now is a checkpoint re-pin (the checkpoint
+fields only, to a header of the live chain; it applies at once and ends the freeze); if a pending update
+was queued before the freeze, `cancel` it first (`POLICY_PENDING` tells you), then re-pin. `INPUT_NO_PREVTX`: the PSBT lacks full previous
 transactions — the plugin always includes them; a PSBT built elsewhere must too.
 
 BTCPay's payout processor retries on its schedule; after ten refusals it disables itself for that

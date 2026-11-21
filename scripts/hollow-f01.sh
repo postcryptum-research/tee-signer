@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/hollow-f01.sh — the hollow red/green of the F-01 fix (REQ-r10-F01 §4 vector 11; RESP-r10-F01 impl, the
-# auditor's condition): every protection site the fix adds is removed in turn and `cargo test --test transitions`
+# auditor's condition) and of the REQ-r10-O01 refusal (case 8): every protection site the fix adds is removed in turn and `cargo test --test transitions`
 # must turn RED, so no vector is hollow and a refactor cannot drop a guard silently. Sources are restored with git
 # after each case, so core/src must be clean. Report only; nothing ships.
 set -uo pipefail
@@ -35,8 +35,10 @@ case_ "frozen path: the at-once re-pin disabled (the pre-fix shape: through comp
   core/src/state.rs 's/if s\.chain\.frozen \{/if false \&\& s.chain.frozen {/' 'if false && s.chain.frozen {'
 case_ "frozen path: the checkpoint-only check dropped" \
   core/src/state.rs 's/if rest != s\.mandate \{/if false {/' 'if false {'
+case_ "REQ-r10-O01: the frozen non-re-pin refusal removed (a loosening parks in pending for ever again)" \
+  core/src/state.rs 's/if s\.chain\.frozen \&\& new\.checkpoint == s\.mandate\.checkpoint \{/if false {/' 'if false {'
 case_ "leg 3: new_at_init no longer validates" \
   core/src/state.rs 's/^(\s+)mandate\.validate\(\)\?;$/\1let _ = \&mandate; \/\/ HOLLOW/' '// HOLLOW'
 if git diff --quiet -- core/src; then echo "== core/src restored: clean"; else echo "== core/src NOT clean"; rc=4; fi
-[ $rc -eq 0 ] && echo "== every removed guard turned a vector red (7/7)" || echo "== FAILED: a hollow vector or a bad edit (rc=$rc)"
+[ $rc -eq 0 ] && echo "== every removed guard turned a vector red (8/8)" || echo "== FAILED: a hollow vector or a bad edit (rc=$rc)"
 exit $rc
