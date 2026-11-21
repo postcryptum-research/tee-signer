@@ -554,11 +554,13 @@ impl State {
         let Message::Arm { nonce, boot_challenge: c, seq_seen, .. } = msg else {
             return Err(Reason::PolicyInvalid.into());
         };
-        if msg.enclave_id() != &self.enclave_id || !msg.verify(&self.owner_pk) {
-            return Err(Reason::PolicySig.into());
-        }
+        // REQ-r10-F02 (F-2026-11-21-01): a due rotation activates FIRST, so the signature is verified against
+        // the owner at the operation — as every `apply_message` arm does — never against a key being retired
         let mut s = self.clone();
         s.activate_pending();
+        if msg.enclave_id() != &s.enclave_id || !msg.verify(&s.owner_pk) {
+            return Err(Reason::PolicySig.into());
+        }
         let next = s.nonce.checked_add(1).ok_or_else(|| Refusal::one(Reason::Overflow))?;
         if *nonce != next {
             return Err(Reason::PolicyNonce.into());
@@ -608,11 +610,13 @@ impl State {
         let Message::Anchor { nonce, boot_challenge: c, counter, seq_seen, .. } = msg else {
             return Err(Reason::PolicyInvalid.into());
         };
-        if msg.enclave_id() != &self.enclave_id || !msg.verify(&self.owner_pk) {
-            return Err(Reason::PolicySig.into());
-        }
+        // REQ-r10-F02 (F-2026-11-21-01): a due rotation activates FIRST, so the signature is verified against
+        // the owner at the operation — as every `apply_message` arm does — never against a key being retired
         let mut s = self.clone();
         s.activate_pending();
+        if msg.enclave_id() != &s.enclave_id || !msg.verify(&s.owner_pk) {
+            return Err(Reason::PolicySig.into());
+        }
         let next = s.nonce.checked_add(1).ok_or_else(|| Refusal::one(Reason::Overflow))?;
         if *nonce != next {
             return Err(Reason::PolicyNonce.into());
@@ -623,7 +627,7 @@ impl State {
         if *seq_seen > s.seq {
             return Err(Reason::ArmSeqBehind.into());
         }
-        let (ak_pk, nv_name) = self.anchor_identity(msg)?;
+        let (ak_pk, nv_name) = s.anchor_identity(msg)?;
         if live_counter < *counter {
             return Err(Reason::AnchorCounterBehind.into());
         }

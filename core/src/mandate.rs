@@ -18,6 +18,10 @@ pub const MANDATE_VERSION: u16 = 1;
 pub mod bounds {
     /// Max trusted destinations.
     pub const MAX_TRUSTED: usize = 64;
+    /// `timelockBlocks` upper bound (REQ-r10-F02, ≈ one year of blocks): a timelock beyond the chain's remaining
+    /// height space would make every later loosening and rotation unqueueable (`OVERFLOW`) — refused loudly at
+    /// install instead. The value is the owner's design call.
+    pub const MAX_TIMELOCK_BLOCKS: u32 = 52_560;
     /// Max label length in bytes.
     pub const MAX_LABEL: usize = 32;
     /// Max scriptPubKey length for an address matcher (P2TR/P2WSH are 34; P2SH 23; P2PKH 25).
@@ -573,7 +577,7 @@ impl Mandate {
         if self.not_after_height <= self.checkpoint.height {
             return Err(Invalid::Validity);
         }
-        if self.timelock_blocks == 0 {
+        if self.timelock_blocks == 0 || self.timelock_blocks > bounds::MAX_TIMELOCK_BLOCKS {
             return Err(Invalid::Timelock);
         }
         Ok(())
