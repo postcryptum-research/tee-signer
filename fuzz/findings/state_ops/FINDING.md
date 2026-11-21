@@ -6,7 +6,10 @@ the replay test asserts it **still fires**, until the fix or the auditor's rulin
 
 ## F-2026-11-21-01 — `apply_arm` / `apply_anchor` verify the owner's signature against the owner **before** a due rotation activates (F4)
 
-**Status:** OPEN — **ruled a DEFECT by the auditor, 2026-11-21, severity LOW** (`RESP-r10-fuzzing-p2i-impl-2026-11-21.md` §2:
+**Status:** RESOLVED on branch `r10-f02-owner-at-activation` (`REQ-r10-f02-owner-at-activation-timelock-cap-2026-11-21.md`;
+**IMPL-PASS** `docs/audit/RESP-r10-f02-owner-at-activation-impl-2026-11-21.md` at `fc6c709`, merged via PR #5; a new
+MRENCLAVE with the next ceremony build). The reproducer now lives in
+`regressions/state_ops/` and passes. Originally: OPEN — **ruled a DEFECT by the auditor, 2026-11-21, severity LOW** (`RESP-r10-fuzzing-p2i-impl-2026-11-21.md` §2:
 `Anchor` re-pins the rollback-protection root — AK, NV name, expected counter — so one more `Anchor` for the key being
 retired is a one-shot re-rooting of rollback trust, bounded by the new owner's next `Anchor`; the direction is backwards
 for what rotation is for). Fix authorized as drafted (activate first, verify against `s.owner_pk`), break-tested both
