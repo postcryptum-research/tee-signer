@@ -1,6 +1,6 @@
 # REQ-r10 phase 2 (design) — structured fuzzing of the policy core: state operations, headers, PSBT classification, the judge and `disarms`, the dispatcher
 
-**Date:** 2026-11-21. **Status:** SENT for DESIGN-PASS (phase 2 of `REQ-r10-fuzzing-design-2026-11-20.md`, DESIGN-PASS
+**Date:** 2026-11-21. **Status:** **DESIGN-PASS (CONDITIONAL)** at `28775df` → `RESP-r10-fuzzing-phase2-design-2026-11-21.md` (same day): C1 WitnessToken as the ninth F4 step, C2 a direct `add_work_le` oracle — both taken (§5); Q1 benign (§5), Q2 sequencing O01 → (i) → (ii) → (iii), Q3 confirmed; conditions `C-R10P2-1/2`. Phase 2 of `REQ-r10-fuzzing-design-2026-11-20.md`, DESIGN-PASS
 CONDITIONAL; phase 1 IMPL-PASS `RESP-r10-fuzzing-impl-2026-11-20.md`). **Owner's go:** 2026-11-21. **Binds:** C-R10-4
 (`disarms` exact), C-R10-6 (work no-wrap), C-R10-7 per class (a)/(b), C-R10-F; the RESP-r10 rulings C4/C6 and "F10 =
 the C-R9-C table + direct invariants, no state-machine model". **Scope:** the `fuzz/` crate only — targets, seeds,
@@ -57,6 +57,35 @@ asserted.
 **Q4:** F6's no-wrap input. The generator reaches the overflow by decoding a state whose `HeaderRec.work` is near
 `2^256` — a value the enclave's own sealed blob could never hold, but the arithmetic is the oracle (RESP-r10 C6
 "asserted explicitly"). Acceptable as the way to reach it, or do you want a unit-level oracle on `add_work_le` only?
+
+## 5. The auditor's conditions and answers (RESP, same day)
+
+- **C1 (taken):** `Message::WitnessToken` is the ninth `state_ops` step — asserted `Err(POLICY_INVALID)` with the nonce
+  intact — so every arm of `apply_message` is generated; `apply_message` is exhaustive (no `_`), a future variant fails
+  to compile until the generator knows it, and `coverage.sh` on the apply paths is the backstop (an un-generated arm
+  shows as < 100 %).
+- **C2 (taken):** a direct `add_work_le` oracle next to the decoded-state path: a target (or a mode of `headers`) that
+  takes two `Unstructured` 256-bit operands with a seeded near-`2^256` pair and asserts: `Some(sum)` ⇔ no carry out,
+  `sum > max(a, b)` as LE 256-bit numbers whenever `Some`, `None` exactly when the mathematical sum ≥ `2^256` — a
+  deterministic boundary straddle, so the "made wrapping" injected defect is reliably RED. `add_work_le` is private
+  today; the harness reaches it through a `pub fn` re-export under a doc-hidden name or by making it `pub(crate)` +
+  `pub` behind the `std` feature — **a one-line `core/` visibility change, named here for the auditor** (no logic, no
+  measurement meaning; it rides the next core round, O01, so no extra MRENCLAVE).
+- **Q1 — benign, the single crate stands.** `enclave/rcore` depends on `signer-core` with `default-features = false`
+  and its own features (`nosgx`, `test-init`, `auto-arm`) are empty feature sets that do not forward anything to
+  `signer-core`; the `fuzz/` crate pulls `signer-core` with `std`. The unified set is therefore `{std}` — exactly what
+  F1–F9 fuzz today. `signer-core`'s only non-test `cfg(feature)` sites are `reason.rs:205` (`std`: the `Display`/`Error`
+  impl) and the `hollow-test` knobs in `classify.rs`/`judge.rs`, which nothing in the graph enables (`hollow-test` is a
+  feature no dependant requests). `cargo tree -e features` output goes into the impl REQ of pass (iii) as the record.
+- **Q2:** the sequence is O01 code first, then (i) `state_ops` + `headers` written against the post-O01 "frozen ⇒
+  `CHAIN_REORG`" half, then (ii) `classify` + `judge`, then (iii) `dispatch`.
+- **Q3:** the `disarms` set = exactly `judge.rs:170–171`; the seed set carries both a "verifies-but-seq-behind"
+  positive and an "unverified-high-seq" negative, and the injected cases broaden (fire on tip lag) and narrow (drop).
+- **Sighash binding (the non-blocking question):** covered by the vector suite, not a fuzz target. `sign.rs` re-checks
+  every own input against its `non_witness_utxo` prevout (script and amount, else `INPUT_NOT_OWN`) and signs the BIP143
+  `p2wpkh_signature_hash` over the derived script and that amount; `core/tests/vectors.rs:748–750` recomputes the
+  sighash independently from the signed transaction and the prevout amount and verifies every partial signature with
+  `verify_ecdsa` — on every accept vector. Out of phase-2 scope with that reason.
 
 ## 4. Runs and evidence (as phase 1)
 
