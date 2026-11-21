@@ -1,6 +1,21 @@
 # REQ-r10-O01 — while the chain is frozen, a `PolicyUpdate` is a checkpoint re-pin or it is refused (design + impl REQ)
 
-**Date:** 2026-11-21. **Status:** **DESIGN-PASS** at `28775df` → `RESP-r10-o01-frozen-update-design-2026-11-21.md` (same day; Q1 `ChainReorg` and Q2 pending-first agreed; v1 asserts the nonce is not consumed, v2b — an identical re-submit while frozen — added). Implementation on branch `r10-o01-frozen-update`, IMPL-PASS before merge. **Origin:** the auditor's non-blocking observation in
+**Date:** 2026-11-21. **Status:** **DESIGN-PASS** at `28775df` → `RESP-r10-o01-frozen-update-design-2026-11-21.md` (same day; Q1 `ChainReorg` and Q2 pending-first agreed; v1 asserts the nonce is not consumed, v2b — an identical re-submit while frozen — added). Implementation on branch `r10-o01-frozen-update`, **SENT for IMPL-PASS** (same day) — §6 has what was run.
+
+## 6. What was run (laptop, 2026-11-21, the implementation commit on the branch)
+
+- `core`: fmt, clippy `-D warnings`, `cargo test` — green; transitions: 11 tests, the new
+  `frozen_update_without_repin_is_refused` holds vectors 1 (tightening refused `CHAIN_REORG`, `nonce` still 0, the re-pin
+  at nonce 1 accepted afterwards), 2 (loosening refused, nothing parks, the re-pin accepted), 2b (identical re-submit
+  refused), 5 (unfrozen control: tightening at once, loosening pends), 6 (pending queued unfrozen → freeze → re-pin
+  `POLICY_PENDING` → owner `Cancel` → re-pin applies, freeze ends, nonce 3); vectors 3–4 unchanged in the F-01 test,
+  whose "ordinary path while frozen" tail is gone.
+- `enclave/rcore` fmt/clippy/test (`nosgx,test-init`) green; `host/signerd --features nosgx` green; `fuzz` replay gate
+  green (2181 inputs) and clippy green.
+- Hollow red/green: `scripts/hollow-f01.sh` now 8 cases — the new one disables the O01 `if` (`if false`) and
+  `frozen_update_without_repin_is_refused` goes RED; **8/8**, `core/src` restored clean.
+- Placement as the RESP named: the `if` sits after the network/wallet checks and the `pending` check, before the
+  checkpoint-changed branch and before `s.nonce = next`. **Origin:** the auditor's non-blocking observation in
 `RESP-r10-f01-checkpoint-impl-2026-11-21.md` (carried in `REQ-r10-f01-checkpoint-impl-2026-11-20.md` §8); the owner's
 go 2026-11-21 («следующие REQ — сейчас»). **Scope:** `core/src/state.rs` (`apply_message`, the `PolicyUpdate` arm:
 one refusal), vectors, `POLICY.md`, FAQ; no wire change. `signer-core` changes ⇒ a new MRENCLAVE with the next
