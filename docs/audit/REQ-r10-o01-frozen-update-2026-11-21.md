@@ -1,6 +1,6 @@
 # REQ-r10-O01 — while the chain is frozen, a `PolicyUpdate` is a checkpoint re-pin or it is refused (design + impl REQ)
 
-**Date:** 2026-11-21. **Status:** **DESIGN-PASS** at `28775df` → `RESP-r10-o01-frozen-update-design-2026-11-21.md` (same day; Q1 `ChainReorg` and Q2 pending-first agreed; v1 asserts the nonce is not consumed, v2b — an identical re-submit while frozen — added). Implementation on branch `r10-o01-frozen-update`, **SENT for IMPL-PASS** (same day) — §6 has what was run.
+**Date:** 2026-11-21. **Status:** **DESIGN-PASS** at `28775df` → `RESP-r10-o01-frozen-update-design-2026-11-21.md` (same day; Q1 `ChainReorg` and Q2 pending-first agreed; v1 asserts the nonce is not consumed, v2b — an identical re-submit while frozen — added). **IMPL-PASS at `0fc371d`** → `RESP-r10-o01-frozen-update-impl-2026-11-21.md` (same day; the auditor's own three mutations — disable, drop the clause, invert — all red; merge approved), merged to `main` via PR #3. Not yet deployed: ships with the next ceremony build (owner), the auditor's content gate again. §6 has what was run.
 
 ## 6. What was run (laptop, 2026-11-21, the implementation commit on the branch)
 
