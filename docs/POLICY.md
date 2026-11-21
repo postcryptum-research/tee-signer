@@ -138,7 +138,10 @@ earlier period is refused (`POLICY_INVALID`) rather than trusted on the owner's 
 **frozen** by a reorg deeper than `maxReorg` there is no local header to validate against: a re-pin applies
 **at once** (forward or same-height — the block-height timelock cannot run while frozen), is
 **checkpoint-only** (any other field changed in the same update is refused), and the owner's signature is the
-root of trust for that recovery (`THREAT-MODEL.md`, V5 ∧ frozen).
+root of trust for that recovery (`THREAT-MODEL.md`, V5 ∧ frozen). **While frozen, any policy update that does not
+re-pin the checkpoint is refused `CHAIN_REORG`** (REQ-r10-O01): a tightening would be a no-op and a loosening would
+park in `pending` for ever, since the block height cannot advance while the chain is frozen. A pending update queued
+before the freeze must be cancelled first (`Cancel`, owner or recovery key); then the re-pin.
 
 ### `freshness`
 
