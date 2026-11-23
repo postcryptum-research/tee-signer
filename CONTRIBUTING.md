@@ -9,6 +9,31 @@ below are about *where* a change may land, not about style.
 `CLAUDE.md` (they bind every contributor, human or not). The one invariant: **the host never decides
 what gets signed.**
 
+## Where things are
+
+```
+docs/            THREAT-MODEL.md, DESIGN.md, POLICY.md, audit/ (REQ/RESP cycle)
+core/            signer-core — no_std Rust: PSBT parse, classification, policy
+                 engine, canonical encodings, receipts. Host-testable, negative
+                 vector suite is the deliverable.
+enclave/         Intel SGX SDK shell (C): ecalls, sealing, RDRAND, links core;
+                 rcore/ (the Rust side of the shell), ceremony/ (the public half
+                 of the offline signing key that signs every deployed enclave)
+host/            signerd — Rust daemon: loads the enclave, HTTP API for BTCPay,
+                 header feed, receipt log
+owner/           owner-cli — builds, diffs and signs mandates with hw-signer
+                 (YubiKey / TPM / Secure Enclave / software for tests)
+btcpay/          BTCPayServer.Plugins.TeeSigner (C#): TEE payout processor, "Sign with
+                 TEE signer" on the Send page, status page — wallet stays cold in BTCPay
+vectors/         golden vectors, positive and the refusal suite, from signet
+fuzz/            coverage-guided fuzzing of the critical sections, outside the TCB;
+                 its replay gate runs in CI
+docker/          the pinned enclave build recipe and the build comparison (gate 5)
+deploy/          docker fragment for btcpayserver-docker, systemd, isolation table
+scripts/         end-to-end runs, the ceremony signing steps, operator helpers
+tools/           test instruments, e.g. the monitor's seed-leak vector
+```
+
 ## Two kinds of change
 
 | Where | What it is | How it lands |

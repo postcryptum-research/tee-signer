@@ -1,96 +1,76 @@
-# tee-signer — a Bitcoin spending key sealed in an SGX enclave that signs only inside an owner-signed mandate
+# tee-signer
 
-**The name is generic on purpose.** The mechanism — a TEE that alone holds the key and enforces an owner-signed
-policy around it, with the owner's authority in a secure element — is not tied to one chain or one signature
-scheme, and the name leaves room for other networks and schemes behind the same gate. What exists today is one
-signing module: Bitcoin PSBT, signet.
-**Status (2026-11-19):** signet only; nothing here has touched mainnet. Rounds R1–R9a each carry a DESIGN-PASS
-and an IMPL-PASS from the independent auditor (`docs/audit/`). The current ceremony-signed build,
-`MRENCLAVE 2073c234…10cc`, is live on the project's T2 node (Azure DCsv3, DCAP-attested, freshness anchored to
-a vTPM monotonic counter, auto-arm after an unattended restart) — rebuild it yourself:
-[`docs/REPRODUCIBLE-BUILD.md`](docs/REPRODUCIBLE-BUILD.md). Vulnerabilities: [`SECURITY.md`](SECURITY.md).
-The BTCPay Server plugin is one integration of the signer, not the whole system.
-**Rounds to 2026-11-04:** every round so far has an IMPL-PASS from the auditor and is merged
-(`docs/audit/`): R1 `signer-core`, R2 enclave shell + daemon + owner tool, R3 BTCPay plugin with
-the four executable gates, R5 **T2 on Azure DCsv3** (reproducible pinned build, non-debug launch,
-DCAP-attested identity card verified on the owner's machine), R6 the owner key inside the
-operator's **TPM 2.0** and the enclave signed with an offline **ceremony key** (two-step signing,
-gate 7), R4 the owner's **monitor** (receipt authenticity, seq-fork, chain observation first,
-feed stall, freeze reflex), R6b the owner key on a **YubiKey 5 PIV** slot (PIN + touch per
-signature; a slot becomes owner only through its attestation verified to Yubico's pinned root). The T1 box (SGX1, no FLC) runs the same enclave in debug launch for
-development; the T2 node runs it non-debug. Signet only. The production code gate is met; what
-remains is the operator's key custody (where the ceremony and TPM keys live) and the carried
-items in `docs/audit/CONDITIONS.md`. Two models, kept apart: `THREAT-MODEL.md` (compromise) and
-`docs/CONTINUITY.md` (accidents).
+**Sealed in the enclave. Never a file. Signs only what the owner allows.**
 
-## The problem
+A BTCPay Server hot wallet without a hot seed. The key is generated inside an Intel SGX enclave on the
+merchant's own server and never leaves it in clear. The enclave judges every payout against a mandate the merchant
+signed on a separate device, and refuses everything else, whatever BTCPay, a plugin or the host asks for.
 
-On 2026-11-01 BTCPay Server instances running 2.4.1 or older had their
-**hot wallets swept**. The attacker logged in as a BTCPay *admin*; the
-mechanism is still under investigation (BTCPay's statement, forklog). A
-BTCPay hot wallet is a BIP39 seed stored in NBXplorer's database and used by
-the BTCPay process itself to sign PSBTs — so anyone who can act as BTCPay
-can (a) read the seed and (b) sign any transaction. Both halves are needed
-for the attack, and today both are one login away.
+[![license: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](#license)
+[![ci](https://github.com/postcryptum-research/tee-signer/actions/workflows/ci.yml/badge.svg)](https://github.com/postcryptum-research/tee-signer/actions/workflows/ci.yml)
+[![secret scan](https://github.com/postcryptum-research/tee-signer/actions/workflows/gitleaks.yml/badge.svg)](https://github.com/postcryptum-research/tee-signer/actions/workflows/gitleaks.yml)
+![status: signet](https://img.shields.io/badge/status-signet-orange)
 
-This is the small-business face of the problem TRUST solves for
-enterprises with multi-operator thresholds, enclaves and ceremonies. A
-merchant running BTCPay on one box has no operators, no ceremony budget and
-no security team. They need a drop-in.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/how-it-works-dark.svg">
+  <img src="docs/img/how-it-works-light.svg" alt="A BTCPay seed in a database against a seed sealed in an SGX enclave, how one payout goes, the mandate, the three keys and the tiers">
+</picture>
 
-BTCPay's own statement on the incident (2026-11-02): *"Funds in wallets whose spending keys
-are held off the server, including hardware wallets, were unaffected by these thefts."* A
-hardware wallet needs a human per transaction; a merchant's payouts and sweeps do not have one.
-tee-signer is that recommendation made automatic.
+## Why it exists
 
-## What tee-signer does
+On 2026-11-01 BTCPay Server instances running 2.4.1 or older had their **hot wallets swept**. The attacker
+logged in as a BTCPay *admin*; the mechanism is still under investigation (BTCPay's statement, forklog). A
+BTCPay hot wallet is a BIP39 seed stored in NBXplorer's database and used by the BTCPay process itself to
+sign, so anyone who can act as BTCPay can read the seed and sign any transaction. Today both are one login away.
 
-1. **The seed never exists as a file.** It is generated inside an SGX enclave
-   from hardware randomness, sealed to that enclave, and never leaves it in
-   clear. BTCPay gets a watch-only account xpub. A cold **recovery blob**,
-   encrypted to the merchant's offline recovery key, is the only other copy.
-2. **The enclave signs only inside a mandate.** Every PSBT is parsed and
-   judged *inside the enclave* before any input is signed: inputs must be
-   the wallet's own (verified by derivation and the full previous
-   transaction), change is recognised by derivation, destinations are
-   classed as *trusted* (the merchant's cold storage descriptor, an
-   exchange address) or *unlisted* (customer payouts), each class has a
-   per-transaction cap and a per-window budget, fees are bounded,
-   `SIGHASH_ALL` only, payjoin only as net inflow. Anything else is refused.
-3. **The mandate changes rarely and never from the host.** It is signed by
-   the merchant's **owner key** on a separate device (YubiKey, TPM, Apple
-   Secure Enclave or a phone — through the `hw-signer` backends of
-   [agent-keys](https://github.com/postcryptum-research/agent-keys), formerly TPM_sign), with a nonce, and a
-   loosening change takes effect only after a **timelock**, during which
-   the owner can cancel. Routine signing inside the mandate needs nobody.
-4. **Budget windows run on Bitcoin time.** The enclave follows the block
-   header chain from an owner-pinned checkpoint; a budget window is 144
-   blocks, not 24 host-clock hours, so a compromised host cannot reset the
-   budget by moving the clock.
-5. **Every signature leaves a receipt** with a sequence number, signed by the enclave's own
-   stamp key — an audit and development artifact (`owner-cli monitor` reads them), not a defense
-   the product claims: against root on the server no mandate holds the balance; the honest
-   scenarios are in `docs/HOW_IT_WORKS.md`.
+BTCPay's own statement (2026-11-02): *"Funds in wallets whose spending keys are held off the server,
+including hardware wallets, were unaffected by these thefts."* A hardware wallet needs a human per
+transaction; a merchant's payouts and sweeps do not have one. tee-signer is that recommendation made
+automatic, for a merchant with one BTCPay box, no operators and no security team.
 
-The idea of the mandate — allow-list, per-operation cap, budget, validity
-window, owner/agent separation, rotate / revoke / recover — is TPM_sign's
-`AgentPolicy`. There it is enforced on-chain by a smart account; here there
-is no chain to enforce it, so it is enforced inside the TEE. The code is
-not shared; the model is.
+## What you get
 
-## What it protects against — honest tiers
+- **No seed file.** The seed is generated inside the enclave and sealed to it. BTCPay keeps a watch-only
+  xpub; the only other copy is a recovery blob encrypted to the merchant's offline recovery key.
+- **Every payout judged inside the enclave.** Inputs must be the wallet's own, proven by derivation and the
+  full previous transaction. Destinations are *trusted* (cold storage, an exchange) or *unlisted* (customer payouts), each
+  class with a cap per transaction and a budget per window; fees are bounded. Anything else is refused, by name.
+- **Rules that change only from the owner's device.** The owner key (a YubiKey 5, a TPM 2.0, or a keyfile
+  kept off the server) signs the mandate. A loosening waits a timelock the owner can cancel. Routine
+  payouts need nobody.
+- **Budgets on Bitcoin time.** A window is 144 verified blocks, not 24 host-clock hours: a compromised host
+  cannot reset the budget by moving the clock.
+- **An enclave you can check.** It builds reproducibly without SGX hardware, and your `MRENCLAVE` must equal
+  the published one. On T2 the owner's machine verifies the enclave's DCAP quote before trusting it.
+- **A plugin, not a fork.** A BTCPay payout processor, "Sign with TEE signer" on the Send page and a status
+  page; the store's wallet stays cold in BTCPay.
 
-| Tier | Hardware | Protects against | Does NOT protect against |
-|---|---|---|---|
-| **T1** | SGX1 without Flexible Launch Control (cheap bare metal of the Hetzner class, e.g. Xeon E3 v5/v6). The enclave is **built** either way (`make` / `make RELEASE=1`, Makefile gates), but on this hardware only a **debug launch** succeeds: a non-debug launch asks Intel's Launch Enclave for a launch token, which it issues only for an Intel-whitelisted signing key (measured 2026-11-03 on the box: `DisableDebug=1` enclave, debug=0 ⇒ `sgx_create_enclave` 0x4004 `SERVICE_INVALID_PRIVILEGE`; debug=1 ⇒ 0x2004 `INVALID_ATTRIBUTE`). FLC hardware removes that dependency (the platform sets its own launch policy). The whitelist path itself is closed going forward: Intel's SDK/PSW 2.28 release notes remove the legacy Launch Enclave and whitelist management (the launch-token APIs return `SGX_ERROR_FEATURE_NOT_SUPPORTED`) and keep FLC through the in-kernel driver as the only launch mechanism. **No remote attestation exists** for this hardware (EPID retired 2025-04). | **build-and-test tier, not offered for money.** It closes the observed attack class: BTCPay admin, a malicious plugin, RCE inside the BTCPay container, any **non-root** compromise of the host (with `ptrace_scope ≥ 2`) | host **root**: a root user can read a debug enclave's memory, so on T1 **neither the seed nor the mandate enforcement** is protected from root; a hardware or Intel-level attacker |
-| **T2** | SGX with FLC + DCAP (Azure DCsv3, Xeon E-2200+, Ice Lake+). `DisableDebug=1`, attested. | everything in T1, **plus the seed stays out of root's reach** (up to the SGX threat model; side channels and microcode TCB excluded), **plus, from R7, the balance while the owner is away**: restoring an old sealed state needs a restart, and a restarted enclave signs nothing until the owner arms it (`docs/HOW_IT_WORKS.md`, scenario 3; pause build only — an `AUTO_ARM` build forfeits it) | physical / Intel-level attackers; SGX side channels |
-| **T0** | software signer, no TEE | nothing — dev and CI only | everything |
+## See it work
 
-Both close the November 2026 attack. **T2 is the product.** T1 is the project's build-and-test
-server (owner's decision 2026-11-05): the enclave runs there, but not for money — root reads a
-debug enclave.
+The four BTCPay gates of [`btcpay/e2e/gates.sh`](btcpay/e2e/gates.sh), run against the non-debug enclave
+on the project's T2 node (Azure DCsv3, signet), from the record in
+[`docs/audit/REQ-r5-t2-azure-impl-2026-11-03.md`](docs/audit/REQ-r5-t2-azure-impl-2026-11-03.md#5-live-on-t2-signet):
 
-## Architecture map
+```console
+== gate (a): PASS store wallet is cold · == 3. plugin: settings [200], enclave tier T2-release, xpubMatches True, processor [200]
+== gate (b): PASS nbxv1_metadata key rows = 0
+== gate (c): PASS S2 signWithSeed → 503 · PASS S4 no payjoin · PASS S3 stock processor absent · PASS S1 follows from (a)
+== gate (d.1): payout EPqB5TrGouC7bbUX2gR63ncddRw (2000 sat) → InProgress, proof txid 2c230c0607720ecef4b1ddf992fd4f98417a54188ad1b8e4de09131fa6333551
+  enclave seq 1 → 2 · PASS the tx BTCPay broadcast is the one the enclave signed · PASS node holds it in its mempool
+== gate (d.2): payout LW1t1Zbq9pWRULiQn2dJrTdEMEd created while frozen → PASS stays AwaitingPayment, seq unchanged (2) · PASS BTCPay logged FROZEN
+== gate (d.3): PASS xpubMatches=false with a foreign wallet · PASS refused by name before any PSBT · PASS xpubMatches=true again
+== gate (a) again after a BTCPay restart: PASS still cold · PASS key rows still 0
+R3 gates: ALL PASS
+```
+
+(a) and (b): the store's wallet is cold and BTCPay's database holds no key. (c): the places where BTCPay
+would sign with a hot seed are inert. (d.1): the transaction BTCPay broadcast is the one the enclave signed
+([on signet](https://mempool.space/signet/tx/2c230c0607720ecef4b1ddf992fd4f98417a54188ad1b8e4de09131fa6333551)).
+(d.2): a frozen signer refuses and charges nothing. (d.3): a store whose wallet is not the signer's is
+refused before any PSBT exists. The run is from 2026-11-03, on an earlier build than the one under
+[Status](#status).
+
+## In technical terms
 
 ```
 owner's device (YubiKey PIV / TPM 2.0)      owner-cli: builds, diffs and signs mandates; verifies the
@@ -103,56 +83,105 @@ BTCPay Server + plugin ──PSBT──▶ signerd (untrusted host daemon) ─�
 ```
 
 Everything left of the enclave is untrusted input to it. The enclave verifies the PSBT, the previous
-transactions, the headers, the policy bytes and the owner's signature against its sealed state and
-the owner's public key.
+transactions, the headers, the policy bytes and the owner's signature against its sealed state and the
+owner's public key. Each signature leaves a receipt signed by the enclave's own stamp key: an audit and
+development artifact (`owner-cli monitor` reads them), not a defense the product claims.
 
-## Layout
+The mandate is the `AgentPolicy` model of the sibling project
+[agent-keys](https://github.com/postcryptum-research/agent-keys), whose `hw-signer` backends hold the owner
+key here: there a smart account enforces it on chain, here the enclave does. The name is generic on purpose:
+the gate is not tied to one chain or signature scheme. One signing module exists today: Bitcoin PSBT, on
+signet.
+
+## Quick start
+
+Rebuild the enclave and check it against the published measurement. Any x86-64 Linux machine with Docker;
+no SGX hardware is needed:
+
+```sh
+git clone https://github.com/postcryptum-research/tee-signer.git && cd tee-signer
+git checkout 9139e49            # the source of the build the T2 node runs
+SIGN=dev ENCLAVE_KEY=$PWD/out/dev-key.pem OUT=$PWD/out/build-1 docker/build-enclave.sh
+```
+
+The run ends with its verdict, and the `MRENCLAVE` line must equal the published one:
 
 ```
-docs/            THREAT-MODEL.md, DESIGN.md, POLICY.md, audit/ (REQ/RESP cycle)
-core/            signer-core — no_std Rust: PSBT parse, classification, policy
-                 engine, canonical encodings, receipts. Host-testable, negative
-                 vector suite is the deliverable.
-enclave/         Intel SGX SDK shell (C): ecalls, sealing, RDRAND, links core
-host/            signerd — Rust daemon: loads the enclave, HTTP API for BTCPay,
-                 header feed, receipt log
-owner/           owner-cli — builds, diffs and signs mandates with hw-signer
-                 (YubiKey / TPM / Secure Enclave / software for tests)
-btcpay/          BTCPayServer.Plugins.TeeSigner (C#): TEE payout processor, "Sign with
-                 TEE signer" on the Send page, status page — wallet stays cold in BTCPay
-vectors/         golden vectors, positive and the refusal suite, from signet
-deploy/          docker fragment for btcpayserver-docker, systemd, isolation table
+build+gates: OK
+MRENCLAVE: 9a18d5a8e6f2fc1628bfe45543864592f6003a739ae67e75f515cefbc9ce47a5
 ```
 
-## Build and verify
+The policy engine and its refusal vectors test on any machine with Rust:
 
-The enclave is built only through the pinned Docker recipe; no SGX hardware is needed to build and
-measure it, and the measurement must match the published `MRENCLAVE` — the recipe, the published
-values and the caveats are in [`docs/REPRODUCIBLE-BUILD.md`](docs/REPRODUCIBLE-BUILD.md). The host-side
-crates test on any machine (`CONTRIBUTING.md`, "Local checks"); CI runs them and a full-history secret
-scan on every push.
+```sh
+cd core && cargo test
+```
 
-## Security
+Every local check: [`CONTRIBUTING.md`](CONTRIBUTING.md#local-checks). Comparing two builds and what the
+gates check: [`docs/REPRODUCIBLE-BUILD.md`](docs/REPRODUCIBLE-BUILD.md). Running a store on it, step by step,
+on a cheap SGX1 box or on Azure DCsv3 with a YubiKey: the two worked setups in [`docs/FAQ.md`](docs/FAQ.md).
 
-Threat model with honest tiers and stated residuals: [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md);
-accidents and recovery: [`docs/CONTINUITY.md`](docs/CONTINUITY.md); the audit discipline every enclave
-change goes through: [`docs/audit/PROTOCOL.md`](docs/audit/PROTOCOL.md). To report a vulnerability:
-[`SECURITY.md`](SECURITY.md).
+## If the worst happens
 
-The project was developed privately as `77ph/BTCPayTEE` and transferred here on 2026-11-20 with its full
-history and issues; the audit record in `docs/audit/` names the old address and its issue #1 — the old repository,
-file and commit links redirect here; the issue is [#1](https://github.com/postcryptum-research/tee-signer/issues/1)
-of this repository, and every commit the record refers to is in this history.
+| What happens | A BTCPay hot wallet | tee-signer |
+|---|---|---|
+| The admin login is stolen (the November 2026 attack) | the whole wallet is swept | at most the current window's budget; the merchant freezes |
+| A malicious plugin, or code execution inside the BTCPay container | same | same: the plugin can only *ask* the enclave |
+| Root on the server | same | **T2:** the seed stays out of reach; a rollback needs a restart, and the restarted enclave signs nothing until it is armed again. **T1:** no better than today |
+| The owner's device is stolen | — | a loosening waits the timelock; the recovery key cancels it |
+| The server dies, the disk is lost | the seed is in a backup, or gone | the recovery blob restores into any BIP84 wallet |
 
-## Reading order
+What an attacker can still steal, scenario by scenario: [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md#what-an-attacker-can-still-steal).
 
-Start with [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md) (one page) and
-[`docs/FAQ.md`](docs/FAQ.md) (two worked setups, what gets refused and why, what to do when
-things break; Russian: [`HOW_IT_WORKS_ru.md`](docs/HOW_IT_WORKS_ru.md),
-[`FAQ_ru.md`](docs/FAQ_ru.md)). Then `docs/THREAT-MODEL.md` → `docs/DESIGN.md` →
-`docs/POLICY.md` → `docs/CONTINUITY.md` → `docs/audit/PROTOCOL.md`. Working rules for
-sessions: `CLAUDE.md`.
+## Honest tiers
+
+| Tier | Hardware | What it is |
+|---|---|---|
+| **T2** | SGX with FLC + DCAP (Azure DCsv3, Xeon E-2200+, Ice Lake+); `DisableDebug=1`, attested | **The product.** Everything T1 closes, plus the seed out of root's reach (up to the SGX threat model; side channels and microcode TCB excluded) |
+| **T1** | SGX1 without Flexible Launch Control (cheap bare metal, e.g. Xeon E3 v5/v6) | **Build and test, not for money.** Closes every non-root compromise of the host (with `ptrace_scope ≥ 2`), but launches only in debug mode, which root can read; no remote attestation |
+| **T0** | software signer, no TEE | dev and CI only |
+
+Both T1 and T2 close the November 2026 attack; physical and Intel-level attackers are out of scope on every
+tier. Why T1 launches only in debug: [`docs/ENCLAVE.md`](docs/ENCLAVE.md#7-build-gates-enclavemakefile-each-a-hard-failure);
+adversaries, invariants and residual risks: [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md).
+
+## Status
+
+Signet only; nothing here has touched mainnet. Since 2026-11-21 the project's T2 node runs the
+ceremony-signed build from `main` at `9139e49`, DCAP-attested, its state anchored to a vTPM monotonic
+counter and re-armed by that counter after an unattended restart:
+
+`MRENCLAVE 9a18d5a8e6f2fc1628bfe45543864592f6003a739ae67e75f515cefbc9ce47a5`
+
+Every round so far, from the policy core (R1) to the fuzzing and its fixes (R10), merged only after an
+IMPL-PASS from an internal AI auditor answering a written request ([`docs/audit/`](docs/audit/PROTOCOL.md));
+the open conditions are tracked in [`docs/audit/CONDITIONS.md`](docs/audit/CONDITIONS.md). This is not a
+professional third-party audit; one comes before any mainnet funds. Deployments and their record:
+[`deploy/README.md`](deploy/README.md).
+
+## Docs
+
+New here? Start with [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md), the idea on one page, and
+[`docs/FAQ.md`](docs/FAQ.md): two worked setups, what gets refused and why, what to do when things break
+(in Russian: [`HOW_IT_WORKS_ru.md`](docs/HOW_IT_WORKS_ru.md), [`FAQ_ru.md`](docs/FAQ_ru.md)). Then, in
+order: [`THREAT-MODEL.md`](docs/THREAT-MODEL.md) (compromise) · [`DESIGN.md`](docs/DESIGN.md) (components,
+key lifecycle, signing flow, the block clock) · [`POLICY.md`](docs/POLICY.md) (the mandate, field by field,
+and the refusal reasons) · [`CONTINUITY.md`](docs/CONTINUITY.md) (accidents and recovery) ·
+[`audit/PROTOCOL.md`](docs/audit/PROTOCOL.md) (the review every enclave change goes through).
 
 ## License
 
-Apache-2.0 — see [`LICENSE`](LICENSE). Contributions: [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Apache-2.0 — see [`LICENSE`](LICENSE).
+
+## Contributing · Security · Contact
+
+A refusal vector is the most welcome contribution: a PSBT or owner message the enclave must refuse, with
+the expected verdict. [CONTRIBUTING.md](CONTRIBUTING.md) has the two kinds of change (enclave code goes
+through the audit cycle first), the local checks and the layout of the repository.
+
+Report a vulnerability privately through the [security policy](SECURITY.md), not in a public issue.
+
+To talk about the project, or about keeping a merchant's hot wallet within limits with it, reach out
+through the website or on X.
+
+[![Website](https://img.shields.io/badge/Website-0D9488?logo=data:image/svg%2Bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxjaXJjbGUgY3g9IjEyIiBjeT0iMTIiIHI9IjEwIi8%2BPHBhdGggZD0iTTIgMTJoMjAiLz48cGF0aCBkPSJNMTIgMmExNS4zIDE1LjMgMCAwIDEgNCAxMCAxNS4zIDE1LjMgMCAwIDEtNCAxMCAxNS4zIDE1LjMgMCAwIDEtNC0xMCAxNS4zIDE1LjMgMCAwIDEgNC0xMHoiLz48L3N2Zz4%3D)](https://postcryptum.io) [![X](https://img.shields.io/badge/X-000000?logo=x&logoColor=white)](https://x.com/PostCryptumHQ)

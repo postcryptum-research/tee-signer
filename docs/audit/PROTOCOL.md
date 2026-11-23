@@ -25,6 +25,13 @@ Follows the **AUDIT-PROTOCOL v1.0** REQ/RESP cycle used by `77ph/SGX_project`,
   trusted layer, not the host (F4: here, the budget is charged inside the enclave before the
   signature exists).
 
+## Addresses in the record
+
+The project was developed privately as `77ph/BTCPayTEE` and transferred here on 2026-11-20 with its full
+history and issues; the audit record in `docs/audit/` names the old address and its issue #1 — the old repository,
+file and commit links redirect here; the issue is [#1](https://github.com/postcryptum-research/tee-signer/issues/1)
+of this repository, and every commit the record refers to is in this history.
+
 ## The queue
 
 `CONDITIONS.md` is the worked table of every carried condition (round, status). A condition is
