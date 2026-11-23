@@ -322,8 +322,7 @@ cd owner/owner-cli/target/debug
 your own answer to "is the enclave I am talking to the code that was audited?".
 
 **What is not done yet, honestly:** mainnet needs explicit owner sign-off and has not been
-touched by anything in this repo; the auditor's *own* reproduction of the pinned MRENCLAVE is a
-carried item (deployment trust rests on it); the operator deployment guide is a carried item;
+touched by anything in this repo; the operator deployment guide is a carried item;
 and the project's dev T2 node is a shared Azure VM — a production deployment wants a node of its
 own. If the YubiKey is shared with other uses, its PIN is device-wide: three wrong PINs block
 every slot (the PUK unblocks), and the PIN typed for one key is typed into the same applet as
@@ -560,7 +559,7 @@ run the same command.
 You need a TPM 2.0 the signer's machine can reach as `/dev/tpmrm0`: a physical one on your own server,
 or the virtual TPM of a cloud VM with Trusted Launch (on Azure this is a property of the VM, switched
 on from the Azure account with `scripts/azure-enable-vtpm.sh <vm>` — one VM per run, downtime for every
-tenant of that VM; the project's own node is waiting for it — issue #1. Switching it on re-places the VM,
+tenant of that VM; the project's own node has run on its vTPM since 2026-11-18 — issue #1. Switching it on re-places the VM,
 and on a different physical host the sealed state of an existing wallet will not open any more — see
 ["The server died…"](#the-server-died--the-disk-is-gone--the-provider-deleted-the-vm-are-the-coins-lost):
 plan a new wallet and run `tpm-setup` before its `init`). The signer build must carry the
@@ -763,8 +762,9 @@ Every round — the design, the core, the enclave shell, the plugin, T2, the own
 the monitor — has an `IMPL-PASS` from an internal AI auditor working from written requests
 ([`audit/`](audit/)), with conditions tracked to discharge in
 [`audit/CONDITIONS.md`](audit/CONDITIONS.md). Each check ships with the negative vectors that
-prove it refuses. It is **not** a professional audit, and the auditor's own independent
-reproduction of the enclave build is still open. The bigger the amount, the more review it
-deserves. And no audit replaces the limits: a small unlisted budget per window, tight trusted
+prove it refuses. It is **not** a professional audit. Every enclave build deployed since
+2026-11-19 was also rebuilt by the auditor on an unrelated machine, with the same measurement as
+the published one ([`REPRODUCIBLE-BUILD.md`](REPRODUCIBLE-BUILD.md)). The bigger the amount, the
+more review it deserves. And no audit replaces the limits: a small unlisted budget per window, tight trusted
 destinations, the owner key on a device with a button, the recovery key cold and backed up.
 Those bounds hold even if a bug slips through.

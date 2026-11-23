@@ -120,7 +120,7 @@ no-monotonic-counter limit of Q3 in its sharpest form.
   it does not prevent it. Prevention needs a monotonic counter SGX1 does not have; a counter
   service or an external anchor on T2 is a later REQ.
 
-## 4c. The TPM counter — freshness without the owner (R9, merged 2026-11-10; no node of the project has a TPM yet)
+## 4c. The TPM counter — freshness without the owner (R9, merged 2026-11-10; on the project's T2 node, its vTPM, since 2026-11-18)
 
 When the sealed state carries a `TpmAnchor` (an attestation key, a `TPMA_NV_COUNTER` index Name and the
 counter value this blob expects — set by the owner's `Anchor` message), every ecall that changes state or
