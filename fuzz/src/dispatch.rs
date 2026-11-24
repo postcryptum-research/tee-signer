@@ -1142,6 +1142,9 @@ impl H {
             rcore::recovery::decrypt(&rsk, fp, xpub, &b).is_none(),
             "F10: a mutated recovery blob (byte {i}) still opens"
         );
+        let mut short = blob.to_vec();
+        short.pop();
+        assert!(rcore::recovery::decrypt(&rsk, fp, xpub, &short).is_none(), "F10: a truncated recovery blob opens");
     }
 
     fn check_init(&mut self, input: &[u8], r: &Response) {
@@ -1305,21 +1308,22 @@ impl H {
         };
         let challenge = if d & 1 != 0 { [0x5c; 32] } else { self.shell.challenge.unwrap_or([0; 32]) };
         let seq_seen = if d & 2 != 0 { seq + 1 } else { seq.saturating_sub(u64::from(d & 16 != 0)) };
-        let mut m = match kind % 12 {
+        let mut m = match kind % 13 {
             0 => Message::PolicyUpdate {
                 enclave_id: eid,
                 nonce,
                 mandate: s.map(|s| s.mandate.encode()).unwrap_or_default(),
                 sig: [0; 64],
             },
-            1..=3 => {
+            1..=3 | 12 => {
                 let mut m = s.map(|s| s.mandate.clone()).unwrap_or_else(|| regtest().0.mandate.clone());
-                match kind % 12 {
+                match kind % 13 {
                     1 => m.destinations.unlisted.max_per_tx = (m.destinations.unlisted.max_per_tx / 2).max(1),
                     2 => {
                         m.destinations.unlisted.max_per_tx =
                             m.destinations.unlisted.max_per_tx.saturating_mul(2).min(m.limits.max_per_tx)
                     }
+                    12 => m.limits.max_outputs = 1, // a tightening classify feels: SIGN after a 2-output JUDGE refuses
                     _ => {
                         m.freshness =
                             Freshness { required: true, witness_pk: Some(self.keys.witness.pk), max_tip_lag: 6 }
@@ -1342,7 +1346,13 @@ impl H {
                 nonce,
                 boot_challenge: challenge,
                 ak_pk: if d & 8 != 0 { self.tpm.other_ak.pk } else { self.tpm.ak.pk },
-                nv_name: self.tpm.name,
+                nv_name: {
+                    let mut n = self.tpm.name;
+                    if d & 128 != 0 {
+                        n[1] = 0x04; // a SHA-1 Name: not well-formed
+                    }
+                    n
+                },
                 counter: self.tpm.counter.wrapping_add(u64::from(d & 4 != 0)),
                 seq_seen,
                 sig: [0; 64],
@@ -1361,7 +1371,7 @@ impl H {
         // the signer: the owner at the operation (a due rotation activated), the recovery key for Recover,
         // or a stranger / the other role when the input says so
         let owner = self.key_for(&owner_pk);
-        let signer: &P256Key = match (kind % 12, flags & 1 != 0) {
+        let signer: &P256Key = match (kind % 13, flags & 1 != 0) {
             (10, false) => &self.keys.recovery,
             (10, true) => owner.unwrap_or(&self.keys.owner),
             (_, false) => owner.unwrap_or(&self.stranger),
@@ -1420,7 +1430,11 @@ impl H {
     fn test_init_request(&self, flags: u8) -> Vec<u8> {
         let seed = if flags & 4 != 0 { [0x02; 32] } else { [0x01; 32] };
         let identity_sk = if flags & 8 != 0 { [0; 32] } else { [0x55; 32] };
-        let (network, state) = if flags & 1 != 0 {
+        let (network, state) = if flags & 64 != 0 {
+            (4u8, Vec::new()) // not a network: POLICY_NETWORK, no blob
+        } else if flags & 32 != 0 {
+            (1u8, Vec::new()) // testnet4, keys-only (the regtest mandate then fails INSTALL's network check)
+        } else if flags & 1 != 0 {
             (3u8, Vec::new())
         } else if flags & 2 != 0 {
             (2u8, seeds::honest().state.encode())
@@ -1528,10 +1542,12 @@ impl H {
                 let data = match c % 4 {
                     0 => Vec::new(),
                     1 => blob,
-                    2 => {
-                        InitRequest { network: d % 4, owner_pk: self.keys.owner.pk, recovery_pk: self.keys.recovery.pk }
-                            .encode()
+                    2 => InitRequest {
+                        network: 1 + d % 3,
+                        owner_pk: self.keys.owner.pk,
+                        recovery_pk: self.keys.recovery.pk,
                     }
+                    .encode(),
                     _ => {
                         let mut v = blob;
                         v.extend_from_slice(&signer_core::sha256(&[d, e, f]));
@@ -1543,9 +1559,10 @@ impl H {
             12 => {
                 // INSTALL: the regtest mandate over the identity-derived enclave id, with one deviation on demand
                 let mut m = regtest().0.mandate.clone();
-                match a % 6 {
+                match a % 7 {
                     2 => m.wallet.fingerprint = [9; 4],
                     3 => m.network = Network::Signet,
+                    6 => m.timelock_blocks = 0, // decodes, fails validate
                     _ => {}
                 }
                 let env = open_env(&self.blob);
@@ -1555,13 +1572,13 @@ impl H {
                     .map(|pk| signer_core::sha256(&pk))
                     .unwrap_or(ENCLAVE_ID);
                 let mut msg = Message::PolicyUpdate { enclave_id: eid, nonce: 0, mandate: m.encode(), sig: [0; 64] };
-                if a % 6 == 1 {
+                if a % 7 == 1 {
                     self.keys.recovery.sign(&mut msg);
                 } else {
                     self.keys.owner.sign(&mut msg);
                 }
-                let extra = if a % 6 == 4 { None } else { Some(msg.sig().to_vec()) };
-                let data = if a % 6 == 5 { vec![c, d, e] } else { m.encode() };
+                let extra = if a % 7 == 4 { None } else { Some(msg.sig().to_vec()) };
+                let data = if a % 7 == 5 { vec![c, d, e] } else { m.encode() };
                 request = Some((op::INSTALL, self.sealed_with(blob, data, extra)));
             }
             _ => {

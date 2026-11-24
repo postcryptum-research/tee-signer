@@ -678,9 +678,9 @@ fn dispatch_seeds() -> Vec<Vec<u8>> {
     let sign_last = [SIGN, 0, 0, 0, 0, 0, 0, 0];
     let headers = |n: u8, variant: u8, depth: u8| [HEADERS, n.saturating_sub(1), 0, variant, depth, 1, 0, 0];
     // APPLY: a = message kind (0 same mandate, 1 tighten, 2 loosen, 3 require freshness, 4 Cancel, 5 Unfreeze,
-    // 6 Rearm, 7 Arm, 8 Anchor, 9 RotateOwner, 10 Recover, 11 WitnessToken), c = signer flags (1 stranger,
+    // 6 Rearm, 7 Arm, 8 Anchor, 9 RotateOwner, 10 Recover, 11 WitnessToken, 12 max_outputs = 1), c = signer flags (1 stranger,
     // 2 wrong nonce, 4 wrong enclave id), d = message knobs (1 stale challenge, 2 seq ahead, 4 counter+1,
-    // 8 other AK, 16 seq_seen-1, 32 other network, 64 other fingerprint), e = deposit variant (0x80 none)
+    // 8 other AK, 16 seq_seen-1, 32 other network, 64 other fingerprint, 128 a SHA-1 index Name), e = deposit variant (0x80 none)
     let apply = |kind: u8, c: u8, d: u8, e: u8| [APPLY, kind, 0, c, d, e, 0, 0];
     let mut v: Vec<Vec<u8>> = Vec::new();
     // --- mode 0: every op's honest request on a fresh regtest signer, plus the empty/unknown/garbage edges ---
@@ -923,6 +923,24 @@ fn dispatch_seeds() -> Vec<Vec<u8>> {
             judge_payout,
         ],
     ));
+    // S18 other networks: a testnet4 keys-only signer (the regtest mandate fails INSTALL's network check; judging a
+    // keys-only blob is STATE_UNSEALABLE), an INIT request on testnet4 through the raw route, a network byte that is
+    // no network (POLICY_NETWORK at TEST_INIT, so no blob at all)
+    v.push(script(
+        32,
+        &[st(STATUS, 0), st(INSTALL, 0), judge_payout, [RAW, 0, 0, 2, 0, 0, 0, 0], st(STATUS, 0), judge_payout],
+    ));
+    v.push(script(64, &[st(STATUS, 0), st(POLICY, 0)]));
+    // S19 keys-only: INSTALL with a mandate that decodes but fails validate (timelock 0), the install, a payout judged,
+    // then a tightening classify feels (max_outputs = 1) — SIGN of the two-output PSBT refuses at its re-classification,
+    // and so does the next JUDGE
+    v.push(script(
+        1,
+        &[st(INSTALL, 6), st(INSTALL, 0), judge_payout, apply(12, 0, 0, 0), st(STATUS, 0), sign_last, judge_payout],
+    ));
+    // S20 an Anchor naming a SHA-1 index Name (POLICY_INVALID before any proof is read), the honest anchor, then the
+    // same malformed name against the bound state (ANCHOR_TPM_MISMATCH first)
+    v.push(script(0, &[apply(8, 0, 128, 0), st(STATUS, 0), apply(8, 0, 0, 0), apply(8, 0, 128, 0), st(STATUS, 0)]));
     // S17 the TPM ops alone: a proof before any nonce, two nonces (the first forgotten), a truncated proof, a deposit
     // nobody consumes, a proof with a MAX_ATTEST_LEN attest (580 bytes: refused at the 576-byte store), then a
     // mid-sequence TEST_INIT with the keys-only variant
