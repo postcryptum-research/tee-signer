@@ -19,7 +19,7 @@ use signer_core::reason::{Reason, Refusal};
 use signer_core::update::Message;
 use signer_core::wallet::OwnPath;
 
-use crate::fixtures::{self, foreign_spk, Wallet, ENCLAVE_ID};
+use crate::fixtures::{self, Wallet, ENCLAVE_ID};
 use crate::seeds::honest;
 
 const H: u32 = 250_010; // the honest fixture state's best height (seeds.rs)
@@ -175,7 +175,7 @@ fn out_spk(f: &Fixtures, o: &OutSpec) -> ScriptBuf {
         OutKind::Own => f.w.spk(o.index % 2, o.index / 2), // branch 0/1, index = idx/2
         OutKind::Cold => f.cold.spk(0, o.index % COLD_GAP),
         OutKind::ColdBeyond => f.cold.spk(0, COLD_GAP + o.index % 10),
-        OutKind::Unlisted => foreign_spk(o.index),
+        OutKind::Unlisted => f.foreign.spk(0, o.index),
         OutKind::OpReturn => ScriptBuf::new_op_return([0x42u8; 4]),
     }
 }
@@ -289,7 +289,7 @@ fn build(spec: &Spec) -> Psbt {
             // an honest-looking hint (our key, our path) on an output paying someone else
             let o = spec.outs[to];
             let p = own_out_path(&o);
-            psbt.unsigned_tx.output[to].script_pubkey = foreign_spk(7);
+            psbt.unsigned_tx.output[to].script_pubkey = f.foreign.spk(0, 7);
             psbt.outputs[to].bip32_derivation.clear();
             psbt.outputs[to]
                 .bip32_derivation
@@ -304,26 +304,66 @@ pub fn seed_psbt(spec_bytes: &[u8]) -> Option<Vec<u8>> {
     parse_spec(spec_bytes).map(|s| build(&s).serialize())
 }
 
-/// The harness's reading of the classifier's rules for an honest build (`Lie::None`).
-fn expected_honest(spec: &Spec, m: &Mandate) -> Result<(Vec<InputClass>, Vec<OutputClass>), Reason> {
-    if spec.outs.iter().any(|o| o.kind == OutKind::OpReturn) && m.rules.op_return == OpReturnRule::None {
-        // op_return outputs come after all inputs are read; inputs have no refusal in an honest build
-        return Err(Reason::OpReturnForbidden);
+/// The harness's reading of the classifier: structure first, then inputs in order, then outputs in order — the
+/// first refusal decides — with the one lie's effect on its target folded in. Written from `POLICY.md` / the
+/// design's I1–I4, not from `classify.rs`.
+fn expected(spec: &Spec, m: &Mandate) -> Result<(Vec<InputClass>, Vec<OutputClass>), Reason> {
+    let ti = spec.target % spec.ins.len();
+    let to = spec.target % spec.outs.len();
+    // structure: a duplicate outpoint is refused before any input is read
+    if spec.lie == Lie::DuplicateOutpoint && spec.ins.len() > 1 && ti > 0 {
+        return Err(Reason::PsbtParse);
     }
     let mut ins = Vec::new();
-    for s in &spec.ins {
+    for (i, s) in spec.ins.iter().enumerate() {
+        let own = InputClass::Own {
+            path: OwnPath { branch: 0, index: s.index },
+            amount: s.amount,
+            script_type: signer_core::mandate::ScriptType::P2wpkh,
+        };
+        let foreign = InputClass::Foreign { amount: s.amount };
+        if i == ti {
+            match spec.lie {
+                Lie::UnknownField => return Err(Reason::UnknownField),
+                Lie::SighashNone => return Err(Reason::Sighash),
+                Lie::NoPrevtxWitnessUtxoOnly => return Err(Reason::InputNoPrevTx),
+                Lie::DisagreeingWitnessUtxo | Lie::SwappedPrevtx => return Err(Reason::InputPrevTxMismatch),
+                Lie::HintOtherIndexKey => return Err(Reason::InputNotOwn), // our path, another index's key
+                Lie::HintOnForeign => match s.kind {
+                    InKind::Foreign => return Err(Reason::InputNotOwn), // the script is not ours
+                    _ => {
+                        ins.push(own); // a correct hint on our own script: ours (hinted or not before)
+                        continue;
+                    }
+                },
+                _ => {}
+            }
+        }
         ins.push(match s.kind {
-            InKind::OwnHinted => InputClass::Own {
-                path: OwnPath { branch: 0, index: s.index },
-                amount: s.amount,
-                script_type: signer_core::mandate::ScriptType::P2wpkh,
-            },
-            _ => InputClass::Foreign { amount: s.amount },
+            InKind::OwnHinted => own,
+            _ => foreign,
         });
     }
     let mut outs = Vec::new();
-    for o in &spec.outs {
+    for (i, o) in spec.outs.iter().enumerate() {
+        if i == to {
+            match spec.lie {
+                // the script is rewritten to ours at an index beyond the gap, with a correct hint
+                Lie::OutIndexBeyondGap => return Err(Reason::ChangeIndexBeyondGap),
+                // the script is rewritten to someone else's, the hint stays ours
+                Lie::OutScriptNotOurs => return Err(Reason::OutputScriptType),
+                // a foreign key in the hint: an OP_RETURN is judged as such before any hint is read
+                Lie::OutHintForeignKey if o.kind != OutKind::OpReturn => return Err(Reason::OutputScriptType),
+                _ => {}
+            }
+        }
         outs.push(match o.kind {
+            OutKind::OpReturn => {
+                if m.rules.op_return == OpReturnRule::None {
+                    return Err(Reason::OpReturnForbidden);
+                }
+                OutputClass::OpReturn
+            }
             OutKind::Own => {
                 let p = own_out_path(o);
                 if p.index >= GAP {
@@ -333,64 +373,9 @@ fn expected_honest(spec: &Spec, m: &Mandate) -> Result<(Vec<InputClass>, Vec<Out
             }
             OutKind::Cold => OutputClass::Trusted { dest: 0, amount: o.amount },
             OutKind::ColdBeyond | OutKind::Unlisted => OutputClass::Unlisted { amount: o.amount },
-            OutKind::OpReturn => OutputClass::OpReturn,
         });
     }
     Ok((ins, outs))
-}
-
-/// The refusal the single lie must produce — or `None` when the lie does not bite on this spec (the
-/// target input is not ours for an input lie, …), in which case the honest reading applies.
-fn expected_lie(spec: &Spec) -> Option<Reason> {
-    let ti = spec.target % spec.ins.len();
-    let to = spec.target % spec.outs.len();
-    let own_in = spec.ins[ti].kind == InKind::OwnHinted;
-    match spec.lie {
-        Lie::None => None,
-        Lie::NoPrevtxWitnessUtxoOnly => Some(Reason::InputNoPrevTx),
-        Lie::DisagreeingWitnessUtxo => Some(Reason::InputPrevTxMismatch),
-        Lie::SwappedPrevtx => Some(Reason::InputPrevTxMismatch),
-        Lie::HintOtherIndexKey => Some(Reason::InputNotOwn),
-        Lie::HintOnForeign => {
-            if spec.ins[ti].kind == InKind::Foreign {
-                Some(Reason::InputNotOwn)
-            } else if own_in {
-                None
-            } else {
-                Some(Reason::InputNotOwn)
-            }
-        }
-        Lie::OutHintForeignKey => {
-            if spec.outs[to].kind == OutKind::OpReturn {
-                None
-            } else {
-                Some(Reason::OutputScriptType)
-            }
-        }
-        Lie::OutIndexBeyondGap => {
-            if spec.outs[to].kind == OutKind::OpReturn {
-                None
-            } else {
-                Some(Reason::ChangeIndexBeyondGap)
-            }
-        }
-        Lie::SighashNone => Some(Reason::Sighash),
-        Lie::DuplicateOutpoint => {
-            if spec.ins.len() > 1 && ti > 0 {
-                Some(Reason::PsbtParse)
-            } else {
-                None
-            }
-        }
-        Lie::UnknownField => Some(Reason::UnknownField),
-        Lie::OutScriptNotOurs => {
-            if spec.outs[to].kind == OutKind::OpReturn {
-                None
-            } else {
-                Some(Reason::OutputScriptType)
-            }
-        }
-    }
 }
 
 fn mandate_for_classify(knob: u8) -> Mandate {
@@ -423,30 +408,37 @@ pub fn classify_target(data: &[u8]) {
             let psbt = build(&spec);
             let bytes = psbt.serialize();
             let r = classify(secp(), &bytes, &f.w.account, &m, bound);
-            match (expected_lie(&spec), expected_honest(&spec, &m)) {
-                (Some(want), _) => match &r {
-                    Err(e) => {
-                        // the lie's refusal, unless an earlier-checked honest refusal of the same build wins
-                        let honest_err = expected_honest(&spec, &m).err();
-                        let ok = code(e) == want.code() || honest_err.as_ref().is_some_and(|h| code(e) == h.code());
-                        assert!(
-                            ok,
-                            "F7: lie {:?} on target {} refused as {}, expected {} (or the build's own {:?})",
-                            spec.lie,
-                            spec.target,
-                            code(e),
-                            want.code(),
-                            honest_err.map(|h| h.code())
-                        );
-                    }
-                    Ok(_) => panic!("F7: the host's lie {:?} was ACCEPTED (spec {:?})", spec.lie, spec.ins),
+            match expected(&spec, &m) {
+                Err(want) => match &r {
+                    Err(e) => assert_eq!(
+                        code(e),
+                        want.code(),
+                        "F7: refused as {}, the rules say {} (lie {:?} on {}, ins {:?}, outs {:?})",
+                        code(e),
+                        want.code(),
+                        spec.lie,
+                        spec.target,
+                        spec.ins,
+                        spec.outs
+                    ),
+                    Ok(_) => panic!(
+                        "F7: ACCEPTED although the rules refuse ({}) — lie {:?} on {} (ins {:?}, outs {:?})",
+                        want.code(),
+                        spec.lie,
+                        spec.target,
+                        spec.ins,
+                        spec.outs
+                    ),
                 },
-                (None, Err(want)) => match &r {
-                    Err(e) => assert_eq!(code(e), want.code(), "F7: honest build refused with another reason"),
-                    Ok(_) => panic!("F7: an honest build the rules refuse ({}) was accepted", want.code()),
-                },
-                (None, Ok((ins, outs))) => {
-                    let c = r.unwrap_or_else(|e| panic!("F7: an honest build was refused: {}", code(&e)));
+                Ok((ins, outs)) => {
+                    let c = r.unwrap_or_else(|e| {
+                        panic!(
+                            "F7: an honest build was refused: {} (ins {:?}, outs {:?})",
+                            code(&e),
+                            spec.ins,
+                            spec.outs
+                        )
+                    });
                     assert_eq!(c.inputs, ins, "F7: input classes differ from the harness's reading");
                     assert_eq!(c.outputs, outs, "F7: output classes differ from the harness's reading");
                     assert_eq!(c.version, spec.version);
