@@ -577,6 +577,21 @@ fn judge_seeds() -> Vec<Vec<u8>> {
     foreign.splice(10..10, [2u8, 9, 0xe8, 0x03]);
     let mut all_foreign = spend_spec(1, 0, 0, 0);
     all_foreign[6] = 2;
+    let mut opret = spend_spec(1, 0, 0, 0);
+    opret[1] = 2;
+    opret.extend_from_slice(&[4, 0, 0, 0]); // + an OP_RETURN
+    let mut midfee = spend_spec(1, 0, 0, 0);
+    midfee[16] = 0x19;
+    midfee[17] = 0x04; // change 1 050 000 → fee 50 000
+    let mut cold_big = spend_spec(1, 0, 0, 0);
+    cold_big[8] = 0x60;
+    cold_big[9] = 0xea; // in 60 001 000
+    cold_big[10] = 1;
+    cold_big[11] = 2;
+    cold_big[12] = 0x5f;
+    cold_big[13] = 0xea; // cold index 2, 60 000 000
+    cold_big[16] = 0;
+    cold_big[17] = 0; // change 1 000 → fee 0
     vec![
         j(0, 0, 0, 0, 0, 0, 0, spend.clone()),           // accept: the baseline spend
         j(1, 0, 0, 0, 0, 0, 0, spend.clone()),           // FROZEN
@@ -604,7 +619,13 @@ fn judge_seeds() -> Vec<Vec<u8>> {
         j(0, 0, 0, 0, 0, 1, 0, foreign.clone()), // payjoin InflowOnly, net outflow > 0 → INPUT_FOREIGN_FORBIDDEN
         j(0, 0, 0, 0, 0, 2, 0, foreign), // payjoin OutflowAllowed → accept
         j(0, 0, 0, 0, 0, 2, 0, all_foreign), // nothing of ours to sign → INPUT_NOT_OWN
-        j(0, 0, 7, 0, 200, 0, 0, spend), // best advanced 200 blocks, seq 7 → accept, seq 8
+        j(0, 0, 7, 0, 200, 0, 0, spend.clone()), // best advanced 200 blocks, seq 7 → accept, seq 8
+        j(16, 8, 3, 0, 0, 0, 0, spend), // a Cancel message offered as the witness → FRESHNESS_SIG, no disarm
+        j(128, 0, 0, 0, 0, 0, 0, opret.clone()), // OP_RETURN allowed (ZeroValue) → accept; it charges nothing
+        j(0, 0, 0, 0, 0, 0, 0, opret), // OP_RETURN under rule None: classify refuses, judge never runs
+        j(0, 0, 0, 0, 0, 0, 8, midfee.clone()), // fee 50 000 with max_fee_rate = u64::MAX: no FEE_RATE; FEE_ABS (100k) does not bind → accept
+        j(0, 0, 0, 0, 0, 0, 0, midfee),         // the same fee under the 100 sat/vB cap → FEE_RATE
+        j(0, 0, 0, 0, 0, 0, 7, cold_big), // cold 60M with caps /128: CAP_TRUSTED_TX, CAP_TRUSTED_WINDOW (+ CAP_TX, CAP_WINDOW)
     ]
 }
 

@@ -596,6 +596,7 @@ enum WitnessKind {
     UnknownTip,   // a tip hash the enclave never saw
     OtherEnclave, // enclave_id of another enclave
     FutureTip,    // tip_height above best
+    NotAToken,    // a Message of another variant offered as the witness
 }
 
 struct JudgeSpec {
@@ -611,6 +612,8 @@ struct JudgeSpec {
     payjoin: PayjoinRule,
     rbf_allowed: bool,
     fee_window: bool,
+    op_return: bool,
+    rate_uncapped: bool, // max_fee_rate = u64::MAX: "a rate cap too large to multiply is no cap at all"
     scale: u8,
 }
 
@@ -627,7 +630,9 @@ fn parse_judge(data: &[u8]) -> Option<(JudgeSpec, Spec)> {
         freshness: f & 16 != 0,
         rbf_allowed: f & 32 == 0,
         fee_window: f & 64 != 0,
-        witness: match data[1] % 8 {
+        op_return: f & 128 != 0,
+        rate_uncapped: data[6] & 8 != 0,
+        witness: match data[1] % 9 {
             0 => WitnessKind::None,
             1 => WitnessKind::Fresh,
             2 => WitnessKind::SeqBehind,
@@ -635,7 +640,8 @@ fn parse_judge(data: &[u8]) -> Option<(JudgeSpec, Spec)> {
             4 => WitnessKind::LaggingTip,
             5 => WitnessKind::UnknownTip,
             6 => WitnessKind::OtherEnclave,
-            _ => WitnessKind::FutureTip,
+            7 => WitnessKind::FutureTip,
+            _ => WitnessKind::NotAToken,
         },
         seq: u64::from(data[2]),
         fill: data[3],
@@ -671,8 +677,15 @@ pub fn judge_target(data: &[u8]) {
         m.freshness.required = true;
         m.freshness.witness_pk = Some(keys.witness.pk);
     }
-    // caps scaled down to make them reachable: scale 0 keeps the fixture's, otherwise caps shrink
-    let sc = u64::from(js.scale % 8) + 1;
+    if js.op_return {
+        m.rules.op_return = OpReturnRule::ZeroValue;
+    }
+    if js.rate_uncapped {
+        m.limits.max_fee_rate = u64::MAX;
+    }
+    // caps scaled down to make them reachable: 2^(scale & 7) — 1 keeps the fixture's, 128 brings the cold and outflow
+    // caps (1 BTC) within the generator's amounts (≤ 65.5M sat)
+    let sc = 1u64 << (js.scale & 7);
     m.limits.max_per_tx = (m.limits.max_per_tx / sc).max(1);
     m.destinations.unlisted.max_per_tx = (m.destinations.unlisted.max_per_tx / sc).max(1);
     m.destinations.unlisted.max_per_window = (m.destinations.unlisted.max_per_window / sc).max(1);
@@ -729,6 +742,7 @@ pub fn judge_target(data: &[u8]) {
         WitnessKind::UnknownTip => Some(token(best.height, [0x5a; 32], js.seq, &keys.witness, ENCLAVE_ID)),
         WitnessKind::OtherEnclave => Some(token(best.height, best.hash, js.seq, &keys.witness, [0x5c; 32])),
         WitnessKind::FutureTip => Some(token(best.height + 1, [0x5b; 32], js.seq, &keys.witness, ENCLAVE_ID)),
+        WitnessKind::NotAToken => Some(Message::Cancel { enclave_id: ENCLAVE_ID, nonce: 0, sig: [0; 64] }),
     };
     // the transaction, classified by the enclave
     let psbt = build(&spec);
@@ -750,7 +764,9 @@ pub fn judge_target(data: &[u8]) {
     } else if m.freshness.required {
         match (js.witness, &witness) {
             (WitnessKind::None, _) => Some((Reason::FreshnessMissing, false)),
-            (WitnessKind::OtherEnclave | WitnessKind::Unverified, _) => Some((Reason::FreshnessSig, false)),
+            (WitnessKind::OtherEnclave | WitnessKind::Unverified | WitnessKind::NotAToken, _) => {
+                Some((Reason::FreshnessSig, false))
+            }
             (WitnessKind::FutureTip | WitnessKind::LaggingTip | WitnessKind::UnknownTip, _) => {
                 Some((Reason::FreshnessTip, false))
             }
