@@ -18,7 +18,7 @@ use signer_core::state::{Pending, PendingOwner};
 use signer_core::update::Message;
 use tee_signer_fuzz::seeds::honest;
 use tee_signer_fuzz::targets::{self, TARGETS};
-use tee_signer_fuzz::{gen, policy, structured};
+use tee_signer_fuzz::{dispatch, gen, policy, structured};
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -151,6 +151,9 @@ fn honest_objects_pass_their_targets() {
     }
     for input in judge_seeds() {
         policy::judge_target(&input);
+    }
+    for input in dispatch_seeds() {
+        dispatch::dispatch_target(&input);
     }
 }
 
@@ -641,6 +644,308 @@ fn judge_seeds() -> Vec<Vec<u8>> {
     ]
 }
 
+/// One scripted `dispatch` input: `[1, flags] ‖ steps` (`dispatch::dispatch_target` documents the record).
+fn script(flags: u8, steps: &[[u8; 8]]) -> Vec<u8> {
+    let mut v = vec![1u8, flags];
+    for s in steps {
+        v.extend_from_slice(s);
+    }
+    v
+}
+
+/// `dispatch` (F10) seeds: the honest requests of every op as raw inputs (mode 0), and scripted sequences (mode 1)
+/// that reach every refusal of the shell — the two-phase rule, the boot-arm after a reload, the session mark on an
+/// older blob, every TPM gate verdict, the anchor's own refusals, INSTALL's checks, the headers verifier's refusals
+/// through the dispatcher, the witness token's disarm, mutated blobs and requests, the raw op surface.
+fn dispatch_seeds() -> Vec<Vec<u8>> {
+    const STATUS: u8 = 0;
+    const POLICY: u8 = 1;
+    const REPORT: u8 = 2;
+    const FREEZE: u8 = 3;
+    const HEADERS: u8 = 4;
+    const APPLY: u8 = 5;
+    const JUDGE: u8 = 6;
+    const SIGN: u8 = 7;
+    const NONCE: u8 = 8;
+    const PROOF: u8 = 9;
+    const RELOAD: u8 = 10;
+    const RAW: u8 = 11;
+    const INSTALL: u8 = 12;
+    const TEST_INIT: u8 = 13;
+    // step helpers: [kind, a, b (blob), c, d, e, f, g]
+    let st = |kind: u8, a: u8| [kind, a, 0, 0, 0, 0, 0, 0];
+    let judge_payout = [JUDGE, 4, 0, 0, 0, 0, 0, 0];
+    let sign_last = [SIGN, 0, 0, 0, 0, 0, 0, 0];
+    let headers = |n: u8, variant: u8, depth: u8| [HEADERS, n.saturating_sub(1), 0, variant, depth, 1, 0, 0];
+    // APPLY: a = message kind (0 same mandate, 1 tighten, 2 loosen, 3 require freshness, 4 Cancel, 5 Unfreeze,
+    // 6 Rearm, 7 Arm, 8 Anchor, 9 RotateOwner, 10 Recover, 11 WitnessToken), c = signer flags (1 stranger,
+    // 2 wrong nonce, 4 wrong enclave id), d = message knobs (1 stale challenge, 2 seq ahead, 4 counter+1,
+    // 8 other AK, 16 seq_seen-1, 32 other network, 64 other fingerprint), e = deposit variant (0x80 none)
+    let apply = |kind: u8, c: u8, d: u8, e: u8| [APPLY, kind, 0, c, d, e, 0, 0];
+    let mut v: Vec<Vec<u8>> = Vec::new();
+    // --- mode 0: every op's honest request on a fresh regtest signer, plus the empty/unknown/garbage edges ---
+    for (op_code, bytes) in dispatch::honest_requests() {
+        let sel = dispatch::OPS.iter().position(|o| *o == op_code).expect("a known op") as u8;
+        let mut s = vec![0u8, sel];
+        s.extend_from_slice(&bytes);
+        v.push(s);
+    }
+    v.push(vec![0, 1]); // STATUS with no bytes: STATE_UNSEALABLE
+    v.push(vec![0, 14, 0xff, 0xff, 0xff, 0xff]); // an unknown op code
+    v.push(vec![0, 0, 9, 9, 9]); // INIT on garbage: POLICY_INVALID
+    v.push(vec![0, 12, 1, 2, 3]); // TEST_INIT on garbage
+                                  // --- mode 1 ---
+                                  // S1 the full flow: status, policy, headers, judge → sign, sign again (idempotent), a second payout
+    v.push(script(
+        0,
+        &[
+            st(STATUS, 0),
+            st(POLICY, 0),
+            headers(3, 0, 0),
+            judge_payout,
+            sign_last,
+            st(STATUS, 0),
+            sign_last,
+            judge_payout,
+            sign_last,
+            st(POLICY, 0),
+        ],
+    ));
+    // S2 the two-phase rule: another PSBT, a changed byte, garbage, the pre-charge blob, then the right one
+    v.push(script(
+        0,
+        &[
+            judge_payout,
+            [SIGN, 1, 0, 0, 0, 0, 0, 0],
+            [SIGN, 2, 0, 0x40, 0x11, 0, 0, 0],
+            [SIGN, 3, 0, 0, 0, 0, 0, 0],
+            [SIGN, 0, 1, 0, 0, 0, 0, 0],
+            sign_last,
+        ],
+    ));
+    // S3 REQ-r7: a reload is unarmed; Arm negatives (stale challenge, seq ahead, stranger, wrong nonce), the Arm,
+    // then the ratcheted mark refuses the old blob
+    v.push(script(
+        0,
+        &[
+            judge_payout,
+            st(RELOAD, 0),
+            judge_payout,
+            sign_last,
+            apply(7, 0, 1, 0),
+            apply(7, 0, 2, 0),
+            apply(7, 1, 0, 0),
+            apply(7, 2, 0, 0),
+            apply(7, 0, 0, 0),
+            st(STATUS, 0),
+            judge_payout,
+            sign_last,
+            [JUDGE, 4, 3, 0, 0, 0, 0, 0],
+        ],
+    ));
+    // S4 FREEZE / Unfreeze, and C-R7-6: a freeze taken while unarmed persists into the armed state
+    v.push(script(
+        0,
+        &[
+            st(FREEZE, 0),
+            judge_payout,
+            apply(5, 0, 0, 0),
+            judge_payout,
+            st(RELOAD, 0),
+            st(FREEZE, 0),
+            apply(7, 0, 0, 0),
+            st(STATUS, 0),
+            judge_payout,
+            apply(5, 0, 0, 0),
+            judge_payout,
+            sign_last,
+        ],
+    ));
+    // S5 owner messages: rotate (pending owner), a second rotate, cancel, a loosening (pending), a tightening (at once),
+    // Recover by the recovery key, Rearm on an armed state, a WitnessToken as an owner message
+    v.push(script(
+        0,
+        &[
+            apply(9, 0, 0, 0),
+            st(STATUS, 0),
+            apply(9, 0, 0, 0),
+            apply(4, 0, 0, 0),
+            apply(2, 0, 0, 0),
+            st(STATUS, 0),
+            st(POLICY, 0),
+            apply(1, 0, 0, 0),
+            st(STATUS, 0),
+            apply(10, 0, 0, 0),
+            apply(6, 0, 0, 0),
+            apply(11, 0, 0, 0),
+            apply(0, 0, 0, 0),
+            apply(3, 2, 0, 0),
+            apply(1, 4, 0, 0),
+        ],
+    ));
+    // S6 REQ-r9: Anchor, then the TPM gate on every Fresh op — no deposit, honest, stale counter, another AK, another
+    // index, another nonce, a malformed attest, the host forgetting the increment; Stale ops need nothing
+    v.push(script(
+        0,
+        &[
+            apply(8, 0, 0, 0),
+            st(STATUS, 0),
+            [JUDGE, 4, 0, 0, 0, 0, 0, 7],
+            [JUDGE, 4, 0, 0, 0, 0, 0, 0],
+            [SIGN, 0, 0, 0, 0, 0, 0, 0],
+            [FREEZE, 2, 0, 0, 0, 0, 0, 0],
+            [HEADERS, 1, 0, 0, 0, 1, 3, 0],
+            [HEADERS, 1, 0, 0, 0, 1, 4, 0],
+            [HEADERS, 1, 0, 0, 0, 1, 5, 0],
+            [HEADERS, 1, 0, 0, 0, 1, 6, 0],
+            [HEADERS, 1, 0, 0, 0, 1, 0, 0x40],
+            [FREEZE, 0, 0, 0, 0, 0, 0, 0],
+            st(STATUS, 0),
+            st(POLICY, 0),
+            [FREEZE, 0, 0, 0, 0, 0, 0, 0],
+        ],
+    ));
+    // S7 the anchor's own refusals: stale challenge, no deposit, the owner's counter above the live one, another AK in
+    // the message, the honest anchor, a re-anchor naming another AK, a reload then a fresh proof arms the load
+    v.push(script(
+        0,
+        &[
+            apply(8, 0, 1, 0),
+            apply(8, 0, 0, 0x80),
+            apply(8, 0, 4, 0),
+            apply(8, 0, 8, 0),
+            apply(8, 0, 0, 0),
+            apply(8, 0, 8, 0),
+            st(RELOAD, 0),
+            st(STATUS, 0),
+            [JUDGE, 4, 0, 0, 0, 0, 0, 0],
+            st(STATUS, 0),
+            [SIGN, 0, 0, 0, 0, 0, 0, 0],
+        ],
+    ));
+    // S8 a keys-only blob: STATUS says uninstalled, everything else refuses; INSTALL's refusals, the install, twice
+    v.push(script(
+        1,
+        &[
+            st(STATUS, 0),
+            st(POLICY, 0),
+            judge_payout,
+            st(INSTALL, 1),
+            st(INSTALL, 2),
+            st(INSTALL, 3),
+            st(INSTALL, 4),
+            st(INSTALL, 5),
+            st(INSTALL, 0),
+            st(INSTALL, 0),
+            headers(2, 0, 0),
+            judge_payout,
+            sign_last,
+        ],
+    ));
+    // S9 headers through the dispatcher: a fork, bad bits, bad prev, bad time, not a multiple of 80, empty, a duplicate,
+    // then a fork deeper than max_reorg: CHAIN_REORG and the frozen chain refuses the judge
+    v.push(script(
+        0,
+        &[
+            headers(4, 0, 0),
+            headers(3, 1, 2),
+            headers(2, 2, 1),
+            headers(2, 3, 0),
+            headers(2, 4, 1),
+            headers(2, 5, 0),
+            headers(1, 6, 0),
+            headers(2, 7, 0),
+            headers(8, 0, 0),
+            headers(8, 1, 7),
+            st(STATUS, 0),
+            judge_payout,
+        ],
+    ));
+    // S10 the witness token: freshness required, missing, fresh, seq-behind (disarm, the blob changes on a refusal),
+    // unarmed judge, Rearm, a Cancel offered as the token, garbage extra, then scripted lies
+    v.push(script(
+        0,
+        &[
+            apply(3, 0, 0, 0),
+            judge_payout,
+            [JUDGE, 4, 0, 0, 0, 0, 1, 0],
+            [JUDGE, 4, 0, 0, 0, 0, 2, 0],
+            st(STATUS, 0),
+            [JUDGE, 4, 0, 0, 0, 0, 1, 0],
+            apply(6, 0, 0, 0),
+            [JUDGE, 4, 0, 0, 0, 0, 1, 0],
+            [JUDGE, 4, 0, 0, 0, 0, 3, 0],
+            [JUDGE, 4, 0, 0, 0, 0, 4, 0],
+            [JUDGE, 1, 0, 1, 2, 3, 1, 0],
+            [JUDGE, 3, 0, 4, 5, 6, 1, 0],
+            [JUDGE, 1, 0, 7, 8, 9, 1, 0],
+            [JUDGE, 0, 0, 1, 1, 1, 1, 0],
+        ],
+    ));
+    // S11 mutations: a flipped and a truncated blob on STATUS/POLICY, a changed request byte, REPORT's edges
+    v.push(script(
+        0,
+        &[
+            [STATUS, 0, 8, 0x80, 0x01, 0, 0, 0],
+            [STATUS, 0, 9, 0, 3, 0, 0, 0],
+            [POLICY, 0, 10, 0x40, 0x55, 0, 0, 0],
+            [STATUS, 0, 11, 0x20, 0x80, 0, 0, 0],
+            [JUDGE, 4, 0, 0x30, 0, 0x7f, 0, 0x80],
+            [APPLY, 7, 0, 0, 0, 0, 0, 0x81],
+            st(REPORT, 0),
+            st(REPORT, 1),
+            st(REPORT, 2),
+            st(REPORT, 3),
+            [REPORT, 0, 9, 0, 1, 0, 0, 0],
+        ],
+    ));
+    // S12 the signet fixture state: judge → sign; a foreign header batch
+    v.push(script(2, &[st(STATUS, 0), judge_payout, sign_last, headers(2, 0, 0), st(POLICY, 0)]));
+    // S13 the cold wallet's seed under the hot wallet's mandate: nothing is ours
+    v.push(script(4, &[st(STATUS, 0), judge_payout, [JUDGE, 1, 0, 2, 2, 2, 0, 0]]));
+    // S14 an invalid identity key: KEY_DERIVATION and no blob at all
+    v.push(script(8, &[st(STATUS, 0), judge_payout, st(POLICY, 0)]));
+    // S15 the ABI checks and the recovery blob's mutation
+    v.push(script(16, &[[STATUS, 0x33, 0, 0x77, 0, 0, 0, 0], judge_payout, sign_last]));
+    // S16 raw ops: unknown, INIT honest, the reset through the raw route, TEST_INIT on garbage, STATUS on blob+junk
+    v.push(script(
+        0,
+        &[
+            [RAW, 14, 0, 0xfe, 0xff, 0, 0, 0],
+            [RAW, 0, 0, 2, 3, 0, 0, 0],
+            st(STATUS, 0),
+            [RAW, 13, 0, 0, 0, 0, 0, 0],
+            judge_payout,
+            [RAW, 12, 0, 3, 1, 2, 3, 0],
+            [RAW, 1, 0, 3, 1, 2, 3, 0],
+            [RAW, 1, 0, 1, 0, 0, 0, 0],
+            apply(7, 0, 0, 0),
+            judge_payout,
+        ],
+    ));
+    // S17 the TPM ops alone: a proof before any nonce, two nonces (the first forgotten), a truncated proof, a deposit
+    // nobody consumes, a proof with a MAX_ATTEST_LEN attest (580 bytes: refused at the 576-byte store), then a
+    // mid-sequence TEST_INIT with the keys-only variant
+    v.push(script(
+        0,
+        &[
+            [PROOF, 0, 0, 1, 0, 0, 0, 0],
+            st(NONCE, 0),
+            st(NONCE, 0),
+            [PROOF, 0x80, 0, 0, 3, 0, 0, 0],
+            [PROOF, 0, 0, 0, 0, 0, 0, 0],
+            judge_payout,
+            st(NONCE, 0),
+            [PROOF, 7, 0, 0, 0x11, 0, 0, 0],
+            [TEST_INIT, 1, 0, 0, 0, 0, 0, 0],
+            st(STATUS, 0),
+            st(INSTALL, 0),
+            judge_payout,
+        ],
+    ));
+    v
+}
+
 fn vectors() -> Vec<serde_json::Value> {
     files(&root().join("../vectors/r1"))
         .into_iter()
@@ -751,6 +1056,10 @@ fn write_seeds() {
     }
     for (i, s) in judge_seeds().into_iter().enumerate() {
         put("judge", &format!("seed-{i:02}"), &s);
+    }
+    // phase 2, pass (iii)
+    for (i, s) in dispatch_seeds().into_iter().enumerate() {
+        put("dispatch", &format!("seed-{i:02}"), &s);
     }
     // negative seeds: non-canonical and re-tagged inputs that must be REFUSED. They make the stable
     // replay itself a mutation detector (C-R10-7b): drop a `finish()`, a bound or a domain tag in

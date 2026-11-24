@@ -9,22 +9,22 @@
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
-[ -z "$(git status --porcelain core/)" ] || { echo "core/ is not clean; refusing to edit it"; exit 2; }
+[ -z "$(git status --porcelain core/ enclave/rcore/src/)" ] || { echo "core/ or enclave/rcore/src/ is not clean; refusing to edit them"; exit 2; }
 rc=0
 gate() {
   (cd fuzz && cargo test -q --no-default-features --test replay 2>&1 \
-    | grep -E 'test result|fails its oracle|C-R10|C-R9|Dec::|not reflexive' | sed 's/^thread.*panicked at //' | sort -u | head -6)
+    | grep -E 'test result|fails its oracle|C-R10|C-R9|F10|Dec::|not reflexive' | sed 's/^thread.*panicked at //' | sort -u | head -6)
 }
 case_() { # <name> <file> <sed-expr> <text that must be present after the edit>
   local name=$1 file=$2 expr=$3 must=$4 out
   echo "== $name"
   sed -i -E "$expr" "$file"
-  if ! grep -qF -- "$must" "$file"; then echo "   the edit did not apply (expected: $must)"; git checkout -- core/; rc=3; return; fi
-  git --no-pager diff --stat core/ | tail -1 | sed 's/^/   /'
+  if ! grep -qF -- "$must" "$file"; then echo "   the edit did not apply (expected: $must)"; git checkout -- core/ enclave/rcore/src/; rc=3; return; fi
+  git --no-pager diff --stat core/ enclave/rcore/src/ | tail -1 | sed 's/^/   /'
   out=$(gate)
   echo "$out" | sed 's/^/   /'
   if echo "$out" | grep -q 'failed'; then echo "   → CAUGHT by the replay gate"; else echo "   → NOT CAUGHT — a hollow oracle"; rc=1; fi
-  git checkout -- core/
+  git checkout -- core/ enclave/rcore/src/
 }
 
 case_ "C-R10-2: Mandate::decode without finish() (trailing bytes accepted)" \
@@ -77,6 +77,27 @@ case_ "C-R10-4 narrowed: the rollback-suspected refusal no longer disarms" \
 case_ "C-F01-1: the frozen at-once re-pin disabled (through compare and pending again)" \
   core/src/state.rs 's/^(\s+)if s\.chain\.frozen \{$/\1if false \&\& s.chain.frozen {/' 'if false && s.chain.frozen {'
 
-echo "== core/ restored: $([ -z "$(git status --porcelain core/)" ] && echo clean || echo 'DIRTY — check git status')"
+# --- phase 2, pass (iii): F10 — the shell's gates (rcore ops.rs / session.rs, edited and restored like core/) and
+# the TPM counter equality (C-R9-C) ---
+case_ "F10: SIGN's two-phase check dropped (any PSBT is signed on a charged blob)" \
+  enclave/rcore/src/ops.rs 's/if lj\.psbt_hash != signer_core::sha256\(&req\.data\) \|\| lj\.seq != s\.seq \{/if false {/' 'if false {'
+case_ "C-R7-3: the session high-water mark no longer refuses an older blob" \
+  enclave/rcore/src/session.rs 's/seq >= HWM\.load\(Ordering::Acquire\)/seq.saturating_add(1) > 0/' 'seq.saturating_add(1) > 0'
+case_ "C-R7-4: JUDGE no longer checks the boot-arm" \
+  enclave/rcore/src/ops.rs '0,/if !session::armed\(\) \{/s//if !session::armed() \&\& false {/' 'if !session::armed() && false {'
+case_ "C-R7-4: SIGN no longer checks the boot-arm" \
+  enclave/rcore/src/ops.rs '/^fn sign_op/,$ s/if !session::armed\(\) \{/if !session::armed() \&\& false {/' 'if !session::armed() && false {'
+case_ "C-R9-C: a Fresh op without a deposited proof proceeds (TPM_REQUIRED dropped)" \
+  enclave/rcore/src/ops.rs '0,/return Err\(refuse\(Reason::TpmRequired\.into\(\)\)\);/s//return Ok((env, state));/' 'return Ok((env, state));'
+case_ "C-R9-C: the counter equality dropped (any certified value is fresh)" \
+  core/src/tpm_attest.rs 's/if counter != anchor\.expected \{/if false {/' 'if false {'
+case_ "REQ-r9a: the Anchor pins a value other than the live certified counter" \
+  enclave/rcore/src/ops.rs 's/s\.apply_anchor\(&msg, &session::challenge\(\), live\)/s.apply_anchor(\&msg, \&session::challenge(), live.saturating_add(1))/' 'live.saturating_add(1))'
+case_ "C-R7-3: the mark no longer ratchets on an accepted owner message" \
+  enclave/rcore/src/ops.rs 's/^(\s+)session::raise\(ns\.seq\);$/\1let _ = ns.seq;/' 'let _ = ns.seq;'
+case_ "F10: INSTALL skips the wallet check (a mandate for another wallet installs)" \
+  enclave/rcore/src/ops.rs 's/if mandate\.wallet != want \{/if false {/' 'if false {'
+
+echo "== core/ and enclave/rcore/src/ restored: $([ -z "$(git status --porcelain core/ enclave/rcore/src/)" ] && echo clean || echo 'DIRTY — check git status')"
 [ "$rc" = 0 ] && echo "== every injected defect was caught" || echo "== rc=$rc (1 = a defect was NOT caught; 3 = an edit did not apply)"
 exit "$rc"

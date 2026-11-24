@@ -775,4 +775,5 @@ pub const TARGETS: &[(&str, Target)] = &[
     // phase 2, pass (ii)
     ("classify", crate::policy::classify_target),
     ("judge", crate::policy::judge_target),
+    ("dispatch", crate::dispatch::dispatch_target),
 ];

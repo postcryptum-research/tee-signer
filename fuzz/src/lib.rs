@@ -12,8 +12,11 @@
 //! Every assertion in `targets` is an oracle from REQ-r10 §1–§2 or a condition of RESP-r10
 //! (C-R10-1 … C-R10-6); the panic message names it.
 
-#![forbid(unsafe_code)]
+// `deny`, not `forbid`: the one `unsafe` of the harness is the C ABI of the real ecall (`dispatch::raw_call`,
+// `rcore_call` as the bridge calls it), allowed on that function alone.
+#![deny(unsafe_code)]
 
+pub mod dispatch;
 #[path = "../../core/tests/common/mod.rs"]
 #[allow(dead_code, clippy::all)]
 pub mod fixtures;
