@@ -139,3 +139,19 @@ test = false
 doc = false
 bench = false
 required-features = ["libfuzzer"]
+
+[[bin]]
+name = "classify"
+path = "fuzz_targets/classify.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "judge"
+path = "fuzz_targets/judge.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]

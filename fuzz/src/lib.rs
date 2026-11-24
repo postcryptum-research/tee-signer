@@ -18,6 +18,7 @@
 #[allow(dead_code, clippy::all)]
 pub mod fixtures;
 pub mod gen;
+pub mod policy;
 pub mod seeds;
 pub mod structured;
 pub mod targets;

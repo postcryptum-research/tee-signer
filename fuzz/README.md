@@ -13,7 +13,8 @@ does) and the vector suite's own fixtures (`core/tests/common/mod.rs`, included 
 | Path | What |
 |---|---|
 | `src/targets.rs` | one body per target, `fn(&[u8])`; every assertion is an oracle and names itself (`C-R10-n`, `C-R9-A`, …) |
-| `src/structured.rs`, `src/gen.rs` | phase 2: the scripted targets (`state_ops`, `headers`, `work_add`) and their generators (a regtest miner on the fixture checkpoint, the regtest/signet fixture states, the reference 256-bit adder) |
+| `src/structured.rs`, `src/gen.rs` | phase 2 pass (i): the scripted targets (`state_ops`, `headers`, `work_add`) and their generators (a regtest miner on the fixture checkpoint, the regtest/signet fixture states, the reference 256-bit adder) |
+| `src/policy.rs` | phase 2 pass (ii): `classify` (F7) and `judge` (F8) over a scripted PSBT generator with one host-asserted lie on demand; the harness's own reading of I1–I4, §1.4 and C-R10-4 |
 | `src/seeds.rs` | the honest objects the oracles are calibrated on (throwaway test keys only) |
 | `fuzz_targets/*.rs` | the libFuzzer binaries, one line each, calling the bodies |
 | `tests/replay.rs` | **the CI gate**: replays `seeds/` + `corpus/` + `regressions/` on stable 1.92.0 (must pass), asserts every open `findings/` reproducer still fires, calibrates the oracles on the honest set, holds the C-R10-1 re-tag vectors; also the seed writer |
@@ -44,7 +45,11 @@ Targets: `proto_decode` `mandate_decode` `mandate_compare` `message_decode` `sta
 frozen-path rules as the harness's own model), `headers` (F6: raw and scripted regtest sessions against a model
 chain, the real signet chain with a mutation, the no-wrap boundary at the call site), `work_add` (C-R10-6 directly:
 `add_work_le` against a reference adder). Inputs are scripted, not `arbitrary`-driven, so every seed is hand-written
-and every injected defect has a deterministic reproducer.
+and every injected defect has a deterministic reproducer. Pass (ii): `classify` (F7: raw PSBTs; the scripted build with
+every host-asserted lie and the exact refusal each must draw; the differential "the host never decides" — no lie turns
+a refusal into a different acceptance) and `judge` (F8: state × mandate knobs × PSBT × witness token; the accept
+invariants and the window charge recomputed by the harness, the liveness refusals in order, `disarms` exactly on the
+verified seq-behind token — both directions).
 
 Limits (`run.sh`): `-max_len` from the `proto` bound the type lives under, `-malloc_limit_mb` **below**
 that bound (an untrusted length that drives an allocation is itself a V2 DoS finding), `-timeout=10`,
