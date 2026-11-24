@@ -46,22 +46,24 @@ project exists to remove — stop and escalate.
 8. **Pure modules.** Policy and classification logic takes bytes in and gives a verdict out — no
    I/O, no ocalls, no global mutable state, hash/verify functions injected — so it runs on the host
    under test exactly as it runs in the enclave.
-9. **SafeMath, repository-wide (owner's rule, 2026-11-24).** No bare arithmetic operator on numbers
-   anywhere in this repository's Rust — not `a + b`, `a - b`, `a * b`, `a / b`, `a % b`, `-a`, `<<`,
-   `>>`, nor `+=` and friends — in `core/`, `enclave/`, `host/`, `owner/`, `fuzz/`, unit tests,
-   integration tests and build scripts alike. Every operation is an explicit method whose failure
+9. **SafeMath in product code (owner's rule, 2026-11-24).** No bare arithmetic operator on numbers in
+   the product's Rust — `core/`, `enclave/`, `host/`, `owner/` — not `a + b`, `a - b`, `a * b`, `a / b`,
+   `a % b`, `-a`, `<<`, `>>`, nor `+=` and friends. Every operation is an explicit method whose failure
    mode is chosen at the site: `checked_*` (the default — refuse / return the error on `None`),
    `saturating_*` (only where the saturated value is the fail-closed one, e.g. a lower bound that
    may only grow), `wrapping_*` (only in hashing / constant-time code, with a one-line comment).
-   **Enforced by the linter at build:** `clippy::arithmetic_side_effects` is `deny` in every crate —
-   `[lints.clippy] arithmetic_side_effects = "deny"` in the crate's `Cargo.toml`, so bins, unit and
-   integration tests are covered (a crate-level `#![deny]` in `lib.rs` does not reach `tests/`) —
-   and CI runs `cargo clippy --all-targets -- -D warnings` on every crate; a bare operator fails the
-   check. Runtime net: `overflow-checks = true` in every profile (a slip panics — in the enclave an
-   abort, fail-closed — instead of wrapping). No `#[allow(clippy::arithmetic_side_effects)]` without
-   its reason on the same line; in `core/` and `enclave/` the reason is the auditor's to accept.
-   Code that predates the rule is converted crate by crate: host-side crates directly, `core/` and
-   `enclave/` through a REQ (rule 1).
+   **Enforced by the linter at build:** `clippy::arithmetic_side_effects` is `deny` in every product
+   crate — `[lints.clippy] arithmetic_side_effects = "deny"` in the crate's `Cargo.toml`, so its bins
+   and tests are covered too (a crate-level `#![deny]` in `lib.rs` does not reach `tests/`; a test may
+   allow it for one expression, reason on the line) — and CI runs `cargo clippy --all-targets --
+   -D warnings` on every product crate; a bare operator fails the check. Runtime net:
+   `overflow-checks = true` in every profile (a slip panics — in the enclave an abort, fail-closed —
+   instead of wrapping). No `#[allow(clippy::arithmetic_side_effects)]` without its reason on the same
+   line; in `core/` and `enclave/` the reason is the auditor's to accept. **`fuzz/` is exempt:** the
+   harness is not product code and must be free to build any value — overflowing, oversized, lying —
+   that is what it is for; it stays under its own clippy, without this lint. Code that predates the
+   rule converts crate by crate: `host/` and `owner/` directly, `core/` and `enclave/` through a REQ
+   (rule 1).
 
 ## Infrastructure isolation (shared SGX host — do not break other projects)
 
@@ -86,7 +88,7 @@ cd host/signerd  && cargo clippy --all-targets --features nosgx -- -D warnings &
 cd owner/owner-cli && cargo clippy --all-targets -- -D warnings && cargo test
 cd fuzz  && cargo clippy --no-default-features --all-targets -- -D warnings && cargo test --no-default-features
          # ^ the fuzz replay gate (REQ-r10); discovery runs: fuzz/run.sh <target>, laptop only
-# clippy is the SafeMath linter (rule 9): a bare arithmetic operator fails it in every crate
+# clippy is the SafeMath linter (rule 9) of the product crates: a bare arithmetic operator fails it in core, signerd, owner-cli — not in fuzz
 # enclave builds are SERVER-SIDE (SGX SDK + hardware): make SGX_MODE=HW SGX_DEBUG=1 on T1 hardware
 ```
 
