@@ -72,15 +72,10 @@ refused before any PSBT exists. The run is from 2026-11-03, on an earlier build 
 
 ## In technical terms
 
-```
-owner's device (YubiKey PIV / TPM 2.0)      owner-cli: builds, diffs and signs mandates; verifies the
-        │  signed owner messages              enclave's DCAP quote against the pinned Intel root
-        │  (mandate, arm, anchor, freeze, …)
-        ▼
-BTCPay Server + plugin ──PSBT──▶ signerd (untrusted host daemon) ──ecalls──▶ SGX enclave (rcore + signer-core, no_std)
-   watch-only xpub,               HTTP API on loopback, header feed,          the seed, the sealed state, the mandate;
-   payout processor               receipts, TPM transport, quote helper        judges every PSBT, refuses on any doubt
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/how-it-fits-dark.svg">
+  <img src="docs/img/how-it-fits-light.svg" alt="The parts and the trust boundary. On the owner's machine: the recovery key, the owner device (YubiKey PIV or TPM 2.0) and owner-cli, which builds, diffs and signs mandates and checks the enclave's DCAP quote against Intel's pinned root. Signed owner messages (mandate, arm, anchor, freeze) reach the enclave through signerd. On the merchant's server, untrusted: BTCPay Server and the plugin (watch-only xpub, payout processor) send a PSBT to signerd (HTTP API on loopback, header feed, receipts, TPM transport, quote helper), which passes it by ecalls into the SGX enclave, together with block headers, the sealed state from disk and the TPM counter. Trusted: the enclave (rcore and signer-core, no_std), which holds the seed, the sealed state and the mandate, judges every PSBT and refuses on any doubt.">
+</picture>
 
 Everything left of the enclave is untrusted input to it. The enclave verifies the PSBT, the previous
 transactions, the headers, the policy bytes and the owner's signature against its sealed state and the
