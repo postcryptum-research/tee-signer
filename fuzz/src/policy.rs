@@ -80,6 +80,8 @@ enum Lie {
     DuplicateOutpoint,       // the same outpoint twice
     UnknownField,            // a proprietary/unknown PSBT field
     OutScriptNotOurs,        // I3: our key and path in the hint, someone else's script in the output
+    UnknownFieldOnOutput,    // a proprietary/unknown PSBT field on an output
+    OutHintBranch2, // I3: our key at branch 2 in the hint — not a change/receive branch, ignored, the output is not ours
 }
 
 struct Spec {
@@ -89,6 +91,7 @@ struct Spec {
     rbf: bool,
     lie: Lie,
     target: usize,
+    explicit_sighash_all: bool, // every input carries sighash_type = ALL explicitly (honest; absent means ALL too)
 }
 
 fn amount_of(lo: u8, hi: u8) -> u64 {
@@ -112,7 +115,8 @@ fn parse_spec(data: &[u8]) -> Option<Spec> {
         _ => 3,
     };
     let rbf = data[3] & 1 != 0;
-    let lie = match data[4] % 12 {
+    let explicit_sighash_all = data[3] & 2 != 0;
+    let lie = match data[4] % 14 {
         0 => Lie::None,
         1 => Lie::NoPrevtxWitnessUtxoOnly,
         2 => Lie::DisagreeingWitnessUtxo,
@@ -124,7 +128,9 @@ fn parse_spec(data: &[u8]) -> Option<Spec> {
         8 => Lie::SighashNone,
         9 => Lie::DuplicateOutpoint,
         10 => Lie::UnknownField,
-        _ => Lie::OutScriptNotOurs,
+        11 => Lie::OutScriptNotOurs,
+        12 => Lie::UnknownFieldOnOutput,
+        _ => Lie::OutHintBranch2,
     };
     let target = usize::from(data[5]);
     let body = &data[6..];
@@ -153,7 +159,7 @@ fn parse_spec(data: &[u8]) -> Option<Spec> {
         };
         outs.push(OutSpec { kind, index: u32::from(r[1]), amount: amount_of(r[2], r[3]) });
     }
-    Some(Spec { ins, outs, version, rbf, lie, target })
+    Some(Spec { ins, outs, version, rbf, lie, target, explicit_sighash_all })
 }
 
 struct Fixtures {
@@ -222,6 +228,10 @@ fn build(spec: &Spec) -> Psbt {
     let mut psbt = Psbt::from_unsigned_tx(tx).expect("unsigned tx");
     for (i, s) in spec.ins.iter().enumerate() {
         psbt.inputs[i].non_witness_utxo = Some(prevs[i].clone());
+        if spec.explicit_sighash_all {
+            psbt.inputs[i].sighash_type =
+                Some(bitcoin::psbt::PsbtSighashType::from(bitcoin::sighash::EcdsaSighashType::All));
+        }
         if s.kind == InKind::OwnHinted {
             psbt.inputs[i].bip32_derivation.insert(f.w.pubkey(0, s.index), f.w.origin(0, s.index));
         }
@@ -295,8 +305,38 @@ fn build(spec: &Spec) -> Psbt {
                 .bip32_derivation
                 .insert(f.w.pubkey(p.branch, p.index % GAP), f.w.origin(p.branch, p.index % GAP));
         }
+        Lie::UnknownFieldOnOutput => {
+            psbt.outputs[to].unknown.insert(bitcoin::psbt::raw::Key { type_value: 0xf0, key: vec![0x01] }, vec![0x02]);
+        }
+        Lie::OutHintBranch2 => {
+            // our fingerprint and key, a third branch: the enclave ignores the hint; an own script without a verified
+            // hint is not ours
+            let idx = spec.outs[to].index;
+            psbt.outputs[to].bip32_derivation.clear();
+            psbt.outputs[to].bip32_derivation.insert(f.w.pubkey(2, idx), f.w.origin(2, idx));
+        }
     }
     psbt
+}
+
+/// For the seed writer: a PSBT whose transaction has an input and no outputs (`PSBT_PARSE`).
+pub fn seed_no_outputs() -> Vec<u8> {
+    let f = fx();
+    let prev = fixtures::funding_tx(&[(f.w.spk(0, 1), 50_000)], 1);
+    let tx = Transaction {
+        version: Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![TxIn {
+            previous_output: OutPoint { txid: prev.compute_txid(), vout: 0 },
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::MAX,
+            witness: Witness::new(),
+        }],
+        output: vec![],
+    };
+    let mut psbt = Psbt::from_unsigned_tx(tx).expect("unsigned");
+    psbt.inputs[0].non_witness_utxo = Some(prev);
+    psbt.serialize()
 }
 
 /// For the seed writer: the serialized PSBT a scripted spec builds (`[n_in, n_out, version, flags, lie, target] ‖ records`).
@@ -310,10 +350,18 @@ pub fn seed_psbt(spec_bytes: &[u8]) -> Option<Vec<u8>> {
 fn expected(spec: &Spec, m: &Mandate) -> Result<(Vec<InputClass>, Vec<OutputClass>), Reason> {
     let ti = spec.target % spec.ins.len();
     let to = spec.target % spec.outs.len();
-    // structure: a duplicate outpoint is refused before any input is read
+    // structure first: the counts against the mandate, then a duplicate outpoint, before any input is read
+    if spec.ins.len() > m.limits.max_inputs as usize {
+        return Err(Reason::TooManyInputs);
+    }
+    if spec.outs.len() > m.limits.max_outputs as usize {
+        return Err(Reason::TooManyOutputs);
+    }
     if spec.lie == Lie::DuplicateOutpoint && spec.ins.len() > 1 && ti > 0 {
         return Err(Reason::PsbtParse);
     }
+    // an own input must be a script type the mandate lists (the generator makes p2wpkh only)
+    let p2wpkh_allowed = m.wallet.script_types.contains(&signer_core::mandate::ScriptType::P2wpkh);
     let mut ins = Vec::new();
     for (i, s) in spec.ins.iter().enumerate() {
         let own = InputClass::Own {
@@ -332,6 +380,9 @@ fn expected(spec: &Spec, m: &Mandate) -> Result<(Vec<InputClass>, Vec<OutputClas
                 Lie::HintOnForeign => match s.kind {
                     InKind::Foreign => return Err(Reason::InputNotOwn), // the script is not ours
                     _ => {
+                        if !p2wpkh_allowed {
+                            return Err(Reason::InputScriptType);
+                        }
                         ins.push(own); // a correct hint on our own script: ours (hinted or not before)
                         continue;
                     }
@@ -340,7 +391,12 @@ fn expected(spec: &Spec, m: &Mandate) -> Result<(Vec<InputClass>, Vec<OutputClas
             }
         }
         ins.push(match s.kind {
-            InKind::OwnHinted => own,
+            InKind::OwnHinted => {
+                if !p2wpkh_allowed {
+                    return Err(Reason::InputScriptType);
+                }
+                own
+            }
             _ => foreign,
         });
     }
@@ -354,6 +410,13 @@ fn expected(spec: &Spec, m: &Mandate) -> Result<(Vec<InputClass>, Vec<OutputClas
                 Lie::OutScriptNotOurs => return Err(Reason::OutputScriptType),
                 // a foreign key in the hint: an OP_RETURN is judged as such before any hint is read
                 Lie::OutHintForeignKey if o.kind != OutKind::OpReturn => return Err(Reason::OutputScriptType),
+                // the field check comes before anything is read of the output
+                Lie::UnknownFieldOnOutput => return Err(Reason::UnknownField),
+                // the only hint is on a third branch: ignored; our own script without a verified hint is not ours
+                Lie::OutHintBranch2 if o.kind == OutKind::Own => {
+                    outs.push(OutputClass::Unlisted { amount: o.amount });
+                    continue;
+                }
                 _ => {}
             }
         }
@@ -383,6 +446,13 @@ fn mandate_for_classify(knob: u8) -> Mandate {
     let mut m = h.mandate.clone();
     if knob & 1 != 0 {
         m.rules.op_return = OpReturnRule::ZeroValue;
+    }
+    if knob & 2 != 0 {
+        m.limits.max_inputs = 2;
+        m.limits.max_outputs = 2;
+    }
+    if knob & 4 != 0 {
+        m.wallet.script_types.clear(); // no own input may be signed: INPUT_SCRIPT_TYPE
     }
     m
 }
@@ -472,6 +542,8 @@ pub fn classify_target(data: &[u8]) {
                 Lie::SighashNone,
                 Lie::UnknownField,
                 Lie::OutScriptNotOurs,
+                Lie::UnknownFieldOnOutput,
+                Lie::OutHintBranch2,
             ] {
                 for target in 0..spec.ins.len().max(spec.outs.len()) {
                     let lied_spec = Spec {
@@ -481,13 +553,19 @@ pub fn classify_target(data: &[u8]) {
                         rbf: spec.rbf,
                         lie,
                         target,
+                        explicit_sighash_all: spec.explicit_sighash_all,
                     };
                     let lied = build(&lied_spec);
                     match classify(secp(), &lied.serialize(), &f.w.account, &m, bound) {
                         Err(_) => {}
                         Ok(c1) => {
                             let ti = target % spec.ins.len();
+                            let to = target % spec.outs.len();
                             let mut allowed = c0.clone();
+                            if lie == Lie::OutHintBranch2 && spec.outs[to].kind == OutKind::Own {
+                                // the host withheld the one hint that made the output ours: less is recognised, never more
+                                allowed.outputs[to] = OutputClass::Unlisted { amount: spec.outs[to].amount };
+                            }
                             if lie == Lie::HintOnForeign && spec.ins[ti].kind == InKind::OwnUnhinted {
                                 allowed.inputs[ti] = InputClass::Own {
                                     path: OwnPath { branch: 0, index: spec.ins[ti].index },

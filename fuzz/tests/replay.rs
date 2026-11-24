@@ -527,7 +527,7 @@ fn classify_seeds() -> Vec<Vec<u8>> {
     let mut far = spend_spec(1, 0, 0, 0);
     far[15] = 0xff; // own change idx 255 → branch 1 index 127: beyond gap 100
     v.push([vec![1u8, 0], far].concat());
-    for lie in 1..=11u8 {
+    for lie in 1..=13u8 {
         v.push([vec![1u8, 0], spend_spec(1, 0, lie, 0)].concat());
         v.push([vec![1u8, 0], spend_spec(1, 0, lie, 1)].concat());
     }
@@ -549,6 +549,18 @@ fn classify_seeds() -> Vec<Vec<u8>> {
         }]
         .concat(),
     ); // a foreign input dressed as ours
+       // knobs: counts against the mandate (max 2), no script type allowed, an explicit SIGHASH_ALL; a raw PSBT without outputs
+    let mut three_in = spend_spec(1, 0, 0, 0);
+    three_in[0] = 2;
+    three_in.splice(10..10, [2u8, 9, 0xe8, 0x03, 0u8, 12, 0xe8, 0x03]); // + a foreign and an own input
+    v.push([vec![1u8, 2], three_in].concat()); // TOO_MANY_INPUTS
+    let mut three_out = spend_spec(1, 0, 0, 0);
+    three_out[1] = 2;
+    three_out.extend_from_slice(&[3, 4, 0xe8, 0x03]); // + a third output
+    v.push([vec![1u8, 2], three_out].concat()); // TOO_MANY_OUTPUTS
+    v.push([vec![1u8, 4], spend_spec(1, 0, 0, 0)].concat()); // INPUT_SCRIPT_TYPE
+    v.push([vec![1u8, 0], spend_spec(1, 2, 0, 0)].concat()); // an explicit SIGHASH_ALL: accepted
+    v.push([vec![0u8], policy::seed_no_outputs()].concat()); // PSBT_PARSE
     v.push([vec![2u8], spend_spec(1, 0, 0, 0)].concat());
     v.push([vec![2u8], cold].concat());
     v
