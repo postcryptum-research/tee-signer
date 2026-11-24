@@ -56,7 +56,7 @@ use signer_core::classify::classify;
 use signer_core::encoding::{Dec, Enc};
 use signer_core::headers::apply_headers;
 use signer_core::judge::{judge, Verdict};
-use signer_core::mandate::{AccountPath, Freshness, Mandate, Network};
+use signer_core::mandate::{AccountPath, Freshness, Mandate, Matcher, Network};
 use signer_core::proto::{
     limits, op, quote, HeadersResponse, IdentityCard, InitRequest, InitResponse, JudgeResponse, PolicyResponse,
     ReportResponse, Response, SealedResponse, SealedWith, SignResponse, StatusResponse, TestInitRequest, TpmProof,
@@ -607,6 +607,32 @@ impl H {
     // ---- one op: call, then check the response against the reading --------------------------------------
 
     fn perform(&mut self, op_code: u32, input: Vec<u8>) {
+        let carried = carried_state(op_code, &input);
+        if trace() {
+            let summary = carried.as_ref().map(|s| {
+                let trusted: Vec<String> = s
+                    .mandate
+                    .destinations
+                    .trusted
+                    .iter()
+                    .map(|t| match &t.matcher {
+                        Matcher::Address { .. } => "addr".to_string(),
+                        Matcher::Descriptor { branches, gap, .. } => format!("desc{branches:?}/gap={gap}"),
+                    })
+                    .collect();
+                format!("state: seq={} validate={} trusted={:?}", s.seq, s.mandate.validate().is_ok(), trusted)
+            });
+            eprintln!("F10-trace call op={op_code:<3} in={:<6} {}", input.len(), summary.unwrap_or_default());
+        }
+        if carried.as_ref().is_some_and(|s| s.mandate.validate().is_err()) {
+            // the SGX seal would have refused this blob before a field was read (see `carried_state`)
+            if trace() {
+                eprintln!(
+                    "F10-trace skip: the carried state fails `validate` — impossible under the SGX seal, not sent"
+                );
+            }
+            return;
+        }
         let r = call(op_code, &input);
         if trace() {
             eprintln!(
@@ -1606,6 +1632,27 @@ fn trace() -> bool {
 }
 
 /// One byte-level change of a request or a blob: flip, truncate, insert or swap, placed by `pos`.
+/// The state a request carries, read as the enclave reads it — `None` when the request carries none the enclave would
+/// open (a blob the container or the strict envelope decoder refuses, an op without a blob).
+///
+/// Its one use is the guard in `perform`. The nosgx container has no MAC, so a changed byte inside the plaintext can
+/// still decode — as a mandate outside `validate`'s bounds, the bounds `INSTALL`/`APPLY_MESSAGE` establish and the
+/// seal alone preserves. A descriptor gap in the millions sends `classify`'s descriptor scan through that many
+/// derivations: the two timeouts of the first hour run (gap 20 → 6 881 300 by `blob_for`'s flip; 20 → 2 555 924 by
+/// a flip that a refused `HEADERS` re-sealed into the current blob, as the shell does for every batch it opens). On
+/// hardware the AES-GCM tag refuses such a blob before a field is read; `TEST_INIT` (test-only) installs a state as
+/// given. The harness sends only what the seal would pass — so every call terminates — and sends everything else a
+/// change can produce.
+fn carried_state(op_code: u32, input: &[u8]) -> Option<State> {
+    let sealed = match op_code {
+        op::STATUS | op::POLICY | op::FREEZE => input.to_vec(),
+        op::TEST_INIT => return State::decode(&TestInitRequest::decode(input).ok()?.state).ok(),
+        op::INIT | op::TPM_NONCE | op::TPM_PROOF | op::TEST_RESET_SESSION => return None,
+        _ => SealedWith::decode(input, limits::MAX_SEALED).ok()?.sealed,
+    };
+    open_env(&sealed)?.state
+}
+
 fn mutate(bytes: &mut Vec<u8>, mode: u8, pos: u8, val: u8) {
     if bytes.is_empty() {
         bytes.push(val);

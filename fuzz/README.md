@@ -57,7 +57,11 @@ host's TPM depositing honest or lying proofs; the oracle for each call is `ops.r
 decisions of `signer-core`'s own functions on the state read back from the nosgx blob: the blob changes only
 through a `Fresh` op and exactly as the core says, a TPM-bound state refuses every `Fresh` op without the right
 proof, `SIGN` signs only the judged bytes on the charged blob, a reload is unarmed, an older blob is behind the
-session mark; the response bytes are predicted exactly, signatures included — RFC 6979).
+session mark; the response bytes are predicted exactly, signatures included — RFC 6979). The nosgx container has no
+MAC, so a changed byte inside a blob can still decode — as a state outside `validate`'s bounds, which on hardware the
+AES-GCM tag refuses before a field is read; a descriptor gap in the millions is `classify` deriving for hours (the two
+timeouts of the first hour run). The harness therefore sends no state the seal would refuse (`carried_state`: the
+carried mandate must pass `validate`; `TEE_FUZZ_TRACE=1` prints the skip) and sends everything else a change produces.
 
 Limits (`run.sh`): `-max_len` from the `proto` bound the type lives under, `-malloc_limit_mb` **below**
 that bound (an untrusted length that drives an allocation is itself a V2 DoS finding), `-timeout=10`,
