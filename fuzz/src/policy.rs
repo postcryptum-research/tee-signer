@@ -458,7 +458,9 @@ pub fn classify_target(data: &[u8]) {
             let m = mandate_for_classify(0);
             let honest_psbt = build(&spec);
             let Ok(c0) = classify(secp(), &honest_psbt.serialize(), &f.w.account, &m, bound) else { return };
-            // every lie: refused, or (for the hint lies that may not bite) a classification that signs no more
+            // every lie: refused, or an acceptance the rules give — which is the honest classification, except that a
+            // correct hint added to our own unhinted input makes that input ours (the enclave VERIFIED the hint against
+            // the derived key and script; the host revealed, it did not decide); never another own set or amount
             for lie in [
                 Lie::NoPrevtxWitnessUtxoOnly,
                 Lie::DisagreeingWitnessUtxo,
@@ -472,24 +474,46 @@ pub fn classify_target(data: &[u8]) {
                 Lie::OutScriptNotOurs,
             ] {
                 for target in 0..spec.ins.len().max(spec.outs.len()) {
-                    let lied = build(&Spec {
+                    let lied_spec = Spec {
+                        ins: spec.ins.clone(),
+                        outs: spec.outs.clone(),
+                        version: spec.version,
+                        rbf: spec.rbf,
                         lie,
                         target,
-                        ..Spec {
-                            ins: spec.ins.clone(),
-                            outs: spec.outs.clone(),
-                            version: spec.version,
-                            rbf: spec.rbf,
-                            lie,
-                            target,
-                        }
-                    });
+                    };
+                    let lied = build(&lied_spec);
                     match classify(secp(), &lied.serialize(), &f.w.account, &m, bound) {
                         Err(_) => {}
                         Ok(c1) => {
-                            // the host never decides: the only acceptable Ok is the SAME classification (the lie did
-                            // not bite on this target); never a different own set or amount
-                            assert_eq!(c1, c0, "I1–I3: a host-asserted field ({lie:?} on {target}) changed the classification instead of refusing");
+                            let ti = target % spec.ins.len();
+                            let mut allowed = c0.clone();
+                            if lie == Lie::HintOnForeign && spec.ins[ti].kind == InKind::OwnUnhinted {
+                                allowed.inputs[ti] = InputClass::Own {
+                                    path: OwnPath { branch: 0, index: spec.ins[ti].index },
+                                    amount: spec.ins[ti].amount,
+                                    script_type: signer_core::mandate::ScriptType::P2wpkh,
+                                };
+                                // an input known to be ours (p2wpkh) will carry a witness: the enclave's size lower bound
+                                // may only grow — it is derived from the verified script type, not from the hint
+                                assert!(
+                                    c1.vsize_lower_bound >= c0.vsize_lower_bound,
+                                    "F7: revealing an own input lowered the vsize bound"
+                                );
+                                allowed.vsize_lower_bound = c1.vsize_lower_bound;
+                            }
+                            assert_eq!(c1, allowed, "I1–I3: a host-asserted field ({lie:?} on {target}) changed the classification instead of refusing");
+                            let (ins, outs) = expected(&lied_spec, &m).unwrap_or_else(|r| {
+                                panic!(
+                                    "F7: the rules refuse ({}) what the enclave accepted — {lie:?} on {target}",
+                                    r.code()
+                                )
+                            });
+                            assert!(
+                                c1.inputs == ins && c1.outputs == outs,
+                                "F7: the accepted lied build differs from the reading"
+                            );
+                            check_classified_against_psbt(&lied, &c1, bound);
                         }
                     }
                 }
