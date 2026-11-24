@@ -167,8 +167,9 @@ laptop** (267 s and 347 s for the replay test in two measurements, the fifteen e
 (ii)): a `dispatch` input costs ~200–260 ms in the unoptimised test build, because every op of every step derives the wallet from the seed inside
 the enclave — BIP39's PBKDF2, 2048 rounds of HMAC-SHA512 — and a scripted input makes up to sixteen such calls plus
 the deposits (the harness derives once per (network, seed), cached; the enclave's cost is the enclave's). The replay
-of `dispatch` inputs is serial by construction (one process-global session, §6). CI's `fuzz-replay` job time is read
-off this PR's checks; if it is judged too long, the two levers are an `opt-level` for the harness crate's test profile
+of `dispatch` inputs is serial by construction (one process-global session, §6). CI's `fuzz-replay` job took **5 min 3 s**
+on this PR's head (about 1 min before this pass; the 60-second smoke job 18 min with the new target); if that is judged
+too long, the two levers are an `opt-level` for the harness crate's test profile
 (the oracles do not change) or a smaller committed corpus — the auditor's and the owner's call, not taken here.
 
 ## 5. Runs and C-R10-7
