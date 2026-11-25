@@ -1,6 +1,6 @@
 # REQ-r11 — the TCB hardening round: impl (SafeMath in the TCB, validate-on-open, the scan cost bound, one TCS)
 
-**Date:** 2026-11-25. **Status:** SENT for IMPL-PASS against `RESP-r11-tcb-hardening-design-2026-11-25.md`
+**Date:** 2026-11-25. **Status:** **IMPL-PASS** (`RESP-r11-tcb-hardening-impl-2026-11-26.md`, 2026-11-26, at `3111cbc`) → merged into `main` at `e797f6e`; the signed build, the ceremony and the T2 migration are the owner's steps. Sent against `RESP-r11-tcb-hardening-design-2026-11-25.md`
 (DESIGN-PASS at `7f77006`) and its conditions C-R11-1 … C-R11-5. **Branch:** `r11-tcb-hardening`, **PR #29** (the
 head hash on the PR; every later commit is listed in §11). **Scope:** `core/`, `enclave/rcore`, `enclave/Makefile`, `fuzz/`, CI, docs; `host/` and `owner/`
 untouched. **MRENCLAVE changes** (A, C, D are enclave diffs; B's comment rides): the build, the ceremony and the T2
@@ -142,7 +142,9 @@ same on T2 after the migration goes into the deploy row.
   check is a belt; `state.rs`'s `compare` `Network` arm (and its `Wallet` twin) sits behind `apply_message`'s own
   `new.network != s.network` → `POLICY_NETWORK` (and `new.wallet != s.wallet` → `POLICY_WALLET`) a few lines above
   the `compare` call — the seed "another network" is refused there, the arm in `compare` is the belt for `compare`'s
-  other callers. Both named so the union coverage can carry them as unreachable rather than missing.
+  other callers. Both named so the union coverage can carry them as unreachable rather than missing. **The auditor's
+  ruling (Q1):** both belts stay — a cheap fail-closed guard beats a standing dependency on the upstream check never
+  regressing; the coverage record marks them "unreachable by construction (behind X), a belt", not a gap to seed.
 - **Mutation.** `injected-defects.sh`: "validate-on-open removed" → the gate RED (the detector test and the
   regressions); "the cap's refusal removed" → RED (the detector test). Results: §7.
 
@@ -191,3 +193,4 @@ BTCPay store re-pointed: owner-run; the dev prepares the worked-example script w
 | 2026-11-25 | impl on `r11-tcb-hardening`: A, B, C, D, E landed; core / rcore / fuzz green; the worst case measured; this REQ drafted while the injected-defects and e2e runs finish |
 | 2026-11-25 | injected-defects 32/32 caught; e2e-local OK on the new rcore; the real-SGX `mrenclave` offset sum replaced by a slice of a slice (the hand-read list of §2 now has no operator left); coverage for `classify` and `dispatch` re-run (§7) |
 | 2026-11-25 | `seeds/` regenerated (`TEE_FUZZ_SEEDS_OUT=seeds … write_seeds`: classify 48 → 50, the two mandate_decode negatives) and the classify coverage re-run with them: the Address match line executes; REQ SENT with the PR |
+| 2026-11-26 | **IMPL-PASS** at `3111cbc` — `RESP-r11-tcb-hardening-impl-2026-11-26.md` (every condition verified firsthand against the merge-base `4eb0256`; core clippy and `trusted_scan` re-run by the auditor; B and D load-bearing; the real-SGX arms exhaustive; validate-on-open before the proof). Q1: the two belts stay, documented unreachable by construction. Q2: the worst-case wall time is measured on real SGX at the migration and recorded in the deploy row, never extrapolated from the laptop's 3.88 s — if the enclave figure is uncomfortable (under `TCSNum 1` a worst-case classify serialises every ecall), tightening `MAX_GAP` / `MAX_TRUSTED` / the cap is an owner-gated follow-up. PR #29 merged at `e797f6e`, branch deleted. Next: the three builds on the build box (dev), the ceremony signature (owner), the T2 migration (owner) |
