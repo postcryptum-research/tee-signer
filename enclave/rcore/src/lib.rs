@@ -10,6 +10,8 @@
 
 #![no_std]
 #![deny(missing_docs)]
+// Hard rule 9 (SafeMath) — the same three lints the Cargo table carries, visible at the source (R11, C-EXT1-1)
+#![deny(clippy::arithmetic_side_effects, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 
 extern crate alloc;
 

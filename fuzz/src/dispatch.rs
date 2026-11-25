@@ -512,6 +512,9 @@ impl H {
 
     fn open_stale(&self, sealed: &[u8]) -> Result<(Env, State), Vec<String>> {
         let env = open_env(sealed).ok_or_else(|| one(Reason::StateUnsealable))?;
+        if invalid_state(&env) {
+            return Err(one(Reason::StateInvalid));
+        }
         let s = env.state.clone().ok_or_else(|| one(Reason::StateUnsealable))?;
         Ok((env, s))
     }
@@ -624,15 +627,9 @@ impl H {
             });
             eprintln!("F10-trace call op={op_code:<3} in={:<6} {}", input.len(), summary.unwrap_or_default());
         }
-        if carried.as_ref().is_some_and(|s| s.mandate.validate().is_err()) {
-            // the SGX seal would have refused this blob before a field was read (see `carried_state`)
-            if trace() {
-                eprintln!(
-                    "F10-trace skip: the carried state fails `validate` — impossible under the SGX seal, not sent"
-                );
-            }
-            return;
-        }
+        // R11 (C-EXT1-3): a carried state that fails `validate` is no longer skipped — the enclave refuses it
+        // STATE_INVALID at `open()`, before any gate and before the counter proof is taken; the reading predicts
+        // exactly that (`invalid_state` in every opener)
         let r = call(op_code, &input);
         if trace() {
             eprintln!(
@@ -668,6 +665,9 @@ impl H {
 
     fn check_status(&mut self, input: &[u8], r: &Response) {
         let Some(env) = open_env(input) else { return refused(r, &one(Reason::StateUnsealable), "STATUS") };
+        if invalid_state(&env) {
+            return refused(r, &one(Reason::StateInvalid), "STATUS");
+        }
         let Some(net) = network_from(env.network) else { return refused(r, &one(Reason::PolicyNetwork), "STATUS") };
         let Some(k) = derive(&self.secp, net, &env.seed) else {
             return refused(r, &["KEY_DERIVATION".to_string()], "STATUS");
@@ -777,6 +777,9 @@ impl H {
             return refused(r, &enc(), "REPORT");
         }
         let Some(env) = open_env(&req.sealed) else { return refused(r, &one(Reason::StateUnsealable), "REPORT") };
+        if invalid_state(&env) {
+            return refused(r, &one(Reason::StateInvalid), "REPORT");
+        }
         let Some(net) = network_from(env.network) else { return refused(r, &one(Reason::PolicyNetwork), "REPORT") };
         let Some(k) = derive(&self.secp, net, &env.seed) else {
             return refused(r, &["KEY_DERIVATION".to_string()], "REPORT");
@@ -1017,6 +1020,9 @@ impl H {
         let pi = || one(Reason::PolicyInvalid);
         let Ok(req) = SealedWith::decode(input, MAX_MANDATE_BYTES) else { return refused(r, &pi(), "INSTALL") };
         let Some(mut env) = open_env(&req.sealed) else { return refused(r, &one(Reason::StateUnsealable), "INSTALL") };
+        if invalid_state(&env) {
+            return refused(r, &one(Reason::StateInvalid), "INSTALL");
+        }
         if env.state.is_some() {
             return refused(r, &one(Reason::PolicyPending), "INSTALL");
         }
@@ -1643,6 +1649,18 @@ fn trace() -> bool {
 /// hardware the AES-GCM tag refuses such a blob before a field is read; `TEST_INIT` (test-only) installs a state as
 /// given. The harness sends only what the seal would pass — so every call terminates — and sends everything else a
 /// change can produce.
+/// R11 (C-EXT1-3): the enclave's `open()` refuses a sealed state whose mandate fails `validate` — before any
+/// gate reads a bound and before the single-use counter proof is taken (so the deposit survives the refusal).
+fn invalid_state(env: &Env) -> bool {
+    env.state.as_ref().is_some_and(|s| s.mandate.validate().is_err())
+}
+
+/// One raw ecall through `rcore_call`, for the replay gate's own vectors (the R11 guards are break-tested there).
+pub fn raw(op_code: u32, input: &[u8]) -> Response {
+    let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    call(op_code, input)
+}
+
 fn carried_state(op_code: u32, input: &[u8]) -> Option<State> {
     let sealed = match op_code {
         op::STATUS | op::POLICY | op::FREEZE => input.to_vec(),

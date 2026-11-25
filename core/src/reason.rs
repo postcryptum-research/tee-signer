@@ -119,6 +119,15 @@ pub enum Reason {
     /// REQ-r9a: the counter the host's live proof certifies is BELOW the value the owner saw
     /// certified — impossible for an honest, monotone TPM: a lying host or a replaced TPM.
     AnchorCounterBehind,
+    /// R11 (C-EXT1-3): the sealed state opened but its policy fails its own bounds — impossible under the
+    /// seal (every bound was validated at its write site and the seal preserved it): a corrupted state
+    /// file, or a test build without the seal's MAC. Refused at the one door every op passes, before any
+    /// gate reads a bound and before a counter proof is consumed.
+    StateInvalid,
+    /// R11 (C-EXT1-4): the trusted-destination scan would exceed its derivation bound (`wallet::DERIVATION_CAP`,
+    /// the validated worst case) — unreachable for a mandate that passed `validate`; the bound makes the
+    /// worst case explicit and refuses during the scan, never at its end.
+    PolicyTooExpensive,
 }
 
 impl Reason {
@@ -178,6 +187,8 @@ impl Reason {
             Reason::StateStale => "STATE_STALE",
             Reason::AnchorTpmMismatch => "ANCHOR_TPM_MISMATCH",
             Reason::AnchorCounterBehind => "ANCHOR_COUNTER_BEHIND",
+            Reason::StateInvalid => "STATE_INVALID",
+            Reason::PolicyTooExpensive => "POLICY_TOO_EXPENSIVE",
         }
     }
 }
@@ -205,6 +216,15 @@ impl From<Reason> for Refusal {
 #[cfg(feature = "std")]
 pub fn hint_for_code(code: &str) -> Option<&'static str> {
     Some(match code {
+        "STATE_INVALID" => {
+            "the sealed state opened but its policy fails its own bounds — impossible under the seal; a corrupted \
+             state file or a test build: stop the daemon, restore the last written state file (the one the TPM counter \
+             expects), nothing signs until then; if the file was not touched, tell the auditor"
+        }
+        "POLICY_TOO_EXPENSIVE" => {
+            "the trusted-destination scan hit its derivation bound — unreachable for a mandate that passed its own \
+             validation; the sealed mandate is not what INSTALL accepted: treat as STATE_INVALID and tell the auditor"
+        }
         "ANCHOR_TPM_MISMATCH" => {
             "the host presented a TPM identity (attestation key / counter Name) different from the one this wallet is \
              bound to — do not retry; a replaced TPM under a living wallet means a new wallet, or a re-bind ceremony \

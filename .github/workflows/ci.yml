@@ -31,6 +31,8 @@ jobs:
       - run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt && rustup default "$RUST_TOOLCHAIN"
       - run: cd enclave/rcore && cargo fmt --check
       - run: cd enclave/rcore && cargo clippy --features nosgx,test-init --all-targets -- -D warnings
+      # C-R11-2: session::ensure() rests on one TCS; a config that says otherwise fails here and at the enclave Makefile's gate 8
+      - run: grep -q "<TCSNum>1</TCSNum>" enclave/Enclave/Enclave.config.xml && grep -q "<TCSPolicy>1</TCSPolicy>" enclave/Enclave/Enclave.config.xml
       - run: cd enclave/rcore && cargo test --features nosgx,test-init
 
   signerd-nosgx:

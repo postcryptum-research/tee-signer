@@ -53,7 +53,7 @@ pub fn encrypt(recovery_pk: &[u8; 65], fingerprint: &[u8; 4], xpub: &[u8; 78], e
     let ct = cipher.encrypt(Nonce::from_slice(&[0u8; 12]), Payload { msg: entropy, aad: &aad }).ok()?;
     key.zeroize();
     drop(eph);
-    let mut out = Vec::with_capacity(65 + ct.len());
+    let mut out = Vec::with_capacity(65usize.saturating_add(ct.len())); // a capacity hint
     out.extend_from_slice(eph_pk.as_bytes());
     out.extend_from_slice(&ct);
     Some(out)

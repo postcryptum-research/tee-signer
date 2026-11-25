@@ -152,8 +152,19 @@ pub fn dispatch(op_code: u32, input: &[u8]) -> Response {
     }
 }
 
+/// The one door every op's sealed blob passes. R11 (C-EXT1-3): the bounds of a sealed state are trusted because
+/// INSTALL and APPLY_MESSAGE validated them at the write site and the seal preserved them; the re-check here
+/// makes that invariant explicit where a reader looks for it, and under `nosgx` (a container without a MAC)
+/// it is the guard. It runs before any gate reads a bound and before `open_full_fresh` takes the single-use
+/// counter proof — an invalid state refuses `STATE_INVALID` with the proof left unconsumed.
 fn open(sealed: &[u8]) -> Result<Envelope, Response> {
-    Envelope::unseal(sealed).ok_or_else(|| refuse(Reason::StateUnsealable.into()))
+    let env = Envelope::unseal(sealed).ok_or_else(|| refuse(Reason::StateUnsealable.into()))?;
+    if let Some(state) = env.state.as_ref() {
+        if state.mandate.validate().is_err() {
+            return Err(refuse(Reason::StateInvalid.into()));
+        }
+    }
+    Ok(env)
 }
 
 /// REQ-r9 (C-R9-C): how each op treats the blob it reads. `Fresh` ops change state or sign and

@@ -515,6 +515,16 @@ fn classify_seeds() -> Vec<Vec<u8>> {
     let mut beyond = spend_spec(1, 0, 0, 0);
     beyond[10] = 2; // out 0 → the cold wallet beyond the descriptor's gap: unlisted
     v.push([vec![1u8, 0], beyond].concat());
+    // R11 (C-R10P2-3): the Address matcher both directions — knob 8 makes the one trusted destination the cold
+    // wallet's index 1 as an ADDRESS; out 0 at index 1 is trusted by the exact compare, at index 2 it is not
+    let mut addr_hit = spend_spec(1, 0, 0, 0);
+    addr_hit[10] = 1;
+    addr_hit[11] = 1;
+    v.push([vec![1u8, 8], addr_hit].concat());
+    let mut addr_miss = spend_spec(1, 0, 0, 0);
+    addr_miss[10] = 1;
+    addr_miss[11] = 2;
+    v.push([vec![1u8, 8], addr_miss].concat());
     let mut opret = spend_spec(1, 0, 0, 0);
     opret[1] = 2;
     opret.extend_from_slice(&[4, 0, 0, 0]); // + an OP_RETURN
@@ -1098,6 +1108,18 @@ fn write_seeds() {
     let mut m = h.mandate.clone();
     m.timelock_blocks = 0;
     put("mandate_decode", "negative-invalid-timelock-zero", &m.encode());
+    // R11 (C-R10P2-3): the two validate rejects the corpus never reached — a bad version, too many trusted
+    let mut m = h.mandate.clone();
+    m.version = 2;
+    put("mandate_decode", "negative-invalid-version", &m.encode());
+    let mut m = h.mandate.clone();
+    let template = m.destinations.trusted[0].clone();
+    while m.destinations.trusted.len() <= signer_core::mandate::bounds::MAX_TRUSTED {
+        let mut t = template.clone();
+        t.label = format!("t{}", m.destinations.trusted.len());
+        m.destinations.trusted.push(t);
+    }
+    put("mandate_decode", "negative-invalid-too-many-trusted", &m.encode());
     put("state_decode", "negative-trailing-byte", &with_tail(&h.state.encode()));
     put("receipt_decode", "negative-trailing-byte", &with_tail(&h.receipt.encode()));
     for (name, m, _) in &h.messages {
@@ -1143,4 +1165,74 @@ fn write_seeds() {
     a.extend_from_slice(&h.attest);
     a.extend_from_slice(&[0u8; 600]);
     put("tpm_attest", "negative-overlong", &a);
+}
+
+/// R11 (C-EXT1-3), the replay gate's own detector of the validate-on-open guard: a state whose mandate fails
+/// `validate` is installed as given by TEST_INIT (a test build has no MAC) — every op over it refuses
+/// `STATE_INVALID`, and a counter proof deposited before such a call survives it (the nonce stays live, a second
+/// deposit is accepted), because `open()` refuses before `open_full_fresh` takes the proof. `injected-defects.sh`
+/// removes the guard and expects this test red.
+#[test]
+fn validate_on_open_refuses_a_mangled_state_and_keeps_the_proof() {
+    use signer_core::proto::{op, InitRequest, InitResponse, TestInitRequest};
+    use signer_core::tpm_attest::TpmAnchor;
+    use tee_signer_fuzz::dispatch::raw;
+    let h = honest();
+    assert!(raw(op::TEST_RESET_SESSION, &[]).ok);
+    let mut bad = h.state.clone();
+    bad.mandate.limits.own_index_gap = signer_core::mandate::bounds::MAX_OWN_INDEX_GAP + 1;
+    assert!(bad.mandate.validate().is_err(), "the fixture must fail validate");
+    // TPM-bound, so a Fresh op would take the proof — if it got that far
+    bad.tpm = Some(TpmAnchor { ak_pk: h.keys.owner.pk, nv_name: [0x11; 34], expected: 7 });
+    let init = InitRequest { network: 2, owner_pk: h.keys.owner.pk, recovery_pk: h.keys.recovery.pk };
+    let treq = TestInitRequest { init, seed: [0x01; 32], identity_sk: [0x55; 32], state: bad.encode() };
+    let r = raw(op::TEST_INIT, &treq.encode());
+    assert!(r.ok, "TEST_INIT installs as given: {:?}", r.reasons);
+    let sealed = InitResponse::decode(&r.payload).unwrap().sealed;
+    // a Stale op: refused before any field is read
+    let r = raw(op::STATUS, &sealed);
+    assert!(!r.ok && r.reasons == vec!["STATE_INVALID".to_string()], "STATUS over an invalid state: {:?}", r.reasons);
+    // a Fresh op with a deposited proof: refused the same way, and the deposit is NOT consumed
+    let r = raw(op::TPM_NONCE, &[]);
+    assert!(r.ok, "{:?}", r.reasons);
+    let proof = signer_core::proto::TpmProof { attest: vec![0xAB; 64], sig: [0xCD; 64] }.encode();
+    assert!(raw(op::TPM_PROOF, &proof).ok, "the first deposit is accepted");
+    let r = raw(op::FREEZE, &sealed);
+    assert!(!r.ok && r.reasons == vec!["STATE_INVALID".to_string()], "FREEZE over an invalid state: {:?}", r.reasons);
+    assert!(raw(op::TPM_PROOF, &proof).ok, "the nonce is still live after STATE_INVALID: the proof was not taken");
+    // the control: a valid bound state's Fresh op takes the proof — a second deposit is then refused (TPM_NONCE)
+    let mut good = h.state.clone();
+    good.tpm = Some(TpmAnchor { ak_pk: h.keys.owner.pk, nv_name: [0x11; 34], expected: 7 });
+    let init = InitRequest { network: 2, owner_pk: h.keys.owner.pk, recovery_pk: h.keys.recovery.pk };
+    let treq = TestInitRequest { init, seed: [0x01; 32], identity_sk: [0x55; 32], state: good.encode() };
+    let good_sealed = InitResponse::decode(&raw(op::TEST_INIT, &treq.encode()).payload).unwrap().sealed;
+    assert!(raw(op::TPM_NONCE, &[]).ok);
+    assert!(raw(op::TPM_PROOF, &proof).ok);
+    let r = raw(op::FREEZE, &good_sealed);
+    assert!(!r.ok, "a junk proof over a valid bound state is refused by the TPM gate, not before it: {:?}", r.reasons);
+    assert_ne!(r.reasons, vec!["STATE_INVALID".to_string()]);
+    let r = raw(op::TPM_PROOF, &proof);
+    assert!(
+        !r.ok && r.reasons == vec!["TPM_NONCE".to_string()],
+        "the proof was consumed by the Fresh op: {:?}",
+        r.reasons
+    );
+}
+
+/// R11 (C-EXT1-4), the replay gate's own detector of the derivation cap: the honest mandate's cold descriptor
+/// (gap 20) against one stranger script refuses `POLICY_TOO_EXPENSIVE` under a cap of 1 and passes under the
+/// production cap with exactly 20 derivations. `injected-defects.sh` removes the refusal and expects this red.
+#[test]
+fn derivation_cap_refuses_during_the_scan() {
+    use signer_core::reason::Reason;
+    use signer_core::wallet::{match_trusted_outputs, DERIVATION_CAP};
+    let h = honest();
+    let secp = bitcoin::secp256k1::Secp256k1::new();
+    let stranger = tee_signer_fuzz::fixtures::wallet(0x77).spk(0, 3);
+    let scripts = vec![stranger.as_script()];
+    let trusted = &h.mandate.destinations.trusted;
+    let ok = match_trusted_outputs(&secp, trusted, &scripts, DERIVATION_CAP).expect("the production cap passes");
+    assert_eq!(ok.dest, vec![None]);
+    assert!(ok.derivations > 1, "the honest mandate derives more than one candidate: {}", ok.derivations);
+    assert_eq!(match_trusted_outputs(&secp, trusted, &scripts, 1).unwrap_err(), Reason::PolicyTooExpensive);
 }

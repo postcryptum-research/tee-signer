@@ -138,13 +138,13 @@ fn mine(prev: &Header, time: u32, salt: u32) -> Header {
     let mut h = Header {
         version: bitcoin::block::Version::TWO,
         prev_blockhash: prev.block_hash(),
-        merkle_root: bitcoin::TxMerkleNode::from_byte_array([salt as u8; 32]),
+        merkle_root: bitcoin::TxMerkleNode::from_byte_array([salt.to_le_bytes()[0]; 32]),
         time,
         bits: CompactTarget::from_consensus(0x207f_ffff),
         nonce: 0,
     };
     while h.validate_pow(limit).is_err() {
-        h.nonce += 1;
+        h.nonce = h.nonce.checked_add(1).expect("a regtest header is mined within the nonce space");
     }
     h
 }
@@ -226,7 +226,15 @@ fn payout_psbt(
         }],
         output: vec![
             TxOut { value: Amount::from_sat(out_amount), script_pubkey: foreign },
-            TxOut { value: Amount::from_sat(in_amount - out_amount - fee), script_pubkey: w.spk(secp, 1, 0) },
+            TxOut {
+                value: Amount::from_sat(
+                    in_amount
+                        .checked_sub(out_amount)
+                        .and_then(|v| v.checked_sub(fee))
+                        .expect("fixture: the inputs cover the outputs and the fee"),
+                ),
+                script_pubkey: w.spk(secp, 1, 0),
+            },
         ],
     };
     let mut psbt = Psbt::from_unsigned_tx(tx).unwrap();
@@ -680,7 +688,7 @@ impl SoftTpm {
         SoftTpm { ak: p256_key(seed), name, counter }
     }
     fn increment(&mut self) {
-        self.counter += 1;
+        self.counter = self.counter.checked_add(1).expect("the soft TPM counter space");
     }
     /// An honest `TPM2_NV_Certify` over `nonce`: the attest names this index and the live counter.
     fn certify(&self, nonce: &[u8; 32]) -> proto::TpmProof {
@@ -1151,4 +1159,66 @@ fn anchor_pins_the_live_counter_r9a() {
         &proto::SealedWith { sealed: live3.clone(), data: un.encode(), extra: None }.encode(),
     );
     assert!(r.ok, "no STATE_STALE after a live re-pin with a persist in the window: {:?}", r.reasons);
+}
+
+/// R11 (C-EXT1-3), vector (a): a sealed state whose mandate fails `validate` — installed as given by TEST_INIT,
+/// which a test build allows — is refused `STATE_INVALID` by every op at `open()`, before any gate reads a bound
+/// and before `open_full_fresh` takes the single-use counter proof: the nonce stays live and a second deposit is
+/// accepted. The control shows a valid bound state's Fresh op consuming the proof (a second deposit refused).
+#[test]
+fn validate_on_open_refuses_an_invalid_state_and_leaves_the_proof_unconsumed() {
+    let _guard = SESSION_LOCK.lock().unwrap();
+    let owner = p256_key(0xa1);
+    let recovery = p256_key(0xb2);
+    call(op::TEST_RESET_SESSION, &[]);
+    // the keys, to learn the enclave id and the fingerprint the mandate must name
+    let init = proto::InitRequest { network: 3, owner_pk: owner.pk, recovery_pk: recovery.pk };
+    let treq = proto::TestInitRequest { init: init.clone(), seed: [0x31; 32], identity_sk: [0x71; 32], state: vec![] };
+    let r = call(op::TEST_INIT, &treq.encode());
+    assert!(r.ok, "{:?}", r.reasons);
+    let ir = proto::InitResponse::decode(&r.payload).unwrap();
+    let enclave_id = signer_core::sha256(&ir.identity_pk);
+    let genesis = Header {
+        version: bitcoin::block::Version::TWO,
+        prev_blockhash: bitcoin::BlockHash::all_zeros(),
+        merkle_root: bitcoin::TxMerkleNode::all_zeros(),
+        time: 1_000_000,
+        bits: CompactTarget::from_consensus(0x207f_ffff),
+        nonce: 0,
+    };
+    let cp = mine(&genesis, 1_000_000, 1);
+    let mandate = regtest_mandate(ir.fingerprint, &cp);
+    let tpm = SoftTpm::new(0xe7, 0x5C, 500);
+    let anchor = signer_core::tpm_attest::TpmAnchor { ak_pk: tpm.ak.pk, nv_name: tpm.name, expected: tpm.counter };
+    // a valid state, then one bound change that makes its mandate fail validate
+    let mut bad = State::new_at_init(enclave_id, owner.pk, recovery.pk, mandate.clone(), [0; 64]).unwrap();
+    bad.tpm = Some(anchor.clone());
+    bad.mandate.limits.own_index_gap = bounds::MAX_OWN_INDEX_GAP.checked_add(1).unwrap();
+    assert!(bad.mandate.validate().is_err());
+    let treq =
+        proto::TestInitRequest { init: init.clone(), seed: [0x31; 32], identity_sk: [0x71; 32], state: bad.encode() };
+    let r = call(op::TEST_INIT, &treq.encode());
+    assert!(r.ok, "TEST_INIT installs as given: {:?}", r.reasons);
+    let invalid = proto::InitResponse::decode(&r.payload).unwrap().sealed;
+    // Stale op: refused at the door
+    let r = call(op::STATUS, &invalid);
+    assert!(!r.ok && r.reasons == vec!["STATE_INVALID"], "{:?}", r.reasons);
+    let r = call(op::POLICY, &invalid);
+    assert!(!r.ok && r.reasons == vec!["STATE_INVALID"], "{:?}", r.reasons);
+    // Fresh op with a deposited proof: refused the same way, the proof NOT taken (the nonce stays live)
+    let nonce: [u8; 32] = call(op::TPM_NONCE, &[]).payload.try_into().unwrap();
+    let proof = tpm.certify(&nonce).encode();
+    assert!(call(op::TPM_PROOF, &proof).ok);
+    let r = call(op::FREEZE, &invalid);
+    assert!(!r.ok && r.reasons == vec!["STATE_INVALID"], "{:?}", r.reasons);
+    assert!(call(op::TPM_PROOF, &proof).ok, "the nonce is still live: STATE_INVALID did not consume the proof");
+    // the control: the same proof over a VALID bound state is taken by the Fresh op — a second deposit is refused
+    let mut good = State::new_at_init(enclave_id, owner.pk, recovery.pk, mandate, [0; 64]).unwrap();
+    good.tpm = Some(anchor);
+    let treq = proto::TestInitRequest { init, seed: [0x31; 32], identity_sk: [0x71; 32], state: good.encode() };
+    let valid = proto::InitResponse::decode(&call(op::TEST_INIT, &treq.encode()).payload).unwrap().sealed;
+    let r = call(op::FREEZE, &valid);
+    assert!(r.reasons != vec!["STATE_INVALID"], "a valid state is not STATE_INVALID: {:?}", r.reasons);
+    let r = call(op::TPM_PROOF, &proof);
+    assert!(!r.ok && r.reasons == vec!["TPM_NONCE"], "the Fresh op consumed the proof: {:?}", r.reasons);
 }

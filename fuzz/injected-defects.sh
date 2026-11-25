@@ -13,7 +13,7 @@ cd "$ROOT"
 rc=0
 gate() {
   (cd fuzz && cargo test -q --no-default-features --test replay 2>&1 \
-    | grep -E 'test result|fails its oracle|C-R10|C-R9|F10|Dec::|not reflexive' | sed 's/^thread.*panicked at //' | sort -u | head -6)
+    | grep -E 'test result|fails its oracle|C-R10|C-R9|F10|Dec::|not reflexive|STATE_INVALID|POLICY_TOO_EXPENSIVE|R11' | sed 's/^thread.*panicked at //' | sort -u | head -6)
 }
 case_() { # <name> <file> <sed-expr> <text that must be present after the edit>
   local name=$1 file=$2 expr=$3 must=$4 out
@@ -55,6 +55,10 @@ case_ "C-R10-5 / F-01: compare's checkpoint rule reverted to height >= (same hei
 # --- phase 2, pass (i): F6 / F4 oracles (REQ-r10 phase 2 §2; C-R10-6, C-R10P2-2, C-F01-1, REQ-r10-O01) ---
 case_ "C-R10-6: add_work_le made wrapping (the carry-out check dropped)" \
   core/src/headers.rs 's/^(\s+)if carry != 0 \{$/\1if false {/' 'if false {'
+case_ "R11 C-EXT1-3: validate-on-open removed (an invalid sealed state is read as if sound)" \
+  enclave/rcore/src/ops.rs 's/if state\.mandate\.validate\(\)\.is_err\(\) \{/if false {/' 'if false {'
+case_ "R11 C-EXT1-4: the derivation cap's refusal removed (the scan never says POLICY_TOO_EXPENSIVE)" \
+  core/src/wallet.rs 's/if derivations > cap \{/if false {/' 'if false {'
 case_ "F6: the deep-reorg freeze dropped (a fork deeper than max_reorg is judged on work alone)" \
   core/src/headers.rs 's/if depth > max_reorg \{/if false {/' 'if false {'
 case_ "F4: the timelock wait dropped (a pending mandate or owner activates at once)" \

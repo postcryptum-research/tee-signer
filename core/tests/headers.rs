@@ -68,7 +68,7 @@ fn signet_real_chain_accepts_across_retarget() {
     for chunk in hs[1..].chunks(100) {
         let n = apply_headers(&mut s, chunk).unwrap();
         assert_eq!(n as usize, chunk.len());
-        height += chunk.len() as u32;
+        height = height.checked_add(u32::try_from(chunk.len()).expect("chunk")).expect("height");
         assert_eq!(s.chain.best.unwrap().height, height);
     }
     assert_eq!(s.chain.best.unwrap().height, 324_700);
@@ -162,7 +162,7 @@ fn mine(prev: &Header, time: u32, salt: u32) -> Header {
     let mut h = Header {
         version: bitcoin::block::Version::TWO,
         prev_blockhash: prev.block_hash(),
-        merkle_root: bitcoin::TxMerkleNode::from_byte_array([salt as u8; 32]),
+        merkle_root: bitcoin::TxMerkleNode::from_byte_array([salt.to_le_bytes()[0]; 32]),
         time,
         bits: CompactTarget::from_consensus(0x207f_ffff),
         nonce: 0,
@@ -171,7 +171,7 @@ fn mine(prev: &Header, time: u32, salt: u32) -> Header {
         if h.validate_pow(regtest_limit()).is_ok() {
             return h;
         }
-        h.nonce += 1;
+        h.nonce = h.nonce.checked_add(1).expect("a regtest header is mined within the nonce space");
     }
 }
 
@@ -214,7 +214,9 @@ fn chain_from(start: &Header, n: usize, t0: u32, salt: u32) -> Vec<Header> {
     let mut v = Vec::new();
     let mut prev = *start;
     for i in 0..n {
-        let h = mine(&prev, t0 + 10 * (i as u32 + 1), salt + i as u32);
+        let k = u32::try_from(i).expect("chain length");
+        let t = t0.checked_add(k.checked_add(1).and_then(|x| x.checked_mul(10)).expect("time")).expect("time");
+        let h = mine(&prev, t, salt.checked_add(k).expect("salt"));
         v.push(h);
         prev = h;
     }

@@ -220,6 +220,10 @@ gates: $(Enclave_Name)
 	    got=$$(grep -A2 'mrsigner->value' build/sigstruct.dump | tail -2 | tr -d ' \n' | sed 's/0x//g'); want=$$(tr -d ' \n' < ceremony/mrsigner.txt); \
 	    echo "  MRSIGNER $$got"; if [ "$$got" != "$$want" ]; then echo "FATAL: MRSIGNER $$got != pinned $$want"; exit 1; fi; \
 	fi
+	@echo "GATE 8: one TCS — TCSNum 1, TCSPolicy 1 in $(Enclave_Config_File) (session::ensure() rests on it, C-R11-2)"
+	@if ! grep -q "<TCSNum>1</TCSNum>" $(Enclave_Config_File) || ! grep -q "<TCSPolicy>1</TCSPolicy>" $(Enclave_Config_File); then \
+	    echo "FATAL: TCSNum/TCSPolicy changed — session::ensure() must become a proper once-init first (enclave/rcore/src/session.rs), then move this gate"; exit 1; \
+	fi
 	@echo "GATES: all passed"
 
 clean:

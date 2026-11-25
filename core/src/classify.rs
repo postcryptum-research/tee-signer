@@ -21,7 +21,7 @@ use bitcoin::{Psbt, Transaction};
 
 use crate::mandate::{Mandate, OpReturnRule, ScriptType};
 use crate::reason::{Reason, Refusal};
-use crate::wallet::{matches_trusted, Account, OwnPath};
+use crate::wallet::{match_trusted_outputs, Account, OwnPath, DERIVATION_CAP};
 
 /// An input after classification.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -292,6 +292,10 @@ fn classify_inner<C: bitcoin::secp256k1::Verification>(
 
     // --- outputs ---
     let mut outputs = Vec::with_capacity(tx.output.len());
+    // R11 (C-EXT1-4): the outputs that are neither OP_RETURN nor own are matched against the trusted
+    // destinations in ONE pass after this loop (each descriptor's keys derived once, compared against every
+    // such output), so the loop leaves them `Unlisted` and remembers which they are
+    let mut pending: Vec<usize> = Vec::new();
     for (i, txout) in tx.output.iter().enumerate() {
         let pout = &psbt.outputs[i];
         if !pout.unknown.is_empty() || !pout.proprietary.is_empty() {
@@ -337,17 +341,18 @@ fn classify_inner<C: bitcoin::secp256k1::Verification>(
             outputs.push(OutputClass::Own { path, amount });
             continue;
         }
-        // I4: trusted by match
-        let mut trusted: Option<usize> = None;
-        for (di, d) in mandate.destinations.trusted.iter().enumerate() {
-            if matches_trusted(secp, &d.matcher, spk.as_script()) {
-                trusted = Some(di);
-                break;
+        pending.push(i);
+        outputs.push(OutputClass::Unlisted { amount });
+    }
+    // I4: trusted by match — one scan, bounded by DERIVATION_CAP (refused during the scan, never at its end)
+    if !pending.is_empty() && !mandate.destinations.trusted.is_empty() {
+        let scripts: Vec<&bitcoin::Script> = pending.iter().map(|&i| tx.output[i].script_pubkey.as_script()).collect();
+        let found = match_trusted_outputs(secp, &mandate.destinations.trusted, &scripts, DERIVATION_CAP)
+            .map_err(Refusal::one)?;
+        for (&i, dest) in pending.iter().zip(found.dest) {
+            if let (Some(dest), OutputClass::Unlisted { amount }) = (dest, &outputs[i]) {
+                outputs[i] = OutputClass::Trusted { dest, amount: *amount };
             }
-        }
-        match trusted {
-            Some(dest) => outputs.push(OutputClass::Trusted { dest, amount }),
-            None => outputs.push(OutputClass::Unlisted { amount }),
         }
     }
 
