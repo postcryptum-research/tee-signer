@@ -1016,21 +1016,29 @@ async fn h_quote(
 ) -> axum::response::Response {
     use signer_core::proto::quote;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut d = s.lock().await;
-    if !authorized(&headers, &d.token) {
-        return err(StatusCode::UNAUTHORIZED, "token", vec![]);
-    }
-    let Some(helper) = d.quote_helper.clone() else {
-        return err(StatusCode::NOT_IMPLEMENTED, "no quote helper configured (T1 cannot attest)", vec![]);
+    // the daemon's mutex only for what needs it: the token and the configuration here, the one REPORT
+    // ecall below — never across the helper's pipes (RESP-ext1 PR C, the condition)
+    let helper = {
+        let d = s.lock().await;
+        if !authorized(&headers, &d.token) {
+            return err(StatusCode::UNAUTHORIZED, "token", vec![]);
+        }
+        let Some(helper) = d.quote_helper.clone() else {
+            return err(StatusCode::NOT_IMPLEMENTED, "no quote helper configured (T1 cannot attest)", vec![]);
+        };
+        if d.sealed.is_none() {
+            return err(StatusCode::CONFLICT, "not initialised", vec![]);
+        }
+        helper
     };
     let nonce = match hex::decode(&q.nonce) {
         Ok(n) if n.len() == quote::NONCE_LEN => n,
         _ => return err(StatusCode::BAD_REQUEST, "nonce: 32 bytes hex", vec![]),
     };
-    let Ok(sealed) = d.sealed() else { return err(StatusCode::CONFLICT, "not initialised", vec![]) };
     // #17: the helper is another process, read through async pipes under ONE deadline, and it dies
-    // with its handle (kill_on_drop) — a stuck helper cannot hold the daemon's mutex, so /v1/freeze
-    // and every other endpoint stay reachable
+    // with its handle (kill_on_drop). The daemon's mutex is taken only around the REPORT ecall, the
+    // helper's reads and writes stay outside it — a stuck helper never holds the mutex, so /v1/freeze
+    // and every other endpoint stay reachable while this call waits out its deadline
     let mut child = match tokio::process::Command::new(&helper)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -1052,9 +1060,14 @@ async fn h_quote(
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("quote helper target_info: {e}"), vec![]))?;
         let mut data = target.to_vec();
         data.extend_from_slice(&nonce);
-        let r = d
-            .call(op::REPORT, &proto::SealedWith { sealed, data, extra: None }.encode())
-            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), vec![]))?;
+        let r = {
+            // the one moment under the mutex: the blob as it is NOW (not as it was when the helper
+            // started) and the REPORT ecall over it
+            let mut d = s.lock().await;
+            let sealed = d.sealed().map_err(|e| err(StatusCode::CONFLICT, e.to_string(), vec![]))?;
+            d.call(op::REPORT, &proto::SealedWith { sealed, data, extra: None }.encode())
+                .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), vec![]))?
+        };
         if !r.ok {
             return Err(err(StatusCode::UNPROCESSABLE_ENTITY, "report refused", r.reasons));
         }
