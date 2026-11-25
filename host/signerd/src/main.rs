@@ -1605,13 +1605,24 @@ mod persist_tests {
     #[test]
     fn signing_is_refused_while_a_persist_failure_stands() {
         // the owner's rule (2026-11-25): a freeze or disarm the host could not keep must not be undone by
-        // the next signature over the old blob
-        let mut d = daemon(PathBuf::from("/nonexistent/for/this/test"));
+        // the next signature over the old blob. The cycle is driven through persist() itself: a failing
+        // state dir blocks, the first successful write unblocks — no flag is flipped by hand.
+        let scratch = std::env::temp_dir().join(format!("tee-signer-signerd-test-{}-blocked", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::write(scratch.join("notadir"), b"").unwrap();
+        let mut d = daemon(scratch.join("notadir").join("state"));
         assert!(d.signing_blocked().is_none(), "healthy: nothing blocks");
-        d.persist_error = Some("disk full".into());
+        assert!(d.persist(vec![7]).is_err(), "the state dir is a regular file");
         let r = d.signing_blocked().expect("a standing persist failure refuses signing");
         assert_eq!(r.status(), StatusCode::SERVICE_UNAVAILABLE);
-        d.persist_error = None;
-        assert!(d.signing_blocked().is_none(), "cleared by the next successful persist");
+        assert!(d.signing_blocked().is_some(), "still blocked: nothing has been written since");
+        // the operator repairs the state dir; the next state write (a block fed, an owner message, a
+        // freeze — any of the paths that stay served) succeeds and clears the block by itself
+        d.state_dir = scratch.join("state");
+        std::fs::create_dir_all(&d.state_dir).unwrap();
+        d.persist(vec![7]).unwrap();
+        assert!(d.signing_blocked().is_none(), "cleared by the first successful persist");
+        let _ = std::fs::remove_dir_all(&scratch);
     }
 }
