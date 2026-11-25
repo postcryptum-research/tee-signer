@@ -252,6 +252,9 @@ struct Daemon {
     quote_helper: Option<PathBuf>,
     /// REQ-r9: the TPM counter transport (`SIGNERD_TPM`), None = no counter in front of the enclave.
     tpm: Option<Box<dyn tpm::TpmTransport>>,
+    /// #16: the last persist failure, cleared by the next success; while it stands the daemon is
+    /// unhealthy (`/healthz` 503) and `/v1/status` names it.
+    persist_error: Option<String>,
 }
 
 type Shared = Arc<Mutex<Daemon>>;
@@ -265,7 +268,31 @@ impl Daemon {
     }
 
     /// Atomic persist: tmp → fsync → rename → fsync dir. Nothing reads a half-written blob.
+    /// The blob to disk, then to memory. A failure is remembered until the next success (#16): the
+    /// enclave may have moved (a disarm, a freeze) and the host could not keep it — that is not a
+    /// log line, it is a 503.
     fn persist(&mut self, sealed: Vec<u8>) -> Result<()> {
+        match self.persist_inner(sealed) {
+            Ok(()) => {
+                self.persist_error = None;
+                Ok(())
+            }
+            Err(e) => {
+                self.persist_error = Some(format!("{e:#}"));
+                Err(e)
+            }
+        }
+    }
+
+    /// `/healthz`: `ok`, or 503 naming the persist failure that stands (#16).
+    fn health(&self) -> (StatusCode, String) {
+        match &self.persist_error {
+            None => (StatusCode::OK, "ok".to_string()),
+            Some(e) => (StatusCode::SERVICE_UNAVAILABLE, format!("persist failed: {e}")),
+        }
+    }
+
+    fn persist_inner(&mut self, sealed: Vec<u8>) -> Result<()> {
         let path = self.sealed_path();
         let tmp = self.state_dir.join("state.sealed.tmp");
         {
@@ -381,10 +408,23 @@ fn auth_from_cookie(cookie: &Path) -> Result<String> {
     Ok(base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}")))
 }
 
+/// One feed round may not outlive this: every RPC has its own timeout (`http_client`), this is the
+/// outer net, and a round that makes no progress is logged instead of parked (#17).
+const FEED_ROUND_DEADLINE: Duration = Duration::from_secs(600);
+
+/// The quote helper's whole exchange — target_info out, report in, quote out — under one deadline (#17).
+const QUOTE_HELPER_DEADLINE: Duration = Duration::from_secs(60);
+
+/// The bitcoind RPC client with deadlines: a node that hangs (IBD, a deadlock, a half-open connection)
+/// fails the round with an error the feed logs, instead of parking the feed forever (#17).
+fn http_client() -> Result<reqwest::Client> {
+    Ok(reqwest::Client::builder().connect_timeout(Duration::from_secs(5)).timeout(Duration::from_secs(30)).build()?)
+}
+
 impl Bitcoind {
     fn new(url: &str, cookie: &Path) -> Result<Self> {
         let auth = auth_from_cookie(cookie)?;
-        Ok(Bitcoind { url: url.to_string(), auth, cookie: Some(cookie.to_path_buf()), http: reqwest::Client::new() })
+        Ok(Bitcoind { url: url.to_string(), auth, cookie: Some(cookie.to_path_buf()), http: http_client()? })
     }
     /// Pick up a rotated cookie; a missing or malformed file keeps the last value (and the RPC
     /// then fails loudly instead of the feed dying here).
@@ -444,18 +484,18 @@ fn headers_capacity(from: u32, to: u32) -> usize {
 }
 
 async fn feed_once(shared: &Shared) -> Result<u32> {
-    let (best_height, best_hash, url, auth) = {
+    let (best_height, best_hash, url, auth, http) = {
         let mut d = shared.lock().await;
         let Some(b) = d.bitcoind.as_mut() else { return Ok(0) };
         b.refresh_auth();
-        let (url, auth) = (b.url.clone(), b.auth.clone());
+        let (url, auth, http) = (b.url.clone(), b.auth.clone(), b.http.clone());
         let st = d.status()?;
         if !st.installed {
             return Ok(0); // keys only: nothing to feed until a mandate pins the checkpoint
         }
-        (st.best_height, st.best_hash, url, auth)
+        (st.best_height, st.best_hash, url, auth, http)
     };
-    let bd = Bitcoind { url, auth, cookie: None, http: reqwest::Client::new() };
+    let bd = Bitcoind { url, auth, cookie: None, http };
     let tip = bd.tip_height().await?;
     if tip <= best_height {
         return Ok(0);
@@ -704,6 +744,8 @@ struct StatusJson {
     tpm_last_fresh: bool,
     /// REQ-r9: the host's transport (`SIGNERD_TPM`), if any.
     tpm_transport: Option<String>,
+    /// #16: the persist failure that stands, if any (`/healthz` answers 503 meanwhile).
+    persist_error: Option<String>,
 }
 
 fn display_hash(mut h: [u8; 32]) -> String {
@@ -717,7 +759,10 @@ async fn h_status(AxState(s): AxState<Shared>, headers: HeaderMap) -> axum::resp
         return err(StatusCode::UNAUTHORIZED, "token", vec![]);
     }
     if d.sealed.is_none() {
-        return Json(serde_json::json!({"enclave": d.enclave.kind(), "initialised": false})).into_response();
+        return Json(
+            serde_json::json!({"enclave": d.enclave.kind(), "initialised": false, "persist_error": d.persist_error}),
+        )
+        .into_response();
     }
     match d.status() {
         Ok(st) => Json(StatusJson {
@@ -753,6 +798,7 @@ async fn h_status(AxState(s): AxState<Shared>, headers: HeaderMap) -> axum::resp
             tpm_expected: st.tpm_expected,
             tpm_last_fresh: st.tpm_last_fresh,
             tpm_transport: d.tpm.as_ref().map(|t| t.describe()),
+            persist_error: d.persist_error.clone(),
         })
         .into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), vec![]),
@@ -969,7 +1015,7 @@ async fn h_quote(
     Query(q): Query<QuoteQuery>,
 ) -> axum::response::Response {
     use signer_core::proto::quote;
-    use std::io::{Read, Write};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut d = s.lock().await;
     if !authorized(&headers, &d.token) {
         return err(StatusCode::UNAUTHORIZED, "token", vec![]);
@@ -982,10 +1028,14 @@ async fn h_quote(
         _ => return err(StatusCode::BAD_REQUEST, "nonce: 32 bytes hex", vec![]),
     };
     let Ok(sealed) = d.sealed() else { return err(StatusCode::CONFLICT, "not initialised", vec![]) };
-    let mut child = match std::process::Command::new(&helper)
+    // #17: the helper is another process, read through async pipes under ONE deadline, and it dies
+    // with its handle (kill_on_drop) — a stuck helper cannot hold the daemon's mutex, so /v1/freeze
+    // and every other endpoint stay reachable
+    let mut child = match tokio::process::Command::new(&helper)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
         .spawn()
     {
         Ok(c) => c,
@@ -993,53 +1043,65 @@ async fn h_quote(
     };
     let mut stdout = child.stdout.take().expect("piped");
     let mut stdin = child.stdin.take().expect("piped");
-    let mut target = [0u8; quote::TARGET_INFO_LEN];
-    if let Err(e) = stdout.read_exact(&mut target) {
-        let _ = child.kill();
-        return err(StatusCode::INTERNAL_SERVER_ERROR, format!("quote helper target_info: {e}"), vec![]);
-    }
-    let mut data = target.to_vec();
-    data.extend_from_slice(&nonce);
-    let r = match d.call(op::REPORT, &proto::SealedWith { sealed, data, extra: None }.encode()) {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = child.kill();
-            return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), vec![]);
+    let mut stderr = child.stderr.take().expect("piped");
+    let work = async {
+        let mut target = [0u8; quote::TARGET_INFO_LEN];
+        stdout
+            .read_exact(&mut target)
+            .await
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("quote helper target_info: {e}"), vec![]))?;
+        let mut data = target.to_vec();
+        data.extend_from_slice(&nonce);
+        let r = d
+            .call(op::REPORT, &proto::SealedWith { sealed, data, extra: None }.encode())
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), vec![]))?;
+        if !r.ok {
+            return Err(err(StatusCode::UNPROCESSABLE_ENTITY, "report refused", r.reasons));
+        }
+        let rr = proto::ReportResponse::decode(&r.payload)
+            .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "report decode", vec![]))?;
+        let written = async {
+            stdin.write_all(&rr.report).await?;
+            stdin.flush().await
+        }
+        .await;
+        if let Err(e) = written {
+            return Err(err(StatusCode::INTERNAL_SERVER_ERROR, format!("quote helper report: {e}"), vec![]));
+        }
+        drop(stdin);
+        let mut len = [0u8; 4];
+        if let Err(e) = stdout.read_exact(&mut len).await {
+            let mut es = String::new();
+            let _ = stderr.read_to_string(&mut es).await;
+            return Err(err(
+                StatusCode::BAD_GATEWAY,
+                format!("quote helper quote: {e}; helper said: {}", es.trim()),
+                vec![],
+            ));
+        }
+        let n = u32::from_le_bytes(len) as usize;
+        if n == 0 || n > 1 << 20 {
+            return Err(err(StatusCode::BAD_GATEWAY, format!("quote helper: bad quote size {n}"), vec![]));
+        }
+        let mut quote_bytes = vec![0u8; n];
+        stdout
+            .read_exact(&mut quote_bytes)
+            .await
+            .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("quote helper quote body: {e}"), vec![]))?;
+        Ok::<_, axum::response::Response>((rr, quote_bytes))
+    };
+    let (rr, quote_bytes) = match tokio::time::timeout(QUOTE_HELPER_DEADLINE, work).await {
+        Ok(Ok(v)) => v,
+        Ok(Err(resp)) => return resp,
+        Err(_) => {
+            return err(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("quote helper: no quote within {} s", QUOTE_HELPER_DEADLINE.as_secs()),
+                vec![],
+            )
         }
     };
-    if !r.ok {
-        let _ = child.kill();
-        return err(StatusCode::UNPROCESSABLE_ENTITY, "report refused", r.reasons);
-    }
-    let Ok(rr) = proto::ReportResponse::decode(&r.payload) else {
-        let _ = child.kill();
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "report decode", vec![]);
-    };
-    if let Err(e) = stdin.write_all(&rr.report).and_then(|_| stdin.flush()) {
-        let _ = child.kill();
-        return err(StatusCode::INTERNAL_SERVER_ERROR, format!("quote helper report: {e}"), vec![]);
-    }
-    drop(stdin);
-    let mut len = [0u8; 4];
-    if let Err(e) = stdout.read_exact(&mut len) {
-        let _ = child.kill();
-        let mut es = String::new();
-        if let Some(mut se) = child.stderr.take() {
-            let _ = se.read_to_string(&mut es);
-        }
-        return err(StatusCode::BAD_GATEWAY, format!("quote helper quote: {e}; helper said: {}", es.trim()), vec![]);
-    }
-    let n = u32::from_le_bytes(len) as usize;
-    if n == 0 || n > 1 << 20 {
-        let _ = child.kill();
-        return err(StatusCode::BAD_GATEWAY, format!("quote helper: bad quote size {n}"), vec![]);
-    }
-    let mut quote_bytes = vec![0u8; n];
-    if let Err(e) = stdout.read_exact(&mut quote_bytes) {
-        let _ = child.kill();
-        return err(StatusCode::BAD_GATEWAY, format!("quote helper quote body: {e}"), vec![]);
-    }
-    let _ = child.wait();
+    let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
     Json(QuoteJson {
         card_hex: hex::encode(rr.card.encode()),
         nonce: q.nonce,
@@ -1111,7 +1173,14 @@ async fn h_sign(
             // the refusal changed the state (disarm): persist it
             if let Ok(sr) = proto::SealedResponse::decode(&r.payload) {
                 if let Err(e) = d.persist(sr.sealed) {
-                    error!("persist after disarm: {e}");
+                    // #16: the enclave disarmed and the host could not keep it — the same 500 as a
+                    // headers persist failure, the reasons kept; /healthz is 503 until a persist succeeds
+                    error!("persist after disarm: {e:#}");
+                    return err(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("refused, and the disarmed state could not be persisted: {e:#}"),
+                        r.reasons,
+                    );
                 }
             }
         }
@@ -1267,8 +1336,8 @@ async fn h_tpm_certify(
     }
 }
 
-async fn h_health() -> &'static str {
-    "ok"
+async fn h_health(AxState(s): AxState<Shared>) -> (StatusCode, String) {
+    s.lock().await.health()
 }
 
 // ---------------------------------------------------------------- main
@@ -1386,6 +1455,7 @@ async fn main() -> Result<()> {
         bitcoind,
         quote_helper: args.quote_helper.clone(),
         tpm: tpm_transport,
+        persist_error: None,
     };
     let shared: Shared = Arc::new(Mutex::new(daemon));
 
@@ -1394,10 +1464,16 @@ async fn main() -> Result<()> {
         let every = Duration::from_secs(headers_interval.max(5));
         tokio::spawn(async move {
             loop {
-                match feed_once(&s2).await {
-                    Ok(n) if n > 0 => info!(n, "headers fed"),
-                    Ok(_) => {}
-                    Err(e) => warn!("header feed: {e}"),
+                // #17: one round under the outer deadline (every RPC has its own); a round without an
+                // answer is logged, and the next one resumes from where the enclave is
+                match tokio::time::timeout(FEED_ROUND_DEADLINE, feed_once(&s2)).await {
+                    Ok(Ok(n)) if n > 0 => info!(n, "headers fed"),
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => warn!("header feed: {e:#}"),
+                    Err(_) => warn!(
+                        "header feed: no answer within {} s — bitcoind hung? retried next round",
+                        FEED_ROUND_DEADLINE.as_secs()
+                    ),
                 }
                 tokio::time::sleep(every).await;
             }
@@ -1451,5 +1527,47 @@ mod rule9_tests {
         assert_eq!(headers_capacity(1, 2000), 2000 * 80);
         assert_eq!(headers_capacity(10, 5), 80);
         let _ = headers_capacity(0, u32::MAX);
+    }
+}
+
+#[cfg(all(test, feature = "nosgx"))]
+mod persist_tests {
+    //! #16: a persist failure is remembered, not logged away — the daemon is 503 until a persist succeeds.
+    use super::*;
+
+    fn daemon(state_dir: PathBuf) -> Daemon {
+        Daemon {
+            enclave: Box::new(enclave::InProcess),
+            state_dir,
+            sealed: None,
+            token: String::new(),
+            last_witness: None,
+            bitcoind: None,
+            quote_helper: None,
+            tpm: None,
+            persist_error: None,
+        }
+    }
+
+    #[test]
+    fn a_persist_failure_stands_until_the_next_success() {
+        let scratch = std::env::temp_dir().join(format!("tee-signer-signerd-test-{}-persist", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).unwrap();
+        // a "state dir" under a regular file: every write fails, whoever runs the test
+        std::fs::write(scratch.join("notadir"), b"").unwrap();
+        let mut d = daemon(scratch.join("notadir").join("state"));
+        assert!(d.persist(vec![1, 2, 3]).is_err());
+        assert!(d.persist_error.is_some(), "the failure is remembered");
+        assert_eq!(d.health().0, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(d.sealed.is_none(), "memory never runs ahead of the disk");
+        d.state_dir = scratch.join("state");
+        std::fs::create_dir_all(&d.state_dir).unwrap();
+        d.persist(vec![1, 2, 3]).unwrap();
+        assert!(d.persist_error.is_none(), "cleared by the success");
+        assert_eq!(d.health(), (StatusCode::OK, "ok".to_string()));
+        assert_eq!(std::fs::read(d.sealed_path()).unwrap(), vec![1, 2, 3]);
+        assert_eq!(d.sealed, Some(vec![1, 2, 3]));
+        let _ = std::fs::remove_dir_all(&scratch);
     }
 }
