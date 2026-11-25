@@ -69,23 +69,41 @@ fn check_hint(hint: &str, pass: &str) -> Result<String> {
 static PIN_HINT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 fn passphrase(prompt: &str, confirm: bool) -> Result<String> {
-    if let Ok(p) = std::env::var("OWNER_PASSPHRASE") {
-        return Ok(p);
-    }
-    let a = rpassword::prompt_password(format!("{prompt}: "))?;
-    if confirm {
-        let b = rpassword::prompt_password("again: ")?;
-        if a != b {
-            bail!("passphrases differ");
+    let a = match std::env::var("OWNER_PASSPHRASE") {
+        Ok(p) => p,
+        Err(_) => {
+            let a = rpassword::prompt_password(format!("{prompt}: "))?;
+            if confirm {
+                let b = rpassword::prompt_password("again: ")?;
+                if a != b {
+                    bail!("passphrases differ");
+                }
+            }
+            a
         }
-    }
-    // Owner's rule (2026-11-10): a floor of 4 characters, not 8 — a passphrase the owner forgets or
-    // sticks to the monitor protects nothing; the keyfile relies on scrypt (N=2^18) and on never
-    // leaving the owner's machine. Checked when a passphrase is set, not when it is used.
-    if confirm && a.chars().count() < 4 {
+    };
+    passphrase_floor(a, confirm)
+}
+
+/// Owner's rule (2026-11-10): a floor of 4 characters, not 8 — a passphrase the owner forgets or
+/// sticks to the monitor protects nothing; the keyfile relies on scrypt (N=2^18) and on never
+/// leaving the owner's machine. Checked when a passphrase is SET (`setting`), not when it is used —
+/// from the prompt and from `OWNER_PASSPHRASE` alike (#20: an empty variable in a script is not a
+/// passphrase).
+fn passphrase_floor(a: String, setting: bool) -> Result<String> {
+    if setting && a.chars().count() < 4 {
         bail!("passphrase too short (4+)");
     }
     Ok(a)
+}
+
+/// Every HTTP client of the tool, with deadlines: a dead peer (the daemon behind a fallen tunnel, an
+/// explorer, the node) is an error within half a minute, not a hung command (#23).
+fn http() -> Result<reqwest::blocking::Client> {
+    Ok(reqwest::blocking::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?)
 }
 
 /// An activity indicator for steps that take seconds (scrypt, Intel collateral, the explorer): a
@@ -464,11 +482,28 @@ impl Drop for OpenKey {
     }
 }
 
-fn open_key(path: &Path) -> Result<OpenKey> {
-    let kf: KeyFile = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+/// The keyfile's KDF parameters, bounded both ways (#19): below N = 2^18 the file is weaker than the
+/// tool writes; above `log_n` 20, `r` 8 or `p` 4 the derivation would ask for more than 1 GiB — an
+/// allocation failure is an abort, not an error — so a crafted file is refused before scrypt sees it.
+/// `keygen` writes (18, 8, 1).
+fn check_keyfile_params(kf: &KeyFile) -> Result<()> {
     if kf.version != 1 || kf.kdf != "scrypt" || kf.log_n < 18 {
         bail!("keyfile: unsupported or below the required strength (scrypt N ≥ 2^18)");
     }
+    if kf.log_n > 20 || kf.r == 0 || kf.r > 8 || kf.p == 0 || kf.p > 4 {
+        bail!(
+            "keyfile: scrypt parameters out of range (log_n {} r {} p {}; accepted: log_n 18–20, r 1–8, p 1–4)",
+            kf.log_n,
+            kf.r,
+            kf.p
+        );
+    }
+    Ok(())
+}
+
+fn open_key(path: &Path) -> Result<OpenKey> {
+    let kf: KeyFile = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+    check_keyfile_params(&kf)?;
     if let (Some(h), Err(_)) = (kf.hint.as_deref(), std::env::var("OWNER_PASSPHRASE")) {
         eprintln!("hint for the {} key: {h}", kf.role);
     }
@@ -481,9 +516,7 @@ fn open_key_with(path: &Path, pass: &str) -> Result<OpenKey> {
     use aes_gcm::aead::{Aead, KeyInit};
     use aes_gcm::{Aes256Gcm, Nonce};
     let kf: KeyFile = serde_json::from_str(&std::fs::read_to_string(path)?)?;
-    if kf.version != 1 || kf.kdf != "scrypt" || kf.log_n < 18 {
-        bail!("keyfile: unsupported or below the required strength (scrypt N ≥ 2^18)");
-    }
+    check_keyfile_params(&kf)?;
     let mut key = kdf(pass, &hex::decode(&kf.salt_hex)?, kf.log_n, kf.r, kf.p)?;
     let cipher = Aes256Gcm::new((&key).into());
     let pt = cipher
@@ -658,6 +691,12 @@ fn bits_of(s: &str) -> Result<u32> {
 /// `u32::MAX` is refused by name — never silently 0, never truncated (rule 9; #18).
 fn json_u32(v: &serde_json::Value, what: &str) -> Result<u32> {
     v.as_u64().and_then(|n| u32::try_from(n).ok()).ok_or_else(|| anyhow!("{what}: not a u32: {v}"))
+}
+
+/// A JSON number that must be a u64 (the daemon's nonce): missing, negative or fractional is refused by
+/// name — never read as 0 (the auditor's observation on PR B of REQ-ext1).
+fn json_u64(v: &serde_json::Value, what: &str) -> Result<u64> {
+    v.as_u64().ok_or_else(|| anyhow!("{what}: not a u64: {v}"))
 }
 
 /// A bitcoind amount in BTC (a JSON float) to satoshi through `Amount::from_btc` — the rounding the node
@@ -919,7 +958,7 @@ impl Node {
         Ok(Node { url: url.into(), auth: base64::engine::general_purpose::STANDARD.encode(format!("{u}:{p}")) })
     }
     fn rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
-        let r: serde_json::Value = reqwest::blocking::Client::new()
+        let r: serde_json::Value = http()?
             .post(&self.url)
             .header("Authorization", format!("Basic {}", self.auth))
             .json(&serde_json::json!({"jsonrpc":"1.0","id":"owner-cli","method":method,"params":params}))
@@ -968,7 +1007,7 @@ impl Signerd {
             Some(st) if path == "/v1/status" => st.clone(),
             Some(_) => bail!("no tunnel: {path} is not in the status file; this step needs the live daemon's answer carried as a file"),
             None => {
-                let r = reqwest::blocking::Client::new().get(format!("{}{path}", self.url)).bearer_auth(&self.token).send()?;
+                let r = http()?.get(format!("{}{path}", self.url)).bearer_auth(&self.token).send()?;
                 let status = r.status();
                 let v: serde_json::Value = r.json()?;
                 if !status.is_success() {
@@ -993,11 +1032,7 @@ impl Signerd {
         if self.offline.is_some() {
             bail!("no tunnel: nothing is sent from this machine; use --out <file> and carry the file to the server ({path})");
         }
-        let r = reqwest::blocking::Client::new()
-            .post(format!("{}{path}", self.url))
-            .bearer_auth(&self.token)
-            .json(&body)
-            .send()?;
+        let r = http()?.post(format!("{}{path}", self.url)).bearer_auth(&self.token).json(&body).send()?;
         let status = r.status();
         let v: serde_json::Value = r.json()?;
         if !status.is_success() {
@@ -1013,7 +1048,7 @@ impl Signerd {
         Ok(signer_core::sha256(&pk))
     }
     fn nonce(&self) -> Result<u64> {
-        Ok(self.get("/v1/status")?["nonce"].as_u64().unwrap_or(0))
+        json_u64(&self.get("/v1/status")?["nonce"], "status nonce")
     }
     /// The nonce the next owner message must carry: the daemon's `+ 1`, refused at the end of the range.
     fn next_nonce(&self) -> Result<u64> {
@@ -1859,16 +1894,18 @@ fn main() -> Result<()> {
             } else if let Some(es) = esplora {
                 let es = es.trim_end_matches('/');
                 let b = busy("fetching the chain checkpoint from the explorer (network)");
-                let tip: u32 = reqwest::blocking::get(format!("{es}/blocks/tip/height"))?
+                let tip: u32 = http()?
+                    .get(format!("{es}/blocks/tip/height"))
+                    .send()?
                     .error_for_status()?
                     .text()?
                     .trim()
                     .parse()?;
                 let height = checkpoint_height.unwrap_or(tip.saturating_sub(6));
                 let hdr = |h: u32| -> Result<serde_json::Value> {
-                    let hash = reqwest::blocking::get(format!("{es}/block-height/{h}"))?.error_for_status()?.text()?;
+                    let hash = http()?.get(format!("{es}/block-height/{h}")).send()?.error_for_status()?.text()?;
                     let v: serde_json::Value =
-                        reqwest::blocking::get(format!("{es}/block/{}", hash.trim()))?.error_for_status()?.json()?;
+                        http()?.get(format!("{es}/block/{}", hash.trim())).send()?.error_for_status()?.json()?;
                     Ok(v)
                 };
                 let h = hdr(height)?;
@@ -1954,7 +1991,7 @@ fn main() -> Result<()> {
                 Some(n) => *n,
                 None => {
                     if st["installed"].as_bool() == Some(true) {
-                        next_nonce(st["nonce"].as_u64().unwrap_or(0))?
+                        next_nonce(json_u64(&st["nonce"], "status nonce")?)?
                     } else {
                         0
                     }
@@ -2826,6 +2863,16 @@ mod rule9_tests {
     }
 
     #[test]
+    fn json_u64_never_reads_a_missing_nonce_as_zero() {
+        assert_eq!(json_u64(&serde_json::json!(0), "n").unwrap(), 0);
+        assert_eq!(json_u64(&serde_json::json!(u64::MAX), "n").unwrap(), u64::MAX);
+        assert!(json_u64(&serde_json::Value::Null, "n").is_err());
+        assert!(json_u64(&serde_json::json!(-1), "n").is_err());
+        assert!(json_u64(&serde_json::json!(1.5), "n").is_err());
+        assert!(json_u64(&serde_json::json!("7"), "n").is_err());
+    }
+
+    #[test]
     fn next_nonce_stops_at_the_end_of_the_range() {
         assert_eq!(next_nonce(0).unwrap(), 1);
         assert_eq!(next_nonce(41).unwrap(), 42);
@@ -2839,5 +2886,60 @@ mod rule9_tests {
         assert_eq!(period_start(2016), 2016);
         assert_eq!(period_start(4031), 2016);
         assert_eq!(period_start(u32::MAX), u32::MAX - u32::MAX % 2016);
+    }
+}
+
+#[cfg(test)]
+mod hardening_tests {
+    //! #19, #20: a crafted keyfile and an empty scripted passphrase are refused by name.
+    use super::*;
+
+    fn keyfile_json(log_n: u8, r: u32, p: u32) -> String {
+        serde_json::json!({
+            "version": 1, "kdf": "scrypt", "log_n": log_n, "r": r, "p": p,
+            "salt_hex": "00".repeat(16), "nonce_hex": "00".repeat(12), "ct_hex": "00".repeat(48),
+            "pubkey_hex": format!("04{}", "00".repeat(64)), "role": "owner"
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn keyfile_parameters_are_bounded_both_ways() {
+        let kf = |l, r, p| -> KeyFile { serde_json::from_str(&keyfile_json(l, r, p)).unwrap() };
+        assert!(check_keyfile_params(&kf(18, 8, 1)).is_ok(), "what keygen writes");
+        assert!(check_keyfile_params(&kf(20, 8, 4)).is_ok(), "the top of the range");
+        assert!(check_keyfile_params(&kf(17, 8, 1)).unwrap_err().to_string().contains("below the required strength"));
+        for (l, r, p) in [(40, 8, 1), (21, 8, 1), (18, 9, 1), (18, 0, 1), (18, 8, 5), (18, 8, 0)] {
+            let e = check_keyfile_params(&kf(l, r, p)).unwrap_err().to_string();
+            assert!(e.contains("out of range"), "({l}, {r}, {p}): {e}");
+        }
+    }
+
+    #[test]
+    fn a_crafted_keyfile_is_refused_before_scrypt_runs() {
+        // log_n = 40 would ask scrypt for 128 · 8 · 2^40 bytes — an abort, not an error, if it ran
+        let dir = std::env::temp_dir().join(format!("tee-signer-owner-cli-test-{}-keyfile", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("crafted.key");
+        std::fs::write(&path, keyfile_json(40, 8, 1)).unwrap();
+        let e = match open_key_with(&path, "whatever") {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("a crafted keyfile opened"),
+        };
+        assert!(e.contains("out of range"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_passphrase_floor_applies_when_setting_from_any_source() {
+        assert!(passphrase_floor(String::new(), true).is_err(), "an empty scripted passphrase is not one");
+        assert!(passphrase_floor("abc".into(), true).is_err());
+        assert_eq!(passphrase_floor("abcd".into(), true).unwrap(), "abcd");
+        assert_eq!(
+            passphrase_floor(String::new(), false).unwrap(),
+            "",
+            "using a key: the floor was checked when it was set"
+        );
     }
 }

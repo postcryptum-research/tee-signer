@@ -42,8 +42,10 @@ struct Args {
     /// Path to enclave.signed.so (sgx feature).
     #[arg(long, env = "SIGNERD_ENCLAVE", global = true)]
     enclave: Option<String>,
-    /// Launch the enclave in debug mode (required on T1 hardware).
-    #[arg(long, env = "SIGNERD_ENCLAVE_DEBUG", default_value_t = true, global = true)]
+    /// Launch the enclave in debug mode. Off by default (#22): the production path (T2) never sets it and
+    /// `owner-cli attest` refuses a DEBUG quote before any measurement is believed; T1 hardware (SGX1
+    /// without FLC) runs debug enclaves only and its compose fragment sets `SIGNERD_ENCLAVE_DEBUG=true`.
+    #[arg(long, env = "SIGNERD_ENCLAVE_DEBUG", default_value_t = false, global = true)]
     enclave_debug: bool,
     /// Path to `dcap-quote-helper` (T2 only): `GET /v1/quote` is 501 without it.
     #[arg(long, env = "SIGNERD_QUOTE_HELPER", global = true)]
@@ -702,8 +704,15 @@ fn authorized(headers: &HeaderMap, token: &str) -> bool {
     headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
-        .map(|v| v.strip_prefix("Bearer ").map(|t| t == token).unwrap_or(false))
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|t| token_matches(t, token))
         .unwrap_or(false)
+}
+
+/// The bearer token compared in constant time (#23): the length is the one thing the timing may tell.
+fn token_matches(given: &str, token: &str) -> bool {
+    use subtle::ConstantTimeEq;
+    given.len() == token.len() && bool::from(given.as_bytes().ct_eq(token.as_bytes()))
 }
 
 #[derive(Serialize)]
@@ -1582,5 +1591,29 @@ mod persist_tests {
         assert_eq!(std::fs::read(d.sealed_path()).unwrap(), vec![1, 2, 3]);
         assert_eq!(d.sealed, Some(vec![1, 2, 3]));
         let _ = std::fs::remove_dir_all(&scratch);
+    }
+}
+
+#[cfg(test)]
+mod token_tests {
+    //! #23: the bearer token check, constant time, and what it accepts.
+    use super::*;
+
+    fn with(h: &str) -> HeaderMap {
+        let mut m = HeaderMap::new();
+        m.insert("authorization", h.parse().unwrap());
+        m
+    }
+
+    #[test]
+    fn the_bearer_token_must_match_exactly() {
+        assert!(authorized(&with("Bearer abc123"), "abc123"));
+        assert!(!authorized(&with("Bearer abc124"), "abc123"), "same length, one byte off");
+        assert!(!authorized(&with("Bearer abc12"), "abc123"), "a prefix");
+        assert!(!authorized(&with("Bearer abc1234"), "abc123"), "an extension");
+        assert!(!authorized(&with("Basic abc123"), "abc123"), "another scheme");
+        assert!(!authorized(&with("abc123"), "abc123"), "no scheme");
+        assert!(!authorized(&HeaderMap::new(), "abc123"), "no header");
+        assert!(!token_matches("", "x") && !token_matches("x", ""));
     }
 }

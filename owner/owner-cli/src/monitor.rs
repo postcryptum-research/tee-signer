@@ -722,10 +722,55 @@ fn soft<T>(
     }
 }
 
-/// A state file beside the journal, written whole; a failure is `STATE_WRITE` (WARN), the pass goes on.
+/// A state file beside the journal, written whole and atomically (tmp + rename, so a crash mid-write
+/// never leaves a truncated file — #21); a failure is `STATE_WRITE` (WARN), the pass goes on.
 fn save_state<T: Serialize>(path: &PathBuf, v: &T, warn: &mut bool, codes: &mut Vec<String>, notes: &mut Vec<String>) {
-    let r = serde_json::to_string_pretty(v).map_err(anyhow::Error::from).and_then(|s| Ok(std::fs::write(path, s)?));
+    let r = (|| -> Result<()> {
+        let tmp = PathBuf::from(format!("{}.tmp", path.display()));
+        std::fs::write(&tmp, serde_json::to_string_pretty(v)?)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    })();
     soft(r, "STATE_WRITE", &format!("writing {}", path.display()), warn, codes, notes);
+}
+
+/// A state file beside the journal, read: absent → the default (a first pass); present but unreadable
+/// or not parsing → `STATE_FILE_CORRUPT` (WARN), the file moved aside with a timestamp for the owner to
+/// look at, and the default for this pass — never a silent reset of the high-water mark or the spend
+/// list (#21).
+fn load_state<T: serde::de::DeserializeOwned + Default>(
+    path: &PathBuf,
+    warn: &mut bool,
+    codes: &mut Vec<String>,
+    notes: &mut Vec<String>,
+) -> T {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return T::default(),
+        Err(e) => {
+            *warn = true;
+            codes.push("STATE_FILE_CORRUPT".into());
+            notes.push(format!("{}: unreadable ({e}); this pass starts from an empty record", path.display()));
+            return T::default();
+        }
+    };
+    match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            *warn = true;
+            codes.push("STATE_FILE_CORRUPT".into());
+            let aside = PathBuf::from(format!("{}.corrupt-{}", path.display(), now()));
+            let moved = match std::fs::rename(path, &aside) {
+                Ok(()) => format!("moved to {}", aside.display()),
+                Err(e2) => format!("could not be moved aside: {e2}"),
+            };
+            notes.push(format!(
+                "{}: does not parse ({e}); {moved}; this pass starts from an empty record — what it held (a high-water mark, a spend list) is not known this pass",
+                path.display()
+            ));
+            T::default()
+        }
+    }
 }
 
 /// One pass. Returns the verdict code: 0 OK, 1 WARN, 2 ALARM. Only the configuration reads at the top
@@ -735,12 +780,11 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
     let w: WalletRecord = serde_json::from_str(&std::fs::read_to_string(&cfg.wallet)?)?;
     let m: MandateJson = serde_json::from_str(&std::fs::read_to_string(&cfg.mandate)?).context("mandate JSON")?;
     let es = Esplora::new(&cfg.esplora, cfg.esplora_delay_ms);
-    let mut hwm: Hwm =
-        std::fs::read_to_string(hwm_path(cfg)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
     let mut codes: Vec<String> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
     let mut alarm = false;
     let mut warn = false;
+    let mut hwm: Hwm = load_state(&hwm_path(cfg), &mut warn, &mut codes, &mut notes);
 
     // 1. receipts — believed only after the identity signature verifies
     let receipts = match verified_receipts(sd, &w, &mut codes, &mut notes) {
@@ -778,8 +822,7 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
     let mut cache_path = cfg.journal.clone();
     cache_path.set_extension("cache.json");
     let (chain, (tip_height, tip_hash)) = if let (Some(url), Some(cookie)) = (&cfg.node_rpc, &cfg.node_cookie) {
-        let mut cache: NodeCache =
-            std::fs::read_to_string(&cache_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let mut cache: NodeCache = load_state(&cache_path, &mut warn, &mut codes, &mut notes);
         let utxo_scan =
             cache.last_block == 0 || cfg.full_every <= 1 || hwm.passes.checked_rem(cfg.full_every.max(1)) == Some(1);
         let receipt_txids: Vec<String> = receipts.iter().map(|r| r.txid.clone()).collect();
@@ -818,8 +861,7 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
             }
         }
     } else {
-        let mut cache: ScanCache =
-            std::fs::read_to_string(&cache_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let mut cache: ScanCache = load_state(&cache_path, &mut warn, &mut codes, &mut notes);
         let full =
             cache.full_passes == 0 || cfg.full_every <= 1 || hwm.passes.checked_rem(cfg.full_every.max(1)) == Some(1);
         // the tip first: without it nothing below can be judged — a WARN, not the end of the pass (#13)
@@ -861,8 +903,7 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
     }
     let mut ack_path = cfg.journal.clone();
     ack_path.set_extension("ack.json");
-    let mut acked: Vec<String> =
-        std::fs::read_to_string(&ack_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    let mut acked: Vec<String> = load_state(&ack_path, &mut warn, &mut codes, &mut notes);
     for a in &cfg.acknowledge {
         if !acked.contains(a) {
             acked.push(a.clone());
@@ -1511,5 +1552,37 @@ mod tests {
         assert!(cache.outputs.contains_key(&format!("{ftx}:0")), "the UTXO set was re-read");
         assert_eq!(cache.walked.len(), 6, "{:?}", cache.walked);
         assert_eq!(cache.last_block, 101);
+    }
+
+    #[test]
+    fn a_truncated_state_file_is_loud_and_moved_aside() {
+        // #21: a crash mid-write (or a disk fault) leaves a file that does not parse; the pass says so,
+        // keeps the evidence and starts from an empty record — never a silent reset
+        let dir = scratch("statefile");
+        let path = dir.join("monitor.hwm.json");
+        std::fs::write(&path, "{\"session_id\": \"s1\", \"seq\": 5, ").unwrap();
+        let (mut warn, mut codes, mut notes) = (false, Vec::new(), Vec::new());
+        let hwm: Hwm = load_state(&path, &mut warn, &mut codes, &mut notes);
+        assert_eq!(hwm.seq, 0);
+        assert!(warn);
+        assert_eq!(codes, vec!["STATE_FILE_CORRUPT".to_string()]);
+        assert!(!path.exists(), "the corrupt file is moved aside");
+        let aside: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".corrupt-"))
+            .collect();
+        assert_eq!(aside.len(), 1, "{notes:?}");
+        // absent is the default, quietly
+        let (mut warn, mut codes, mut notes) = (false, Vec::new(), Vec::new());
+        let hwm: Hwm = load_state(&path, &mut warn, &mut codes, &mut notes);
+        assert_eq!((hwm.seq, warn, codes.len()), (0, false, 0));
+        // written atomically: no .tmp left behind, and what was written parses
+        save_state(&path, &Hwm { seq: 9, ..Default::default() }, &mut warn, &mut codes, &mut notes);
+        assert!(!warn, "{notes:?}");
+        assert!(!PathBuf::from(format!("{}.tmp", path.display())).exists());
+        let back: Hwm = load_state(&path, &mut warn, &mut codes, &mut notes);
+        assert_eq!(back.seq, 9);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

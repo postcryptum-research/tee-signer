@@ -16,6 +16,7 @@ services:
       SIGNERD_BITCOIND_RPC: http://bitcoind:43782
       SIGNERD_BITCOIND_COOKIE: /bitcoin/${NBITCOIN_NETWORK:-regtest}/.cookie
       SIGNERD_HEADERS_INTERVAL: "20"
+      # T1 (SGX1, no FLC) runs debug enclaves only; the daemon's default is false (#22), so T1 says so here
       SIGNERD_ENCLAVE_DEBUG: "true"
     volumes:
       - "tee_signer_datadir:/var/lib/signerd"

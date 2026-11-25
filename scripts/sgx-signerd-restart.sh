@@ -5,7 +5,8 @@ source /opt/intel/sgxsdk/environment
 ST=$HOME/tee-signer-state; mkdir -p "$ST"
 cd "$HOME/tee-signer/host/signerd"
 if [ -f "$ST/pid" ] && kill -0 "$(cat "$ST/pid")" 2>/dev/null; then kill "$(cat "$ST/pid")"; sleep 1; fi
-nohup ./target/release/signerd --enclave "$HOME/tee-signer/enclave/enclave.signed.so" run \
+# T1 (SGX1, no FLC) runs debug enclaves only — said explicitly since the daemon's default is false (#22)
+nohup ./target/release/signerd --enclave "$HOME/tee-signer/enclave/enclave.signed.so" --enclave-debug run \
   --state-dir "$ST" --listen 127.0.0.1:7390 \
   --bitcoind-rpc http://127.0.0.1:10810 --bitcoind-cookie "$HOME/trust-bridge/btc-signet/signet/.cookie" \
   --headers-interval 20 > "$ST/signerd.log" 2>&1 &
