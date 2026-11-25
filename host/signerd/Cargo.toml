@@ -37,6 +37,8 @@ p256 = { version = "0.13", features = ["ecdsa", "ecdh", "arithmetic", "std"] }
 aes-gcm = "0.10"
 hkdf = "0.12"
 sha2 = "0.10"
+# the bearer token compared in constant time (#23)
+subtle = "2"
 # bundled x86_64-linux bindings (no clang in the build image); links the system libtss2 via pkg-config
 tss-esapi = { version = "7.7", optional = true }
 

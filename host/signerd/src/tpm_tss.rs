@@ -591,15 +591,32 @@ mod setup {
         // the counter: define, then the first increment initialises it (an unwritten index can be
         // neither read nor certified)
         let public = counter_public(spec.nv, orderly)?;
-        let nv: NvIndexHandle = ctx
+        let nv: NvIndexHandle = match ctx
             .execute_with_nullauth_session(|c| c.nv_define_space(Provision::Owner, auth.clone(), public))
-            .map_err(|e: tss_esapi::Error| {
-                anyhow!(
-                    "NV_DefineSpace 0x{:08x}: {e} (the key at 0x{:08x} was created; `tpm-teardown` removes it)",
-                    spec.nv,
-                    spec.ak
-                )
-            })?;
+        {
+            Ok(h) => h,
+            Err(e) => {
+                // #23: the key is not left behind at its handle — no setup record exists yet for
+                // `tpm-teardown` to find it by; evicted again here, best effort, and said either way
+                let cleanup = ctx
+                    .execute_without_session(|c| c.tr_from_tpm_public(TpmHandle::Persistent(target)))
+                    .map_err(|ce| anyhow!("{ce}"))
+                    .and_then(|obj| {
+                        ctx.execute_with_nullauth_session(|c| {
+                            c.evict_control(Provision::Owner, obj, Persistent::Persistent(target))
+                        })
+                        .map_err(|ce| anyhow!("{ce}"))
+                    });
+                let note = match cleanup {
+                        Ok(_) => format!("the key created at 0x{:08x} was evicted again", spec.ak),
+                        Err(ce) => format!(
+                            "the key created at 0x{:08x} could NOT be evicted ({ce}) — remove it by hand: tpm2_evictcontrol -C o -c 0x{:08x}",
+                            spec.ak, spec.ak
+                        ),
+                    };
+                bail!("NV_DefineSpace 0x{:08x}: {e}; {note}", spec.nv);
+            }
+        };
         if let Some(a) = auth.as_ref() {
             ctx.tr_set_auth(nv.into(), a.clone()).map_err(|e| anyhow!("nv auth: {e}"))?;
         }

@@ -61,7 +61,9 @@ pub fn build(
     // the previous transaction: given by the operator (from their own node), else from the Esplora
     let hex_tx = match prev_tx_hex {
         Some(h) => h.trim().to_string(),
-        None => reqwest::blocking::get(format!("{}/tx/{txid}/hex", esplora.trim_end_matches('/')))?
+        None => crate::http()?
+            .get(format!("{}/tx/{txid}/hex", esplora.trim_end_matches('/')))
+            .send()?
             .error_for_status()?
             .text()?,
     };
@@ -142,10 +144,8 @@ pub fn finalize(s: &str) -> Result<String> {
 }
 
 pub fn broadcast(esplora: &str, tx_hex: &str) -> Result<String> {
-    let r = reqwest::blocking::Client::new()
-        .post(format!("{}/tx", esplora.trim_end_matches('/')))
-        .body(tx_hex.trim().to_string())
-        .send()?;
+    let r =
+        crate::http()?.post(format!("{}/tx", esplora.trim_end_matches('/'))).body(tx_hex.trim().to_string()).send()?;
     let status = r.status();
     let text = r.text()?;
     if !status.is_success() {
