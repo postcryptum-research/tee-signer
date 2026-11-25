@@ -191,7 +191,13 @@ pub struct RemoteTpm {
     host: String,
     port: u16,
     base_path: String,
+    /// #17: the whole exchange — connect, write, read to the end — must finish within this; the
+    /// transport runs under the daemon's mutex inside every Fresh op.
+    deadline: Duration,
 }
+
+/// The most a remote agent may answer: a certify is a few hundred bytes, an info a few lines (#17).
+const REMOTE_MAX_RESPONSE: usize = 1 << 20;
 
 #[derive(Deserialize)]
 struct CertifyOut {
@@ -216,12 +222,19 @@ impl RemoteTpm {
             Some((h, p)) => (h.to_string(), p.parse::<u16>().context("remote tpm port")?),
             None => (hostport.to_string(), 80),
         };
-        Ok(RemoteTpm { host, port, base_path: path })
+        Ok(RemoteTpm { host, port, base_path: path, deadline: Duration::from_secs(20) })
     }
     fn request(&self, method: &str, path: &str, body: Option<&str>) -> Result<String> {
-        let mut s = TcpStream::connect((self.host.as_str(), self.port)).context("remote tpm: connect")?;
-        s.set_read_timeout(Some(Duration::from_secs(20)))?;
-        s.set_write_timeout(Some(Duration::from_secs(20)))?;
+        use std::net::ToSocketAddrs;
+        let started = std::time::Instant::now();
+        let addr = (self.host.as_str(), self.port)
+            .to_socket_addrs()
+            .context("remote tpm: resolve")?
+            .next()
+            .ok_or_else(|| anyhow!("remote tpm: no address for {}", self.host))?;
+        let mut s = TcpStream::connect_timeout(&addr, self.deadline.min(Duration::from_secs(5)))
+            .context("remote tpm: connect")?;
+        s.set_write_timeout(Some(self.deadline))?;
         let body = body.unwrap_or("");
         let req = format!(
             "{method} {}{path} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -230,8 +243,30 @@ impl RemoteTpm {
             body.len()
         );
         s.write_all(req.as_bytes())?;
+        // the answer under the one deadline for the whole read, capped in size: an agent that dribbles a
+        // byte every few seconds, or never closes, cannot hold the daemon (#17)
         let mut resp = Vec::new();
-        s.read_to_end(&mut resp)?;
+        let mut buf = [0u8; 4096];
+        loop {
+            let left = self.deadline.saturating_sub(started.elapsed());
+            if left.is_zero() {
+                return Err(anyhow!("remote tpm: no complete answer within {} s", self.deadline.as_secs()));
+            }
+            s.set_read_timeout(Some(left))?;
+            match s.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    resp.extend_from_slice(&buf[..n]);
+                    if resp.len() > REMOTE_MAX_RESPONSE {
+                        return Err(anyhow!("remote tpm: answer above {REMOTE_MAX_RESPONSE} bytes"));
+                    }
+                }
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+                    return Err(anyhow!("remote tpm: no complete answer within {} s", self.deadline.as_secs()));
+                }
+                Err(e) => return Err(e).context("remote tpm: read"),
+            }
+        }
         let text = String::from_utf8_lossy(&resp);
         let (head, b) = text.split_once("\r\n\r\n").ok_or_else(|| anyhow!("remote tpm: malformed response"))?;
         let status = head.lines().next().unwrap_or("");
@@ -263,5 +298,74 @@ impl TpmTransport for RemoteTpm {
         let b = self.request("POST", "/increment", Some("{}"))?;
         let o: IncrementOut = serde_json::from_str(&b).context("remote tpm: increment json")?;
         Ok(o.counter)
+    }
+}
+
+#[cfg(test)]
+mod remote_tests {
+    //! #17: the remote transport under a deadline and a size cap, against loopback agents that misbehave.
+    use super::*;
+    use std::io::{BufRead, BufReader};
+
+    /// One connection: the request's header block is read, then `answer` owns the socket.
+    fn agent(answer: impl FnOnce(TcpStream) + Send + 'static) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (s, _) = listener.accept().unwrap();
+            let mut rd = BufReader::new(s.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                if rd.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            answer(s);
+        });
+        url
+    }
+
+    fn remote(url: &str, deadline: Duration) -> RemoteTpm {
+        let mut r = RemoteTpm::new(url).unwrap();
+        r.deadline = deadline;
+        r
+    }
+
+    #[test]
+    fn a_prompt_answer_is_read() {
+        let url = agent(|mut s| {
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"counter\":7}");
+        });
+        assert_eq!(remote(&url, Duration::from_secs(5)).request("GET", "/info", None).unwrap(), "{\"counter\":7}");
+    }
+
+    #[test]
+    fn a_dribbling_agent_is_cut_at_the_deadline() {
+        let url = agent(|mut s| {
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n");
+            // a byte every 100 ms, forever: each read succeeds, the answer never completes
+            while s.write_all(b"x").is_ok() {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        let started = std::time::Instant::now();
+        let e = remote(&url, Duration::from_secs(1)).request("POST", "/certify", Some("{}")).unwrap_err();
+        assert!(e.to_string().contains("within 1 s"), "{e:#}");
+        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn an_oversized_answer_is_refused() {
+        let url = agent(|mut s| {
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\n\r\n");
+            let chunk = vec![b'x'; 1 << 16];
+            for _ in 0..40 {
+                if s.write_all(&chunk).is_err() {
+                    break;
+                }
+            }
+        });
+        let e = remote(&url, Duration::from_secs(10)).request("GET", "/info", None).unwrap_err();
+        assert!(e.to_string().contains("above"), "{e:#}");
     }
 }
