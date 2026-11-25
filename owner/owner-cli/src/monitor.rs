@@ -390,6 +390,15 @@ impl NodeRpc {
             http: reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(900)).build()?,
         })
     }
+}
+
+/// What the monitor asks of its node: one JSON-RPC call. `NodeRpc` is the owner's node over HTTP; the
+/// tests drive `scan_node` with a scripted chain behind the same trait (#14).
+trait Rpc {
+    fn rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value>;
+}
+
+impl Rpc for NodeRpc {
     fn rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
         let r = self
             .http
@@ -425,7 +434,7 @@ struct NodeCache {
 /// for the mempool. The first pass walks the last `window` blocks so the cap accounting starts full.
 #[allow(clippy::too_many_arguments)]
 fn scan_node(
-    node: &NodeRpc,
+    node: &dyn Rpc,
     w: &WalletRecord,
     gap: u32,
     hwm_seq: u64,
@@ -1035,5 +1044,240 @@ mod tests {
         let v = verify_receipt_lines(&lines, &pk, &eid, &mut codes, &mut notes).unwrap();
         assert!(v.is_empty());
         assert_eq!(codes, vec!["RECEIPT_SIG".to_string()], "{notes:?}");
+    }
+
+    // ---- the two reproducers of the external review of 2026-11-25 (#13, #14): red on `main` @ 2ff937e
+
+    use std::sync::{Arc, Mutex};
+
+    /// A throwaway regtest master key (seed of 0x42 bytes) — labeled: never funded, never a wallet.
+    fn throwaway_xpub() -> String {
+        let secp = Secp256k1::new();
+        let xprv = bitcoin::bip32::Xpriv::new_master(bitcoin::Network::Regtest, &[0x42u8; 32]).unwrap();
+        bitcoin::bip32::Xpub::from_priv(&secp, &xprv).to_string()
+    }
+
+    fn wallet_json(xpub: &str, identity_pk_hex: &str, enclave_id_hex: &str) -> serde_json::Value {
+        serde_json::json!({
+            "network": "regtest", "xpub": xpub, "fingerprint": "00000000", "identity_pk": identity_pk_hex,
+            "enclave_id": enclave_id_hex, "card_hex": "", "card_sig_hex": "", "mrenclave": "", "tier": "T0-test",
+            "recovery_blob_hex": "", "owner_pk": "", "recovery_pk": ""
+        })
+    }
+
+    fn mandate_json() -> &'static str {
+        r#"{ "version": 1, "network": "regtest",
+  "wallet": { "fingerprint": "00000000", "account": "84'/1'/0'", "scriptTypes": ["p2wpkh"] },
+  "destinations": { "trusted": [], "unlisted": { "maxPerTx": 1000000, "maxPerWindow": 5000000 } },
+  "limits": { "maxPerTx": 100000000, "window": { "blocks": 144, "maxOutflow": 500000000 }, "maxFeeAbs": 100000, "maxFeeRate": 100, "maxInputs": 64, "maxOutputs": 32, "ownIndexGap": 2, "maxReorg": 6 },
+  "rules": { "sighash": "ALL", "payjoin": "none", "opReturn": "none", "rbf": true },
+  "freshness": { "required": false, "maxTipLag": 6 },
+  "validity": { "notAfterHeight": 100000 }, "timelockBlocks": 144 }"#
+    }
+
+    /// A scratch directory of this test alone, removed by the test by its own path.
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("tee-signer-owner-cli-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// A loopback stand-in for `signerd` (and, on every other path, for a failing Esplora): answers
+    /// `/v1/receipts` with the given lines, `/v1/status` with a bare installed status, `/v1/freeze` with
+    /// `{}`, and 404 to anything else. Every request is recorded as "METHOD path".
+    fn fake_signerd(receipts: serde_json::Value) -> (String, Arc<Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let seen = calls.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { break };
+                let mut rd = BufReader::new(s.try_clone().unwrap());
+                let mut line = String::new();
+                if rd.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let mut parts = line.split_whitespace();
+                let method = parts.next().unwrap_or("").to_string();
+                let path = parts.next().unwrap_or("").to_string();
+                let mut len = 0usize;
+                loop {
+                    let mut h = String::new();
+                    if rd.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" {
+                        break;
+                    }
+                    if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; len];
+                if len > 0 {
+                    let _ = rd.read_exact(&mut body);
+                }
+                seen.lock().unwrap().push(format!("{method} {path}"));
+                let (status, body) = match (method.as_str(), path.as_str()) {
+                    ("GET", "/v1/receipts") => ("200 OK", receipts.to_string()),
+                    ("GET", "/v1/status") => {
+                        ("200 OK", serde_json::json!({ "installed": true, "best_height": 0 }).to_string())
+                    }
+                    ("POST", "/v1/freeze") => ("200 OK", "{}".to_string()),
+                    _ => ("404 Not Found", "{\"error\":\"no such path\"}".to_string()),
+                };
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = s.flush();
+            }
+        });
+        (url, calls)
+    }
+
+    #[test]
+    fn the_reflex_fires_when_the_chain_source_is_down() {
+        // #13: the receipts raise an alarm (RECEIPT_SIG) while the Esplora tip cannot be read (the fake
+        // answers 404 to every path that is not signerd's). The pass must still reach its verdict, send
+        // FREEZE once and write its journal line — on `main` @ 2ff937e it returns Err("chain tip") instead.
+        let (sk, pk, eid) = identity();
+        let (url, calls) = fake_signerd(serde_json::json!([receipt_line(&sk, &eid, "s1", 1, 1, 5000, true)]));
+        let dir = scratch("reflex");
+        std::fs::write(dir.join("wallet.json"), wallet_json(&throwaway_xpub(), &pk, &eid).to_string()).unwrap();
+        std::fs::write(dir.join("mandate.json"), mandate_json()).unwrap();
+        let cfg = Cfg {
+            wallet: dir.join("wallet.json"),
+            mandate: dir.join("mandate.json"),
+            esplora: url.clone(),
+            interval: 0,
+            journal: dir.join("monitor.jsonl"),
+            once: true,
+            freeze: true,
+            witness_key: None,
+            stall_after: 3,
+            max_tip_lag: None,
+            max_addresses: 4,
+            esplora_delay_ms: 0,
+            full_every: 1,
+            node_rpc: None,
+            node_cookie: None,
+            acknowledge: Vec::new(),
+        };
+        let sd = Signerd { url, token: "t".into(), record: None, offline: None, out: None };
+        let code = pass(&sd, &cfg).expect("the pass reaches its verdict although the chain source is down");
+        assert_eq!(code, 2, "ALARM");
+        let freezes = calls.lock().unwrap().iter().filter(|c| *c == "POST /v1/freeze").count();
+        assert_eq!(freezes, 1, "{:?}", calls.lock().unwrap());
+        let j = std::fs::read_to_string(dir.join("monitor.jsonl")).unwrap();
+        assert!(j.contains("\"verdict\":\"ALARM\"") && j.contains("RECEIPT_SIG") && j.contains("CHAIN_SOURCE"), "{j}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A scripted node: the chain as (height, hash, transactions), replaceable mid-test.
+    struct FakeNode {
+        chain: Mutex<Vec<(u32, String, Vec<serde_json::Value>)>>,
+    }
+
+    fn tx(txid: &str, vin: &[(&str, u32)], vout: &[(&str, f64)]) -> serde_json::Value {
+        serde_json::json!({
+            "txid": txid,
+            "vin": vin.iter().map(|(t, v)| serde_json::json!({ "txid": t, "vout": v })).collect::<Vec<_>>(),
+            "vout": vout.iter().enumerate().map(|(n, (a, btc))| serde_json::json!({ "n": n, "value": btc, "scriptPubKey": { "address": a } })).collect::<Vec<_>>(),
+        })
+    }
+
+    impl Rpc for FakeNode {
+        fn rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+            let chain = self.chain.lock().unwrap();
+            let (tip_h, tip_hash, _) = chain.last().cloned().ok_or_else(|| anyhow!("empty chain"))?;
+            Ok(match method {
+                "getblockchaininfo" => serde_json::json!({ "blocks": tip_h, "bestblockhash": tip_hash }),
+                "getblockhash" => {
+                    let h = params[0].as_u64().unwrap_or(u64::MAX);
+                    serde_json::json!(chain
+                        .iter()
+                        .find(|b| u64::from(b.0) == h)
+                        .map(|b| b.1.clone())
+                        .ok_or_else(|| anyhow!("Block height out of range"))?)
+                }
+                "getblock" => {
+                    let hash = params[0].as_str().unwrap_or("");
+                    let b = chain.iter().find(|b| b.1 == hash).ok_or_else(|| anyhow!("Block not found"))?;
+                    serde_json::json!({ "hash": b.1, "height": b.0, "tx": b.2 })
+                }
+                "scantxoutset" => {
+                    let all: Vec<&serde_json::Value> = chain.iter().flat_map(|b| b.2.iter()).collect();
+                    let mut unspents = Vec::new();
+                    for t in &all {
+                        for o in t["vout"].as_array().unwrap() {
+                            let (txid, n) = (t["txid"].as_str().unwrap(), o["n"].as_u64().unwrap());
+                            let spent = all.iter().any(|u| {
+                                u["vin"]
+                                    .as_array()
+                                    .unwrap()
+                                    .iter()
+                                    .any(|i| i["txid"] == txid && i["vout"].as_u64() == Some(n))
+                            });
+                            if !spent {
+                                unspents.push(serde_json::json!({ "txid": txid, "vout": n, "amount": o["value"], "scriptPubKey": o["scriptPubKey"]["address"] }));
+                            }
+                        }
+                    }
+                    serde_json::json!({ "success": true, "unspents": unspents })
+                }
+                "getrawtransaction" => {
+                    let id = params[0].as_str().unwrap_or("");
+                    let (h, t) = chain
+                        .iter()
+                        .flat_map(|b| b.2.iter().map(move |t| (b.0, t)))
+                        .find(|(_, t)| t["txid"] == id)
+                        .ok_or_else(|| anyhow!("No such mempool or blockchain transaction"))?;
+                    let mut t = t.clone();
+                    t["confirmations"] = serde_json::json!(tip_h - h + 1);
+                    t
+                }
+                "getrawmempool" | "gettxspendingprevout" => serde_json::json!([]),
+                "decodescript" => serde_json::json!({ "address": params[0] }),
+                m => return Err(anyhow!("unexpected rpc {m}")),
+            })
+        }
+    }
+
+    #[test]
+    fn a_spend_confirmed_only_in_the_winning_fork_is_found() {
+        // #14: pass 1 walks blocks 96..=101 (block 100 funds us); then block 101 is replaced by one that
+        // spends our output to a stranger, a transaction that was never in our node's mempool between the
+        // passes. Pass 2 must see the spend — on `main` @ 2ff937e it resumes at 102 and sees nothing.
+        let xpub = throwaway_xpub();
+        let w: WalletRecord =
+            serde_json::from_value(wallet_json(&xpub, &hex::encode([2u8; 33]), &hex::encode([1u8; 32]))).unwrap();
+        let ours = crate::psbt::address(&xpub, signer_core::mandate::Network::Regtest, 0, 0).unwrap();
+        let (ftx, stx) = ("aa".repeat(32), "bb".repeat(32));
+        let funding = tx(&ftx, &[("00".repeat(32).as_str(), 0)], &[(ours.as_str(), 1.0)]);
+        let mut blocks: Vec<(u32, String, Vec<serde_json::Value>)> =
+            (96..=99).map(|h| (h, format!("h{h}"), vec![])).collect();
+        blocks.push((100, "h100".into(), vec![funding]));
+        blocks.push((101, "h101".into(), vec![]));
+        let node = FakeNode { chain: Mutex::new(blocks) };
+        let mut cache = NodeCache::default();
+        let (c1, tip1) = scan_node(&node, &w, 2, 0, 10, 5, &mut cache, true, &[]).unwrap();
+        assert!(c1.spends.is_empty(), "{:?}", c1.spends);
+        assert_eq!(tip1.0, 101);
+        assert!(cache.outputs.contains_key(&format!("{ftx}:0")), "the funding output is known");
+        // the reorg: a different block 101, carrying the spend
+        let spend = tx(&stx, &[(ftx.as_str(), 0)], &[("bcrt1qstranger", 0.9999)]);
+        {
+            let mut ch = node.chain.lock().unwrap();
+            ch.pop();
+            ch.push((101, "h101b".into(), vec![spend]));
+        }
+        let (c2, tip2) = scan_node(&node, &w, 2, 0, 10, 5, &mut cache, false, &[]).unwrap();
+        assert_eq!(tip2, (101, "h101b".to_string()));
+        let found = c2.spends.iter().find(|(t, ..)| *t == stx);
+        let (_, confirmed, height, net) =
+            found.unwrap_or_else(|| panic!("the spend in the replacement block must be seen: {:?}", c2.spends));
+        assert_eq!((*confirmed, *height, *net), (true, Some(101), 100_000_000));
     }
 }
