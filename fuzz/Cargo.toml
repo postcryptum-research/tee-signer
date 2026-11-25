@@ -20,6 +20,10 @@ libfuzzer = ["dep:libfuzzer-sys"]
 
 [dependencies]
 signer-core = { path = "../core", features = ["std"] }
+# phase 2 pass (iii), F10: the enclave FFI crate on the host (`nosgx`: no SDK, a tagged unencrypted stand-in for the
+# seal; `test-init`: TEST_INIT/TEST_RESET_SESSION) — exactly what `signerd --features nosgx` links; `signer-core` stays
+# on `{std}` (RESP-r10 phase 2 Q1: `cargo tree -e features` in the pass (iii) REQ)
+rcore = { path = "../enclave/rcore", features = ["nosgx", "test-init"] }
 libfuzzer-sys = { version = "0.4", optional = true }
 arbitrary = { version = "1", features = ["derive"] }
 bitcoin = { version = "0.32", features = ["std"] }
@@ -151,6 +155,14 @@ required-features = ["libfuzzer"]
 [[bin]]
 name = "judge"
 path = "fuzz_targets/judge.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "dispatch"
+path = "fuzz_targets/dispatch.rs"
 test = false
 doc = false
 bench = false

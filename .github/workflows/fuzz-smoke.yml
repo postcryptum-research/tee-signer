@@ -29,7 +29,7 @@ jobs:
         run: |
           set -euo pipefail
           cd fuzz
-          for t in proto_decode mandate_decode mandate_compare message_decode state_decode tpm_attest receipt_decode encoding_dec bip39 cross_type work_add headers state_ops classify judge; do
+          for t in proto_decode mandate_decode mandate_compare message_decode state_decode tpm_attest receipt_decode encoding_dec bip39 cross_type work_add headers state_ops classify judge dispatch; do
             echo "::group::$t"
             if ls "findings/$t" 2>/dev/null | grep -qv FINDING.md; then
               # an OPEN finding (fuzz/findings/<t>/FINDING.md): keep exploring past it; its class will recur in artifacts/ — advisory.

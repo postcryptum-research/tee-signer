@@ -40,3 +40,18 @@ grep -E 'decode|parse_nv_attest|certified_counter|verify|compare|validate|apply_
 echo "== $t: per-file line coverage of core/src (inputs: ${dirs[*]})"
 cat "$out/files.txt"
 echo "   full reports: $out/functions.txt, $out/files.txt"
+# phase 2 pass (iii): the dispatcher target also reaches enclave/rcore (the shell) — report it the same way
+if [ "$t" = dispatch ]; then
+  "$llvm_cov" report "$bin" -instr-profile="$prof" -sources ../enclave/rcore/src -show-functions 2>/dev/null >"$out/rcore-functions.raw"
+  awk 'NF>=7 && $1 !~ /^(Filename|---|TOTAL)/ && $5 ~ /^[0-9]+$/ {
+         e=$5-$6; printf "   %-7s %5d/%-5d %s\n", (e>0 ? "reached" : "-"), e, $5, $1 }' "$out/rcore-functions.raw" \
+    | "$demangle" | sort -k4 >"$out/rcore-functions.txt"
+  "$llvm_cov" report "$bin" -instr-profile="$prof" -sources ../enclave/rcore/src 2>/dev/null >"$out/rcore-files.raw"
+  awk 'NF>=10 && $1 !~ /^(Filename|---)/ {
+         printf "   %-22s functions %3d/%-3d  lines %7s  regions %7s\n", $1, $5-$6, $5, $10, $4 }' "$out/rcore-files.raw" >"$out/rcore-files.txt"
+  echo "== $t: functions of enclave/rcore/src (ops, session, envelope, recovery, sgx nosgx arms)"
+  grep -vE '\{closure|::fmt|Debug|Clone|PartialEq' "$out/rcore-functions.txt"
+  echo "== $t: per-file line coverage of enclave/rcore/src"
+  cat "$out/rcore-files.txt"
+  echo "   full reports: $out/rcore-functions.txt, $out/rcore-files.txt"
+fi

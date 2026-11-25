@@ -18,6 +18,7 @@ case "$t" in
   work_add)                               maxlen=64;    malloc=16 ;;
   classify)                               maxlen=65536; malloc=64 ;;   # raw PSBTs (the proto bound is 256 KiB; 64 KiB keeps the fuzzer fast) or a 48-byte script
   judge)                                  maxlen=256;   malloc=16 ;;   # 7 knob bytes + a PSBT script
+  dispatch)                               maxlen=16384; malloc=64 ;;   # a mode byte + 16 eight-byte steps, or a raw request carrying a blob
   *) echo "unknown target $t"; exit 2 ;;
 esac
 dirs=("corpus/$t"); flags=()                      # first dir = where libFuzzer writes new inputs
