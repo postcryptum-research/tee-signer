@@ -215,4 +215,9 @@ seal and increment, or a spurious increment — the owner's `Anchor` resolves it
 sealed ones: the host handed the owner the identity of a TPM it controls — the TPM identity is bound for the
 wallet's life; a replaced TPM under a living wallet means a new wallet or a re-bind ceremony, never a retry),
 `ANCHOR_COUNTER_BEHIND` (the host's live counter proof is below the value the owner saw certified — a lying host
-or a replaced TPM). Every one of them has at least one refusal vector in `vectors/` or in the `rcore` replay test.
+or a replaced TPM), and from R11 `STATE_INVALID` (the sealed state opened but its mandate fails its own bounds —
+impossible under the seal, so a corrupted state file or a test build; refused at the one door every op passes,
+before any gate reads a bound and before a counter proof is consumed) and `POLICY_TOO_EXPENSIVE` (the
+trusted-destination scan would exceed its derivation bound of 128 000 — `MAX_TRUSTED × MAX_BRANCHES × MAX_GAP`, the
+validated worst case — unreachable for a mandate that passed `validate`). Every one of them has at least one refusal
+vector in `vectors/`, in the `rcore` replay test or in `core/tests`.

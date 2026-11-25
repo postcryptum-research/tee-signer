@@ -655,6 +655,18 @@ the failure and signing resumes by itself. What you do: fix the disk or the stat
 `persist_error` is gone, you are back. Nothing was lost: the enclave's own state moved on only inside the
 load that could not persist it, and a restart comes up from the last state that was written.
 
+### The signer answers `STATE_INVALID` to everything. What happened?
+
+The state file opened — the seal's tag verified — but the policy inside it fails its own bounds. That cannot
+happen through the signer: every bound is checked when the owner installs or updates a policy, and the seal
+keeps the bytes as written. So either the state file on disk was damaged or replaced by something that is not
+what the enclave wrote, or you are on a test build without the seal's protection. Since R11 the enclave refuses
+such a state at the door, before it reads a single bound and before it consumes a TPM counter proof — nothing
+signs, nothing is charged, the counter does not move. What you do: stop the daemon, restore the last state
+file the daemon wrote (the one the TPM counter expects — a different one pauses with `STATE_STALE`, which the
+four anchor steps resolve), start it again. If the file was not touched by anyone, tell the auditor: that is
+not a state the signer can produce.
+
 ### Why does the enclave have two keys?
 
 The wallet key holds the money, so the only thing it ever signs is a Bitcoin transaction the

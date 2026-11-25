@@ -76,7 +76,11 @@ on T2 MRSIGNER+ISVSVN policy with explicit upgrade rules is a later REQ), versio
 `signerd` to disk after every state change and read at load. **At load the blob is untrusted host
 input**: the seal MAC is verified before a byte of it is used, a failed unseal refuses every
 operation, and a *valid but older* blob is exactly what the freshness witness exists to catch
-(auditor R7). Contents:
+(auditor R7). Since R11 (C-EXT1-3) a blob that opens but whose mandate fails `validate` refuses
+`STATE_INVALID` at the same door — before any gate reads a bound and before a counter proof is
+consumed: every bound was validated at its write site and the seal preserved it, so the re-check
+names that invariant where a reader looks for it, and in the MAC-less test build it is the guard.
+Contents:
 
 ```
 SealedState v1 {
@@ -160,7 +164,12 @@ relies on, the first two are developer and audit tooling:
    (a hint whose derivation does not reproduce the script refuses; **a missing hint makes the
    output unlisted**, the safe direction — it is charged to the budget); trusted = mandate address
    or descriptor-derived within gap; unlisted = everything else. OP_RETURN outputs with value 0
-   are allowed if the mandate permits; otherwise refused.
+   are allowed if the mandate permits; otherwise refused. The trusted match is **one pass per PSBT**
+   (R11, C-EXT1-4): each descriptor's candidate keys are derived once and compared against every
+   output still unmatched — `Σ branches × gap` derivations whatever the output count, the first
+   destination in list order wins — under a derivation bound of 128 000 (`MAX_TRUSTED × MAX_BRANCHES ×
+   MAX_GAP`, the validated worst case; 3.9 s measured in release on the dev laptop) that refuses
+   `POLICY_TOO_EXPENSIVE` during the scan — unreachable for a mandate that passed `validate`.
 4. **Judge.** Invariants I5–I8 (`THREAT-MODEL.md §4`): per-tx caps, window budgets (window = 144
    blocks from `window.start_height`; rolled forward from the verified best height), fee bounds
    (the fee-rate check uses a **lower-bound** vsize: own P2WPKH exact, foreign inputs at P2TR
