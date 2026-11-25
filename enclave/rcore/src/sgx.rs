@@ -233,7 +233,8 @@ pub fn mrenclave() -> [u8; 32] {
             abort();
         }
         let mut m = [0u8; 32];
-        m.copy_from_slice(&report[ffi::MRENCLAVE_OFFSET..ffi::MRENCLAVE_OFFSET + 32]);
+        // R11: a slice of a slice, no offset sum — the one arithmetic the real-SGX arms carried
+        m.copy_from_slice(&report[ffi::MRENCLAVE_OFFSET..][..32]);
         m
     }
     #[cfg(feature = "nosgx")]
