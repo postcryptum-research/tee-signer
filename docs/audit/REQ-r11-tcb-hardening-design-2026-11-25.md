@@ -1,6 +1,6 @@
 # REQ-r11 — the TCB hardening round: SafeMath in the TCB, validate-on-open, the descriptor-scan cost bound, the `ensure()` invariant (design)
 
-**Date:** 2026-11-25. **Status:** DRAFT → SENT for DESIGN-PASS. **Owner's word:** «REQ раунда ядра» (2026-11-25).
+**Date:** 2026-11-25. **Status:** **DESIGN-PASS** (`RESP-r11-tcb-hardening-design-2026-11-25.md`, same day) → impl on `r11-tcb-hardening`, conditions C-R11-1…5. **Owner's word:** «REQ раунда ядра» (2026-11-25).
 **Scope:** `core/` and `enclave/rcore` (the TCB) plus the `fuzz/` ratchet that goes with every core round (C-R10-F); one
 host-side item is *asked about* (§7 F), not assumed. **One MRENCLAVE:** the four conditions below are each an enclave diff;
 they land together, get one ceremony-signed build and one T2 migration — the activation and the deploy stay the owner's
@@ -191,3 +191,4 @@ The host crates (converted in ext1); the #23 info items; the `tpm_expected` disp
 | Date | Event |
 |---|---|
 | 2026-11-25 | the owner: «REQ раунда ядра»; this design REQ written and sent; no code until the DESIGN-PASS |
+| 2026-11-25 | **DESIGN-PASS** at `7f77006` — `RESP-r11-tcb-hardening-design-2026-11-25.md`: all five items accepted; Q1 the bounds product (128 000); Q2 distinct `STATE_INVALID`; Q3 the hand-read list of the real-SGX arms, `overflow-checks` the runtime backstop; Q4 item F (signerd reload) its own later host REQ — C-R11-5; Q5 structural `chunks_exact`. Blocking impl conditions: C-R11-2 (the TCS invariant fail-closed — the dev takes the Makefile gate plus the CI check), C-R11-4 (the inversion proven by the unchanged classify oracle, the counter refusing during the scan). The branch `r11-tcb-hardening` opens |
