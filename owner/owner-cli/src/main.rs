@@ -693,6 +693,12 @@ fn json_u32(v: &serde_json::Value, what: &str) -> Result<u32> {
     v.as_u64().and_then(|n| u32::try_from(n).ok()).ok_or_else(|| anyhow!("{what}: not a u32: {v}"))
 }
 
+/// A JSON number that must be a u64 (the daemon's nonce): missing, negative or fractional is refused by
+/// name — never read as 0 (the auditor's observation on PR B of REQ-ext1).
+fn json_u64(v: &serde_json::Value, what: &str) -> Result<u64> {
+    v.as_u64().ok_or_else(|| anyhow!("{what}: not a u64: {v}"))
+}
+
 /// A bitcoind amount in BTC (a JSON float) to satoshi through `Amount::from_btc` — the rounding the node
 /// itself uses; a malformed or negative amount is an error, never 0 (rule 9).
 fn btc_sat(v: &serde_json::Value) -> Result<u64> {
@@ -1042,7 +1048,7 @@ impl Signerd {
         Ok(signer_core::sha256(&pk))
     }
     fn nonce(&self) -> Result<u64> {
-        Ok(self.get("/v1/status")?["nonce"].as_u64().unwrap_or(0))
+        json_u64(&self.get("/v1/status")?["nonce"], "status nonce")
     }
     /// The nonce the next owner message must carry: the daemon's `+ 1`, refused at the end of the range.
     fn next_nonce(&self) -> Result<u64> {
@@ -1985,7 +1991,7 @@ fn main() -> Result<()> {
                 Some(n) => *n,
                 None => {
                     if st["installed"].as_bool() == Some(true) {
-                        next_nonce(st["nonce"].as_u64().unwrap_or(0))?
+                        next_nonce(json_u64(&st["nonce"], "status nonce")?)?
                     } else {
                         0
                     }
@@ -2854,6 +2860,16 @@ mod rule9_tests {
         assert!(btc_sat(&serde_json::json!(-1.0)).is_err());
         assert!(btc_sat(&serde_json::json!("1.0")).is_err());
         assert!(btc_sat(&serde_json::Value::Null).is_err());
+    }
+
+    #[test]
+    fn json_u64_never_reads_a_missing_nonce_as_zero() {
+        assert_eq!(json_u64(&serde_json::json!(0), "n").unwrap(), 0);
+        assert_eq!(json_u64(&serde_json::json!(u64::MAX), "n").unwrap(), u64::MAX);
+        assert!(json_u64(&serde_json::Value::Null, "n").is_err());
+        assert!(json_u64(&serde_json::json!(-1), "n").is_err());
+        assert!(json_u64(&serde_json::json!(1.5), "n").is_err());
+        assert!(json_u64(&serde_json::json!("7"), "n").is_err());
     }
 
     #[test]
