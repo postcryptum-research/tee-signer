@@ -38,7 +38,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      # libtss2-dev: the `tss` transport is linted too (rule 9 covers every line of the crate); the tests run without it
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libtss2-dev pkg-config
       - run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt && rustup default "$RUST_TOOLCHAIN"
+      - run: cd host/signerd && cargo fmt --check
+      - run: cd host/signerd && cargo clippy --features nosgx,tss --all-targets -- -D warnings
       - run: cd host/signerd && cargo test --features nosgx
 
   owner-cli:
@@ -48,6 +52,8 @@ jobs:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libtss2-dev libpcsclite-dev clang pkg-config
       - run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt && rustup default "$RUST_TOOLCHAIN"
+      - run: cd owner/owner-cli && cargo fmt --check
+      - run: cd owner/owner-cli && cargo clippy --all-targets -- -D warnings
       - run: cd owner/owner-cli && cargo test
 
   fuzz-replay:

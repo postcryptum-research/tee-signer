@@ -123,13 +123,13 @@ fn mine(prev: &Header, time: u32, salt: u32) -> Header {
     let mut h = Header {
         version: bitcoin::block::Version::TWO,
         prev_blockhash: prev.block_hash(),
-        merkle_root: bitcoin::TxMerkleNode::from_byte_array([salt as u8; 32]),
+        merkle_root: bitcoin::TxMerkleNode::from_byte_array([salt.to_le_bytes()[0]; 32]),
         time,
         bits: CompactTarget::from_consensus(0x207f_ffff),
         nonce: 0,
     };
     while h.validate_pow(limit).is_err() {
-        h.nonce += 1;
+        h.nonce = h.nonce.checked_add(1).expect("a regtest header is mined within the nonce space");
     }
     h
 }
@@ -211,7 +211,15 @@ fn payout_psbt(
         }],
         output: vec![
             TxOut { value: Amount::from_sat(out_amount), script_pubkey: foreign },
-            TxOut { value: Amount::from_sat(in_amount - out_amount - fee), script_pubkey: w.spk(secp, 1, 0) },
+            TxOut {
+                value: Amount::from_sat(
+                    in_amount
+                        .checked_sub(out_amount)
+                        .and_then(|v| v.checked_sub(fee))
+                        .expect("fixture: the inputs cover the outputs and the fee"),
+                ),
+                script_pubkey: w.spk(secp, 1, 0),
+            },
         ],
     };
     let mut psbt = Psbt::from_unsigned_tx(tx).expect("psbt");
@@ -322,7 +330,7 @@ pub fn smoke(e: &mut dyn Enclave) -> Result<()> {
     let mut hs = Vec::new();
     let mut prev = cp;
     for i in 0..10u32 {
-        let h = mine(&prev, prev.time + 10, 100 + i);
+        let h = mine(&prev, prev.time.checked_add(10).expect("time"), 100u32.checked_add(i).expect("salt"));
         hs.push(serialize(&h));
         prev = h;
     }
@@ -408,14 +416,14 @@ pub fn smoke(e: &mut dyn Enclave) -> Result<()> {
         e.call(op::APPLY_MESSAGE, &proto::SealedWith { sealed: frozen, data: un.encode(), extra: None }.encode())?;
     check(r.ok, "unfreeze")?;
     let mut tampered = charged2.clone();
-    let n = tampered.len();
-    tampered[n - 1] ^= 1;
+    let last = tampered.len().checked_sub(1).expect("a sealed blob is not empty");
+    tampered[last] ^= 1;
     let r = e.call(op::STATUS, &tampered)?;
     // on hardware the seal MAC refuses a flipped byte; in simulation only truncation is caught
     if e.kind().starts_with("sgx") {
         check(!r.ok && r.reasons == vec!["STATE_UNSEALABLE"], "tampered blob refused by the seal MAC")?;
     }
-    let truncated = charged2[..n - 1].to_vec();
+    let truncated = charged2[..last].to_vec();
     let r = e.call(op::STATUS, &truncated)?;
     check(!r.ok && r.reasons == vec!["STATE_UNSEALABLE"], "truncated blob refused")?;
     Ok(())
@@ -530,7 +538,7 @@ pub fn replay_vectors(e: &mut dyn Enclave, dir: &Path) -> Result<String> {
                 let sr = proto::SignResponse::decode(&r.payload).map_err(|_| anyhow!("sign decode"))?;
                 let signed = Psbt::deserialize(&sr.psbt)?;
                 let mut cache = SighashCache::new(&signed.unsigned_tx);
-                let mut n = 0;
+                let mut n = 0usize;
                 for (i, input) in signed.inputs.iter().enumerate() {
                     for (pk, sig) in &input.partial_sigs {
                         let prev = input.non_witness_utxo.as_ref().ok_or_else(|| anyhow!("prev"))?;
@@ -551,7 +559,7 @@ pub fn replay_vectors(e: &mut dyn Enclave, dir: &Path) -> Result<String> {
                         {
                             failures.push(format!("{}: bad signature on input {i}", v.name));
                         }
-                        n += 1;
+                        n = n.checked_add(1).expect("count");
                     }
                 }
                 if n == 0 {
@@ -561,7 +569,7 @@ pub fn replay_vectors(e: &mut dyn Enclave, dir: &Path) -> Result<String> {
                 if !verify_digest_secp(&secp, &ir.identity_pk, &receipt.digest(), &sr.receipt_sig) {
                     failures.push(format!("{}: receipt sig", v.name));
                 }
-                n_ok += 1;
+                n_ok = n_ok.checked_add(1).expect("count");
             }
             "refuse" => {
                 if r.ok {
@@ -581,7 +589,7 @@ pub fn replay_vectors(e: &mut dyn Enclave, dir: &Path) -> Result<String> {
                     ));
                     continue;
                 }
-                n_ok += 1;
+                n_ok = n_ok.checked_add(1).expect("count");
             }
             _ => failures.push(format!("{}: unknown expect", v.name)),
         }

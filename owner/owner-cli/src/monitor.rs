@@ -20,7 +20,9 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use signer_core::update::Message;
 
-use crate::{hash_of, open_locator, sign_message, submit_message, MandateJson, Signerd, WalletRecord};
+use crate::{
+    btc_sat, hash_of, json_u32, open_locator, sign_message, submit_message, MandateJson, Signerd, WalletRecord,
+};
 
 #[derive(Clone, Debug)]
 pub struct Cfg {
@@ -274,11 +276,11 @@ fn check_sequence(v: &[Verified], hwm: &Hwm, codes: &mut Vec<String>, notes: &mu
             notes.push(format!(
                 "receipt gap: seq {} to {} missing (withheld by the host? the chain check covers their spends)",
                 expected,
-                seq - 1
+                seq.saturating_sub(1)
             ));
             codes.push("RECEIPT_GAP".into());
         }
-        expected = seq + 1;
+        expected = seq.saturating_add(1);
     }
     let last_session = v.iter().filter(|r| r.seq == max_seq).map(|r| r.session_id.clone()).next().unwrap_or_default();
     if !hwm.session_id.is_empty() && last_session != hwm.session_id && max_seq >= hwm.seq {
@@ -339,8 +341,10 @@ fn scan_chain(
     full: bool,
 ) -> Result<Chain> {
     let net = crate::network_of(&w.network)?;
-    let range = ((hwm_seq.saturating_add(1)).saturating_mul(u64::from(gap).saturating_add(1)))
-        .min(u64::from(max_addresses)) as u32;
+    let range =
+        ((hwm_seq.saturating_add(1)).saturating_mul(u64::from(gap).saturating_add(1))).min(u64::from(max_addresses));
+    // at most `max_addresses` after the min above, so this cannot fail; the fallback is that same bound
+    let range = u32::try_from(range).unwrap_or(max_addresses);
     let mut ours: HashSet<String> = HashSet::new();
     let mut addrs: Vec<(u32, u32, String)> = Vec::new();
     for branch in 0..2u32 {
@@ -390,7 +394,8 @@ fn scan_chain(
         }
         if our_in > 0 {
             let confirmed = t["status"]["confirmed"].as_bool().unwrap_or(false);
-            let height = t["status"]["block_height"].as_u64().map(|h| h as u32);
+            // a height that does not fit reads as unconfirmed: it stays in the cap window (fail-closed)
+            let height = t["status"]["block_height"].as_u64().and_then(|h| u32::try_from(h).ok());
             spends.push((id.clone(), confirmed, height, our_in.saturating_sub(our_out)));
         }
     }
@@ -496,8 +501,10 @@ fn scan_node(
     receipt_txids: &[String],
 ) -> Result<(Chain, (u32, String))> {
     let net = crate::network_of(&w.network)?;
-    let range = ((hwm_seq.saturating_add(1)).saturating_mul(u64::from(gap).saturating_add(1)))
-        .min(u64::from(max_addresses)) as u32;
+    let range =
+        ((hwm_seq.saturating_add(1)).saturating_mul(u64::from(gap).saturating_add(1))).min(u64::from(max_addresses));
+    // at most `max_addresses` after the min above, so this cannot fail; the fallback is that same bound
+    let range = u32::try_from(range).unwrap_or(max_addresses);
     let mut ours: HashSet<String> = HashSet::new();
     for branch in 0..2u32 {
         for index in 0..range {
@@ -505,7 +512,7 @@ fn scan_node(
         }
     }
     let info = node.rpc("getblockchaininfo", serde_json::json!([]))?;
-    let tip = info["blocks"].as_u64().unwrap_or(0) as u32;
+    let tip = json_u32(&info["blocks"], "node tip height")?;
     let tip_hash = info["bestblockhash"].as_str().unwrap_or("").to_string();
     // 0. is the chain the last pass walked still the chain? (#14) The remembered hashes, newest first,
     //    against the node: the newest that still stands is where the walk resumes. None standing (a
@@ -557,7 +564,7 @@ fn scan_node(
         }
         for u in scan["unspents"].as_array().cloned().unwrap_or_default() {
             let op = format!("{}:{}", u["txid"].as_str().unwrap_or(""), u["vout"].as_u64().unwrap_or(0));
-            let sat = (u["amount"].as_f64().unwrap_or(0.0) * 1e8).round() as u64;
+            let sat = btc_sat(&u["amount"])?;
             let spk = u["scriptPubKey"].as_str().unwrap_or("");
             let addr =
                 node.rpc("decodescript", serde_json::json!([spk]))?["address"].as_str().unwrap_or("").to_string();
@@ -570,7 +577,7 @@ fn scan_node(
         let hash = node.rpc("getblockhash", serde_json::json!([h]))?;
         let block = node.rpc("getblock", serde_json::json!([hash, 2]))?;
         for tx in block["tx"].as_array().cloned().unwrap_or_default() {
-            note_tx(&tx, &ours, cache, true, Some(h));
+            note_tx(&tx, &ours, cache, true, Some(h))?;
         }
         cache.walked.push((h, hash.as_str().unwrap_or("").to_string()));
     }
@@ -586,7 +593,7 @@ fn scan_node(
         }
         if let Ok(tx) = node.rpc("getrawtransaction", serde_json::json!([t, true])) {
             let confirmed = tx["confirmations"].as_u64().unwrap_or(0) > 0;
-            note_tx(&tx, &ours, cache, confirmed, None);
+            note_tx(&tx, &ours, cache, confirmed, None)?;
         }
     }
     // 2c. incoming outputs still in the mempool (C-R4-7): a third party's unconfirmed payment to
@@ -608,7 +615,7 @@ fn scan_node(
             continue;
         }
         if let Ok(tx) = node.rpc("getrawtransaction", serde_json::json!([t, true])) {
-            note_tx(&tx, &ours, cache, false, None);
+            note_tx(&tx, &ours, cache, false, None)?;
         }
         cache.mempool_seen.insert(t.clone());
     }
@@ -627,7 +634,7 @@ fn scan_node(
             if let Some(spender) = e["spendingtxid"].as_str() {
                 if !cache.spends.contains_key(spender) {
                     if let Ok(tx) = node.rpc("getrawtransaction", serde_json::json!([spender, true])) {
-                        note_tx(&tx, &ours, cache, false, None);
+                        note_tx(&tx, &ours, cache, false, None)?;
                     }
                 }
             }
@@ -647,7 +654,7 @@ fn note_tx(
     cache: &mut NodeCache,
     confirmed: bool,
     height: Option<u32>,
-) {
+) -> Result<()> {
     let txid = tx["txid"].as_str().unwrap_or("").to_string();
     let mut our_in = 0u64;
     for vin in tx["vin"].as_array().cloned().unwrap_or_default() {
@@ -660,7 +667,7 @@ fn note_tx(
     for vout in tx["vout"].as_array().cloned().unwrap_or_default() {
         let addr = vout["scriptPubKey"]["address"].as_str().unwrap_or("");
         if ours.contains(addr) {
-            let sat = (vout["value"].as_f64().unwrap_or(0.0) * 1e8).round() as u64;
+            let sat = btc_sat(&vout["value"])?;
             our_out = our_out.saturating_add(sat);
             cache
                 .outputs
@@ -674,6 +681,7 @@ fn note_tx(
             *e = (true, height, our_in.saturating_sub(our_out));
         }
     }
+    Ok(())
 }
 
 fn journal(path: &PathBuf, line: &PassLine) -> Result<()> {
@@ -772,7 +780,8 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
     let (chain, (tip_height, tip_hash)) = if let (Some(url), Some(cookie)) = (&cfg.node_rpc, &cfg.node_cookie) {
         let mut cache: NodeCache =
             std::fs::read_to_string(&cache_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-        let utxo_scan = cache.last_block == 0 || cfg.full_every <= 1 || hwm.passes % cfg.full_every.max(1) == 1;
+        let utxo_scan =
+            cache.last_block == 0 || cfg.full_every <= 1 || hwm.passes.checked_rem(cfg.full_every.max(1)) == Some(1);
         let receipt_txids: Vec<String> = receipts.iter().map(|r| r.txid.clone()).collect();
         let r = NodeRpc::new(url, cookie).and_then(|node| {
             scan_node(
@@ -811,7 +820,8 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
     } else {
         let mut cache: ScanCache =
             std::fs::read_to_string(&cache_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-        let full = cache.full_passes == 0 || cfg.full_every <= 1 || hwm.passes % cfg.full_every.max(1) == 1;
+        let full =
+            cache.full_passes == 0 || cfg.full_every <= 1 || hwm.passes.checked_rem(cfg.full_every.max(1)) == Some(1);
         // the tip first: without it nothing below can be judged — a WARN, not the end of the pass (#13)
         match es.tip() {
             Ok(tip) => {
@@ -910,7 +920,16 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
     let mut enclave_best = 0u32;
     match sd.get("/v1/status") {
         Ok(st) => {
-            enclave_best = st["best_height"].as_u64().unwrap_or(0) as u32;
+            enclave_best = match json_u32(&st["best_height"], "status best_height") {
+                Ok(v) => v,
+                Err(e) => {
+                    // an absurd height from the untrusted daemon reads as 0: a stall, not a healthy feed
+                    warn = true;
+                    codes.push("STATUS_INVALID".into());
+                    notes.push(e.to_string());
+                    0
+                }
+            };
             let lag_limit = cfg.max_tip_lag.unwrap_or(m.freshness.max_tip_lag);
             let lag = tip_height.saturating_sub(enclave_best);
             if st["installed"].as_bool() == Some(true) && lag > lag_limit {
@@ -1390,7 +1409,7 @@ mod tests {
                         .find(|(_, t)| t["txid"] == id)
                         .ok_or_else(|| anyhow!("No such mempool or blockchain transaction"))?;
                     let mut t = t.clone();
-                    t["confirmations"] = serde_json::json!(tip_h - h + 1);
+                    t["confirmations"] = serde_json::json!(tip_h.saturating_sub(h).saturating_add(1));
                     t
                 }
                 "getrawmempool" | "gettxspendingprevout" => serde_json::json!([]),

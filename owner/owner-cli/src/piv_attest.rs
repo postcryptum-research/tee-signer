@@ -199,7 +199,7 @@ fn ext<'a>(cert: &'a Certificate, oid: &str) -> Option<&'a [u8]> {
 
 /// `02 len bytes` → u32 (the serial-number extension is a DER INTEGER).
 fn der_integer_u32(v: &[u8]) -> Option<u32> {
-    if v.len() < 2 || v[0] != 0x02 || v[1] as usize != v.len() - 2 {
+    if v.len() < 2 || v[0] != 0x02 || v.len().checked_sub(2) != Some(usize::from(v[1])) {
         return None;
     }
     let mut b = &v[2..];

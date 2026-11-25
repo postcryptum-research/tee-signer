@@ -41,3 +41,14 @@ rsa = { version = "0.9", features = ["sha2"] }
 base64 = "0.22"
 dcap-qvl = { version = "=0.7.1", features = ["report"] }
 tokio = { version = "1", features = ["rt", "macros"] }
+
+# Hard rule 9 (CLAUDE.md): SafeMath — no bare arithmetic operator; every operation names its failure mode.
+[lints.clippy]
+arithmetic_side_effects = "deny"
+# a truncating or sign-losing `as` is the same class (#18): `u32::try_from`, `Amount::from_btc`, or a reason on the line
+cast_possible_truncation = "deny"
+cast_sign_loss = "deny"
+
+# the runtime net of rule 9: a slip panics instead of wrapping, in release too
+[profile.release]
+overflow-checks = true
