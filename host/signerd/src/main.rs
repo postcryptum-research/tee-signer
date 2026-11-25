@@ -286,6 +286,21 @@ impl Daemon {
         }
     }
 
+    /// The owner's rule (2026-11-25, on the auditor's question in RESP-ext1 PR C): while a persist
+    /// failure stands the daemon does not sign. A freeze or disarm the host could not keep would
+    /// otherwise be undone by the next signature over the old blob — and the REQ-r9 counter cannot
+    /// catch that (the increment never happened). Reads, owner messages, the feed and the freeze stay
+    /// served: each of them can succeed in persisting and so clear the failure.
+    fn signing_blocked(&self) -> Option<axum::response::Response> {
+        self.persist_error.as_ref().map(|e| {
+            err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("signing refused: the last state change could not be persisted ({e}) — fix the state directory; the next successful state write clears this"),
+                vec!["PERSIST_FAILED".into()],
+            )
+        })
+    }
+
     /// `/healthz`: `ok`, or 503 naming the persist failure that stands (#16).
     fn health(&self) -> (StatusCode, String) {
         match &self.persist_error {
@@ -1174,6 +1189,9 @@ async fn h_sign(
     if !authorized(&headers, &d.token) {
         return err(StatusCode::UNAUTHORIZED, "token", vec![]);
     }
+    if let Some(refused) = d.signing_blocked() {
+        return refused;
+    }
     let Ok(sealed) = d.sealed() else { return err(StatusCode::CONFLICT, "not initialised", vec![]) };
     let Ok(psbt) = psbt_bytes(&req.psbt) else {
         return err(StatusCode::BAD_REQUEST, "psbt: not base64/hex or not a PSBT", vec![]);
@@ -1590,6 +1608,30 @@ mod persist_tests {
         assert_eq!(d.health(), (StatusCode::OK, "ok".to_string()));
         assert_eq!(std::fs::read(d.sealed_path()).unwrap(), vec![1, 2, 3]);
         assert_eq!(d.sealed, Some(vec![1, 2, 3]));
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn signing_is_refused_while_a_persist_failure_stands() {
+        // the owner's rule (2026-11-25): a freeze or disarm the host could not keep must not be undone by
+        // the next signature over the old blob. The cycle is driven through persist() itself: a failing
+        // state dir blocks, the first successful write unblocks — no flag is flipped by hand.
+        let scratch = std::env::temp_dir().join(format!("tee-signer-signerd-test-{}-blocked", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::write(scratch.join("notadir"), b"").unwrap();
+        let mut d = daemon(scratch.join("notadir").join("state"));
+        assert!(d.signing_blocked().is_none(), "healthy: nothing blocks");
+        assert!(d.persist(vec![7]).is_err(), "the state dir is a regular file");
+        let r = d.signing_blocked().expect("a standing persist failure refuses signing");
+        assert_eq!(r.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(d.signing_blocked().is_some(), "still blocked: nothing has been written since");
+        // the operator repairs the state dir; the next state write (a block fed, an owner message, a
+        // freeze — any of the paths that stay served) succeeds and clears the block by itself
+        d.state_dir = scratch.join("state");
+        std::fs::create_dir_all(&d.state_dir).unwrap();
+        d.persist(vec![7]).unwrap();
+        assert!(d.signing_blocked().is_none(), "cleared by the first successful persist");
         let _ = std::fs::remove_dir_all(&scratch);
     }
 }

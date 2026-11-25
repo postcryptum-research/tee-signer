@@ -1916,9 +1916,9 @@ fn main() -> Result<()> {
                         hash: h["id"].as_str().unwrap_or("").into(),
                         height,
                         time: json_u32(&h["timestamp"], "block timestamp")?,
-                        bits: format!("{:08x}", h["bits"].as_u64().unwrap_or(0)),
+                        bits: format!("{:08x}", json_u64(&h["bits"], "block bits")?),
                         period_start_time: json_u32(&p["timestamp"], "period start timestamp")?,
-                        period_bits: format!("{:08x}", p["bits"].as_u64().unwrap_or(0)),
+                        period_bits: format!("{:08x}", json_u64(&p["bits"], "period start bits")?),
                     },
                 });
                 println!("checkpoint filled from {es} at height {height} (tip {tip})");
@@ -2182,7 +2182,7 @@ fn main() -> Result<()> {
             let mut w: WalletRecord = serde_json::from_str(&std::fs::read_to_string(&rec_path)?)?;
             let last = w.last_seen_seq.unwrap_or(0);
             let st = sd.get("/v1/status")?;
-            let seq = st["seq"].as_u64().unwrap_or(0);
+            let seq = json_u64(&st["seq"], "status seq")?;
             let armed = st["boot_armed"].as_bool().unwrap_or(false);
             let challenge_hex = st["boot_challenge"].as_str().unwrap_or("").to_string();
             let session = st["session_id"].as_str().unwrap_or("").to_string();
@@ -2287,7 +2287,7 @@ fn main() -> Result<()> {
                 hex::encode(&ak_pk[1..7])
             );
             let st = sd.get("/v1/status")?;
-            let seq = st["seq"].as_u64().unwrap_or(0);
+            let seq = json_u64(&st["seq"], "status seq")?;
             let challenge_hex = st["boot_challenge"].as_str().unwrap_or("").to_string();
             let session = st["session_id"].as_str().unwrap_or("").to_string();
             if st["tpm_bound"].as_bool() == Some(true) {
