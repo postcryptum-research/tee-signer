@@ -784,8 +784,9 @@ every `descriptor` entry costs `2 × gap` key derivations per classification (bo
 `gap`), and a signing classifies twice. At the bounds — 64 descriptor entries × `gap` 1000, 128 000 derivations
 per scan — a signing took 12.2 s with 2 outputs and 18.1 s with 500 outputs on that same node, and the daemon answered
 nothing else meanwhile (one enclave thread, one request at a time — a `status` asked during such a signing waited
-17.8 s). The plugin waits up to 60 s for a signature, so at the bounds about three queued signings fit. Size the
-list to what you need: an `address` entry costs nothing, a descriptor costs its `gap`; a 20-address sweep list with
+17.8 s). Larger transactions cost more — the upper figure is a 500-output transaction; the trusted-list size is the
+dominant lever, the transaction's output count the secondary one. The plugin waits up to 60 s for a signature, so at
+the bounds about three queued signings fit. Size the list to what you need: an `address` entry costs nothing, a descriptor costs its `gap`; a 20-address sweep list with
 `gap` 20 is invisible. There is no per-signature fee of any kind. The hardware is the cost: a T1 box is cheap bare
 metal you likely already rent; T2 is an Azure DCsv3 VM or FLC-capable bare metal.
 
