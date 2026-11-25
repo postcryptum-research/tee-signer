@@ -1,8 +1,8 @@
 # REQ-r11 — the TCB hardening round: impl (SafeMath in the TCB, validate-on-open, the scan cost bound, one TCS)
 
 **Date:** 2026-11-25. **Status:** SENT for IMPL-PASS against `RESP-r11-tcb-hardening-design-2026-11-25.md`
-(DESIGN-PASS at `7f77006`) and its conditions C-R11-1 … C-R11-5. **Branch:** `r11-tcb-hardening` (PR to `main`; the
-head hash in the PR). **Scope:** `core/`, `enclave/rcore`, `enclave/Makefile`, `fuzz/`, CI, docs; `host/` and `owner/`
+(DESIGN-PASS at `7f77006`) and its conditions C-R11-1 … C-R11-5. **Branch:** `r11-tcb-hardening`, **PR #29** (the
+head hash on the PR; every later commit is listed in §11). **Scope:** `core/`, `enclave/rcore`, `enclave/Makefile`, `fuzz/`, CI, docs; `host/` and `owner/`
 untouched. **MRENCLAVE changes** (A, C, D are enclave diffs; B's comment rides): the build, the ceremony and the T2
 migration follow the IMPL-PASS and are the owner's direct steps (§9).
 
