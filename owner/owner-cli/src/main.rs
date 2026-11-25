@@ -100,7 +100,7 @@ struct Busy {
 fn busy(msg: &str) -> Busy {
     use std::io::{IsTerminal, Write};
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let width = msg.chars().count() + 4;
+    let width = msg.chars().count().saturating_add(4);
     if !std::io::stderr().is_terminal() {
         eprintln!("… {msg}");
         return Busy { stop, handle: None, width: 0 };
@@ -112,7 +112,7 @@ fn busy(msg: &str) -> Busy {
         while !s2.load(std::sync::atomic::Ordering::Relaxed) {
             eprint!("\r{} {m} ", frames[i % 4]);
             let _ = std::io::stderr().flush();
-            i += 1;
+            i = i.wrapping_add(1); // the spinner's frame counter: wraps by design
             std::thread::sleep(std::time::Duration::from_millis(150));
         }
     });
@@ -654,6 +654,31 @@ fn bits_of(s: &str) -> Result<u32> {
     Ok(u32::from_str_radix(s.trim_start_matches("0x"), 16)?)
 }
 
+/// A JSON number that must fit a u32 (a height, a block time): missing, negative, fractional or above
+/// `u32::MAX` is refused by name — never silently 0, never truncated (rule 9; #18).
+fn json_u32(v: &serde_json::Value, what: &str) -> Result<u32> {
+    v.as_u64().and_then(|n| u32::try_from(n).ok()).ok_or_else(|| anyhow!("{what}: not a u32: {v}"))
+}
+
+/// A bitcoind amount in BTC (a JSON float) to satoshi through `Amount::from_btc` — the rounding the node
+/// itself uses; a malformed or negative amount is an error, never 0 (rule 9).
+fn btc_sat(v: &serde_json::Value) -> Result<u64> {
+    let btc = v.as_f64().ok_or_else(|| anyhow!("amount: not a number: {v}"))?;
+    Ok(bitcoin::Amount::from_btc(btc).map_err(|e| anyhow!("amount {btc}: {e}"))?.to_sat())
+}
+
+/// The mandate's next nonce from the one the (untrusted) daemon reports: `+ 1`, refused at the end of
+/// the range instead of wrapping to 0.
+fn next_nonce(current: u64) -> Result<u64> {
+    current.checked_add(1).ok_or_else(|| anyhow!("nonce {current} cannot advance: the nonce space is exhausted"))
+}
+
+/// The first height of the 2016-block retarget period `height` is in. `height % 2016 ≤ height`, so the
+/// subtraction cannot underflow; the saturating form says so to the linter (rule 9).
+fn period_start(height: u32) -> u32 {
+    height.saturating_sub(height % 2016)
+}
+
 fn hash_of(s: &str) -> Result<[u8; 32]> {
     // display order (as RPC prints) → internal order
     let mut v = hex::decode(s)?;
@@ -911,14 +936,13 @@ impl Node {
     }
     fn checkpoint(&self, height: u32) -> Result<CheckpointJson> {
         let h = self.header(height)?;
-        let period_start = height - height % 2016;
-        let p = self.header(period_start)?;
+        let p = self.header(period_start(height))?;
         Ok(CheckpointJson {
             hash: h["hash"].as_str().unwrap_or("").into(),
             height,
-            time: h["time"].as_u64().unwrap_or(0) as u32,
+            time: json_u32(&h["time"], "block time")?,
             bits: h["bits"].as_str().unwrap_or("").into(),
-            period_start_time: p["time"].as_u64().unwrap_or(0) as u32,
+            period_start_time: json_u32(&p["time"], "period start time")?,
             period_bits: p["bits"].as_str().unwrap_or("").into(),
         })
     }
@@ -990,6 +1014,10 @@ impl Signerd {
     }
     fn nonce(&self) -> Result<u64> {
         Ok(self.get("/v1/status")?["nonce"].as_u64().unwrap_or(0))
+    }
+    /// The nonce the next owner message must carry: the daemon's `+ 1`, refused at the end of the range.
+    fn next_nonce(&self) -> Result<u64> {
+        next_nonce(self.nonce()?)
     }
 }
 
@@ -1817,8 +1845,13 @@ fn main() -> Result<()> {
                 let height = match checkpoint_height {
                     Some(h) => *h,
                     None => {
-                        node.rpc("getblockchaininfo", serde_json::json!([]))?["headers"].as_u64().unwrap_or(0) as u32
-                            - 6
+                        let headers = json_u32(
+                            &node.rpc("getblockchaininfo", serde_json::json!([]))?["headers"],
+                            "node headers height",
+                        )?;
+                        headers
+                            .checked_sub(6)
+                            .ok_or_else(|| anyhow!("the node's chain is shorter than 6 blocks: no checkpoint to pin"))?
                     }
                 };
                 j.chain = Some(ChainJson { checkpoint: node.checkpoint(height)? });
@@ -1839,15 +1872,15 @@ fn main() -> Result<()> {
                     Ok(v)
                 };
                 let h = hdr(height)?;
-                let p = hdr(height - height % 2016)?;
+                let p = hdr(period_start(height))?;
                 drop(b);
                 j.chain = Some(ChainJson {
                     checkpoint: CheckpointJson {
                         hash: h["id"].as_str().unwrap_or("").into(),
                         height,
-                        time: h["timestamp"].as_u64().unwrap_or(0) as u32,
+                        time: json_u32(&h["timestamp"], "block timestamp")?,
                         bits: format!("{:08x}", h["bits"].as_u64().unwrap_or(0)),
-                        period_start_time: p["timestamp"].as_u64().unwrap_or(0) as u32,
+                        period_start_time: json_u32(&p["timestamp"], "period start timestamp")?,
                         period_bits: format!("{:08x}", p["bits"].as_u64().unwrap_or(0)),
                     },
                 });
@@ -1921,7 +1954,7 @@ fn main() -> Result<()> {
                 Some(n) => *n,
                 None => {
                     if st["installed"].as_bool() == Some(true) {
-                        st["nonce"].as_u64().unwrap_or(0) + 1
+                        next_nonce(st["nonce"].as_u64().unwrap_or(0))?
                     } else {
                         0
                     }
@@ -1961,14 +1994,14 @@ fn main() -> Result<()> {
         Cmd::Cancel { key } => {
             let sd = client(&cli)?;
             let okey = open_locator(key)?;
-            let mut msg = Message::Cancel { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, sig: [0; 64] };
+            let mut msg = Message::Cancel { enclave_id: sd.enclave_id()?, nonce: sd.next_nonce()?, sig: [0; 64] };
             sign_message(&okey, &mut msg)?;
             submit_message(&sd, &msg)?;
         }
         Cmd::Unfreeze { key } => {
             let sd = client(&cli)?;
             let okey = open_locator(key)?;
-            let mut msg = Message::Unfreeze { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, sig: [0; 64] };
+            let mut msg = Message::Unfreeze { enclave_id: sd.enclave_id()?, nonce: sd.next_nonce()?, sig: [0; 64] };
             sign_message(&okey, &mut msg)?;
             submit_message(&sd, &msg)?;
         }
@@ -1976,7 +2009,7 @@ fn main() -> Result<()> {
             let sd = client(&cli)?;
             let okey = open_locator(key)?;
             let mut msg =
-                Message::Rearm { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, seq: *seq, sig: [0; 64] };
+                Message::Rearm { enclave_id: sd.enclave_id()?, nonce: sd.next_nonce()?, seq: *seq, sig: [0; 64] };
             sign_message(&okey, &mut msg)?;
             submit_message(&sd, &msg)?;
         }
@@ -1987,7 +2020,7 @@ fn main() -> Result<()> {
             let okey = open_locator(key)?;
             let mut msg = Message::RotateOwner {
                 enclave_id: sd.enclave_id()?,
-                nonce: sd.nonce()? + 1,
+                nonce: sd.next_nonce()?,
                 new_owner_pk,
                 sig: [0; 64],
             };
@@ -2000,7 +2033,7 @@ fn main() -> Result<()> {
             eprintln!("new owner: {label}");
             let rkey = open_key(recovery_key)?;
             let mut msg =
-                Message::Recover { enclave_id: sd.enclave_id()?, nonce: sd.nonce()? + 1, new_owner_pk, sig: [0; 64] };
+                Message::Recover { enclave_id: sd.enclave_id()?, nonce: sd.next_nonce()?, new_owner_pk, sig: [0; 64] };
             sign_message(&rkey, &mut msg)?;
             submit_message(&sd, &msg)?;
         }
@@ -2123,7 +2156,7 @@ fn main() -> Result<()> {
             println!("enclave remembers seq {seq}; you last saw seq {last}");
             let mut seq_seen = last;
             if seq < last {
-                eprintln!("ROLLBACK SIGNATURE: the enclave remembers {} fewer operations than you last saw (it has {seq}, you saw {last}). This is what a restored older state file looks like. Do NOT arm unless you know why (a restore from backup you did yourself, a crash between an operation and this record).", last - seq);
+                eprintln!("ROLLBACK SIGNATURE: the enclave remembers {} fewer operations than you last saw (it has {seq}, you saw {last}). This is what a restored older state file looks like. Do NOT arm unless you know why (a restore from backup you did yourself, a crash between an operation and this record).", last.saturating_sub(seq));
                 if !*i_have_investigated {
                     bail!("REFUSED to arm over a sequence regression; after investigating, repeat with --i-have-investigated (this acceptance is logged in the record)");
                 }
@@ -2140,7 +2173,7 @@ fn main() -> Result<()> {
             let okey = open_locator(key)?;
             let mut msg = Message::Arm {
                 enclave_id: sd.enclave_id()?,
-                nonce: sd.nonce()? + 1,
+                nonce: sd.next_nonce()?,
                 boot_challenge,
                 seq_seen,
                 sig: [0; 64],
@@ -2230,7 +2263,7 @@ fn main() -> Result<()> {
             println!("enclave remembers seq {seq}; you last saw seq {last}");
             let mut seq_seen = last;
             if seq < last {
-                eprintln!("ROLLBACK SIGNATURE: the enclave remembers {} fewer operations than you last saw (it has {seq}, you saw {last}). Do NOT anchor unless you know why.", last - seq);
+                eprintln!("ROLLBACK SIGNATURE: the enclave remembers {} fewer operations than you last saw (it has {seq}, you saw {last}). Do NOT anchor unless you know why.", last.saturating_sub(seq));
                 if !*i_have_investigated {
                     bail!("REFUSED to anchor over a sequence regression; after investigating, repeat with --i-have-investigated (logged in the record)");
                 }
@@ -2247,7 +2280,7 @@ fn main() -> Result<()> {
             let okey = open_locator(key)?;
             let mut msg = Message::Anchor {
                 enclave_id: sd.enclave_id()?,
-                nonce: sd.nonce()? + 1,
+                nonce: sd.next_nonce()?,
                 boot_challenge,
                 ak_pk,
                 nv_name,
@@ -2258,7 +2291,7 @@ fn main() -> Result<()> {
             sign_message(&okey, &mut msg)?;
             submit_message(&sd, &msg)?;
             if sd.out.is_some() {
-                println!("after `signerd submit` on the server, `signerd status --out …` there will show tpm_bound: true, tpm_expected: at least {} (REQ-r9a: the counter the TPM certifies at apply time, plus one — the daemon's own state writes may have moved it past what you saw) and boot_armed: true for load {session}", counter + 1);
+                println!("after `signerd submit` on the server, `signerd status --out …` there will show tpm_bound: true, tpm_expected: at least {} (REQ-r9a: the counter the TPM certifies at apply time, plus one — the daemon's own state writes may have moved it past what you saw) and boot_armed: true for load {session}", counter.saturating_add(1));
             } else {
                 let st = sd.get("/v1/status")?;
                 if st["tpm_bound"].as_bool() == Some(true) && st["boot_armed"].as_bool() == Some(true) {
@@ -2761,5 +2794,50 @@ mod hint_tests {
         assert!(check_hint(&"h".repeat(201), "x").is_err(), "too long");
         assert!(check_hint("it is Correct Horse battery", "correct horse").is_err(), "hint contains the passphrase");
         assert!(check_hint("horse", "correct horse battery").is_err(), "passphrase contains the hint");
+    }
+}
+
+#[cfg(test)]
+mod rule9_tests {
+    //! The SafeMath helpers (rule 9; #18): a value that does not fit is refused by name, never truncated.
+    use super::*;
+
+    #[test]
+    fn json_u32_refuses_what_does_not_fit() {
+        assert_eq!(json_u32(&serde_json::json!(7), "h").unwrap(), 7);
+        assert_eq!(json_u32(&serde_json::json!(u32::MAX), "h").unwrap(), u32::MAX);
+        assert!(json_u32(&serde_json::json!(u64::from(u32::MAX) + 1), "h").is_err());
+        assert!(json_u32(&serde_json::json!(u64::MAX), "h").is_err());
+        assert!(json_u32(&serde_json::json!(-1), "h").is_err());
+        assert!(json_u32(&serde_json::json!(1.5), "h").is_err());
+        assert!(json_u32(&serde_json::json!("7"), "h").is_err());
+        assert!(json_u32(&serde_json::Value::Null, "h").is_err());
+    }
+
+    #[test]
+    fn btc_sat_rounds_as_the_node_does_and_refuses_garbage() {
+        assert_eq!(btc_sat(&serde_json::json!(1.0)).unwrap(), 100_000_000);
+        assert_eq!(btc_sat(&serde_json::json!(0.00000001)).unwrap(), 1);
+        assert_eq!(btc_sat(&serde_json::json!(0.29999999)).unwrap(), 29_999_999);
+        assert_eq!(btc_sat(&serde_json::json!(20999999.9769)).unwrap(), 2_099_999_997_690_000);
+        assert!(btc_sat(&serde_json::json!(-1.0)).is_err());
+        assert!(btc_sat(&serde_json::json!("1.0")).is_err());
+        assert!(btc_sat(&serde_json::Value::Null).is_err());
+    }
+
+    #[test]
+    fn next_nonce_stops_at_the_end_of_the_range() {
+        assert_eq!(next_nonce(0).unwrap(), 1);
+        assert_eq!(next_nonce(41).unwrap(), 42);
+        assert!(next_nonce(u64::MAX).is_err());
+    }
+
+    #[test]
+    fn period_start_is_the_retarget_boundary() {
+        assert_eq!(period_start(0), 0);
+        assert_eq!(period_start(2015), 0);
+        assert_eq!(period_start(2016), 2016);
+        assert_eq!(period_start(4031), 2016);
+        assert_eq!(period_start(u32::MAX), u32::MAX - u32::MAX % 2016);
     }
 }

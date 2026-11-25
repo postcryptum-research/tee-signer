@@ -351,11 +351,9 @@ impl Drop for Esys {
 
 /// TPM2B_ECC_PARAMETER values are curve-sized but may come shorter; left-pad to 32.
 fn pad32(b: &[u8]) -> Result<[u8; 32]> {
-    if b.len() > 32 {
-        bail!("field element of {} bytes", b.len());
-    }
+    let pad = 32usize.checked_sub(b.len()).ok_or_else(|| anyhow!("field element of {} bytes", b.len()))?;
     let mut out = [0u8; 32];
-    out[32 - b.len()..].copy_from_slice(b);
+    out[pad..].copy_from_slice(b);
     Ok(out)
 }
 

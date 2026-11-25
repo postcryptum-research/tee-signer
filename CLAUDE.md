@@ -63,7 +63,12 @@ project exists to remove — stop and escalate.
    harness is not product code and must be free to build any value — overflowing, oversized, lying —
    that is what it is for; it stays under its own clippy, without this lint. Code that predates the
    rule converts crate by crate: `host/` and `owner/` directly, `core/` and `enclave/` through a REQ
-   (rule 1).
+   (rule 1). A truncating or sign-losing `as` cast is the same class (the external review's H6, #18):
+   `cast_possible_truncation` and `cast_sign_loss` are `deny` next to it — `u32::try_from`,
+   `Amount::from_btc`, or a reason on the line. **Status (2026-11-25, REQ-ext1 PR B):** `host/signerd` and
+   `owner/owner-cli` carry the three lints and are converted; `core/tests`, `enclave/rcore` and `core/`'s
+   `[lints]` entry convert with the next core round, by REQ — until then `core/src` is under its
+   `#![deny]` alone.
 
 ## Infrastructure isolation (shared SGX host — do not break other projects)
 
@@ -84,8 +89,8 @@ units, wallets and repositories are **never touched**. Rules inherited from trus
 
 ```bash
 cd core  && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
-cd host/signerd  && cargo clippy --all-targets --features nosgx -- -D warnings && cargo test
-cd owner/owner-cli && cargo clippy --all-targets -- -D warnings && cargo test
+cd host/signerd  && cargo fmt --check && cargo clippy --all-targets --features nosgx,tss -- -D warnings && cargo test --features nosgx
+cd owner/owner-cli && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 cd fuzz  && cargo clippy --no-default-features --all-targets -- -D warnings && cargo test --no-default-features
          # ^ the fuzz replay gate (REQ-r10); discovery runs: fuzz/run.sh <target>, laptop only
 # clippy is the SafeMath linter (rule 9) of the product crates: a bare arithmetic operator fails it in core, signerd, owner-cli — not in fuzz

@@ -413,7 +413,7 @@ impl Bitcoind {
     }
     async fn tip_height(&self) -> Result<u32> {
         let v = self.rpc("getblockchaininfo", serde_json::json!([])).await?;
-        Ok(v["headers"].as_u64().unwrap_or(0) as u32)
+        json_height(&v["headers"], "getblockchaininfo headers")
     }
     async fn header_hex(&self, height: u32) -> Result<String> {
         let h = self.rpc("getblockhash", serde_json::json!([height])).await?;
@@ -430,6 +430,18 @@ impl Bitcoind {
 /// How far below the enclave's best the fork probe walks; the enclave keeps at most
 /// maxReorg + 12 recent headers, so deeper probes cannot attach anyway.
 const FORK_PROBE_DEPTH: u32 = 32;
+
+/// A height from bitcoind's JSON that must fit the enclave's u32: missing or out of range is an error,
+/// never 0 and never a truncated value (rule 9; #18).
+fn json_height(v: &serde_json::Value, what: &str) -> Result<u32> {
+    v.as_u64().and_then(|h| u32::try_from(h).ok()).ok_or_else(|| anyhow!("{what}: not a u32 height: {v}"))
+}
+
+/// A capacity hint for the `to − from + 1` serialized headers (80 bytes each) of one HEADERS call. A hint
+/// only, and the callers bound the range; saturating keeps it a hint.
+fn headers_capacity(from: u32, to: u32) -> usize {
+    usize::try_from(to.saturating_sub(from).saturating_add(1)).unwrap_or(0).saturating_mul(80)
+}
 
 async fn feed_once(shared: &Shared) -> Result<u32> {
     let (best_height, best_hash, url, auth) = {
@@ -463,7 +475,7 @@ async fn feed_once(shared: &Shared) -> Result<u32> {
         let mut resume = None;
         for k in 0..=FORK_PROBE_DEPTH {
             let start = best_height.saturating_sub(k).max(1);
-            let mut bytes = Vec::with_capacity(((probe_top - start + 1) * 80) as usize);
+            let mut bytes = Vec::with_capacity(headers_capacity(start, probe_top));
             for h in start..=probe_top {
                 bytes.extend_from_slice(&hex::decode(bd.header_hex(h).await?)?);
             }
@@ -476,9 +488,9 @@ async fn feed_once(shared: &Shared) -> Result<u32> {
             }
             if r.ok {
                 let accepted = hr.map(|h| h.accepted).unwrap_or(0);
-                total += accepted;
+                total = total.saturating_add(accepted);
                 warn!(
-                    fork_depth = k + 1,
+                    fork_depth = k.saturating_add(1),
                     accepted, "header feed: the node forked from the enclave's best; fork accepted"
                 );
                 resume = Some(probe_top.saturating_add(1));
@@ -487,7 +499,7 @@ async fn feed_once(shared: &Shared) -> Result<u32> {
             if r.reasons.iter().any(|x| x == "HEADER_INVALID") && start > 1 {
                 continue; // the probe attached below what the enclave knows, or not at all: deeper
             }
-            return Err(anyhow!("headers refused at fork probe depth {}: {:?}", k + 1, r.reasons));
+            return Err(anyhow!("headers refused at fork probe depth {}: {:?}", k.saturating_add(1), r.reasons));
         }
         match resume {
             Some(f) => f,
@@ -499,8 +511,8 @@ async fn feed_once(shared: &Shared) -> Result<u32> {
         }
     };
     while from <= tip {
-        let to = (from + 1999).min(tip);
-        let mut bytes = Vec::with_capacity(((to - from + 1) * 80) as usize);
+        let to = from.saturating_add(1999).min(tip);
+        let mut bytes = Vec::with_capacity(headers_capacity(from, to));
         for h in from..=to {
             bytes.extend_from_slice(&hex::decode(bd.header_hex(h).await?)?);
         }
@@ -510,7 +522,7 @@ async fn feed_once(shared: &Shared) -> Result<u32> {
         if r.ok {
             let hr = proto::HeadersResponse::decode(&r.payload).map_err(|_| anyhow!("headers response"))?;
             d.persist(hr.sealed)?;
-            total += hr.accepted;
+            total = total.saturating_add(hr.accepted);
             info!(accepted = hr.accepted, best = hr.best_height, "headers");
         } else {
             if let Ok(hr) = proto::HeadersResponse::decode(&r.payload) {
@@ -518,7 +530,10 @@ async fn feed_once(shared: &Shared) -> Result<u32> {
             }
             return Err(anyhow!("headers refused: {:?}", r.reasons));
         }
-        from = to + 1;
+        from = match to.checked_add(1) {
+            Some(f) => f,
+            None => break, // no chain has a height above u32::MAX
+        };
     }
     Ok(total)
 }
@@ -1412,4 +1427,29 @@ async fn main() -> Result<()> {
         })
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod rule9_tests {
+    //! The SafeMath helpers (rule 9; #18): a height that does not fit is refused by name, never truncated.
+    use super::*;
+
+    #[test]
+    fn json_height_refuses_what_does_not_fit() {
+        assert_eq!(json_height(&serde_json::json!(850_000), "h").unwrap(), 850_000);
+        assert_eq!(json_height(&serde_json::json!(u32::MAX), "h").unwrap(), u32::MAX);
+        assert!(json_height(&serde_json::json!(u64::from(u32::MAX) + 1), "h").is_err());
+        assert!(json_height(&serde_json::json!(u64::MAX), "h").is_err());
+        assert!(json_height(&serde_json::json!(-1), "h").is_err());
+        assert!(json_height(&serde_json::json!("850000"), "h").is_err());
+        assert!(json_height(&serde_json::Value::Null, "h").is_err());
+    }
+
+    #[test]
+    fn headers_capacity_is_a_bounded_hint() {
+        assert_eq!(headers_capacity(5, 5), 80);
+        assert_eq!(headers_capacity(1, 2000), 2000 * 80);
+        assert_eq!(headers_capacity(10, 5), 80);
+        let _ = headers_capacity(0, u32::MAX);
+    }
 }

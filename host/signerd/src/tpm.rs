@@ -167,7 +167,7 @@ impl TpmTransport for SoftwareTpm {
             Some("parse") => {
                 let attest = build_nv_attest(&signer_name, &n, &name, counter);
                 let sig = Self::sign(&sk, &attest);
-                return Ok(TpmProof { attest: attest[..attest.len() - 3].to_vec(), sig });
+                return Ok(TpmProof { attest: attest[..attest.len().saturating_sub(3)].to_vec(), sig });
             }
             _ => {}
         }
