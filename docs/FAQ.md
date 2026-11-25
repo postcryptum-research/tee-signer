@@ -777,11 +777,17 @@ upstream signer interface. P2TR (`m/86'`) and PSBT v2 are later rounds too.
 
 ### How long does a signature take, and what does it cost?
 
-Signing is a single ecall: parse, judge, seal, sign — a fraction of a second in the signet runs on
-both tiers; the payout processor's own schedule dominates. There is no per-signature fee of any kind. The
-hardware is the cost: a T1 box is cheap bare metal you likely already rent; T2 is an Azure DCsv3
-VM or FLC-capable bare metal. The project has not published a benchmark table; the carried
-measurement item is in [`audit/CONDITIONS.md`](audit/CONDITIONS.md).
+Signing is two ecalls — judge (classify, charge, seal) and sign (classify again, sign) — and with the usual
+mandate it takes a few hundredths of a second: 0.03 s per signing on the project's T2 node (Azure DCsv3, measured
+2026-11-25 with an empty trusted list; `deploy/README.md`). What makes it slow is **your own trusted list**:
+every `descriptor` entry costs `2 × gap` key derivations per classification (both branches, every index up to
+`gap`), and a signing classifies twice. At the bounds — 64 descriptor entries × `gap` 1000, 128 000 derivations
+per scan — a signing took 12.2 s with 2 outputs and 18.1 s with 500 outputs on that same node, and the daemon answered
+nothing else meanwhile (one enclave thread, one request at a time — a `status` asked during such a signing waited
+17.8 s). The plugin waits up to 60 s for a signature, so at the bounds about three queued signings fit. Size the
+list to what you need: an `address` entry costs nothing, a descriptor costs its `gap`; a 20-address sweep list with
+`gap` 20 is invisible. There is no per-signature fee of any kind. The hardware is the cost: a T1 box is cheap bare
+metal you likely already rent; T2 is an Azure DCsv3 VM or FLC-capable bare metal.
 
 ### Is it audited?
 

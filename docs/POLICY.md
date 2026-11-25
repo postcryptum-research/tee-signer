@@ -85,7 +85,11 @@ as TPM_sign's `permission show`.
 
 A **trusted** entry is matched by `address` (exact `scriptPubKey`) or by `descriptor` (v1: `wpkh(KEY/0/*)`
 and `wpkh(KEY/1/*)`, `tr(KEY/…)` later; `KEY` an xpub with origin). Descriptor matching derives
-indices `0..gap` from the descriptor's xpub in-enclave and compares scripts; `gap` ≤ 1000. Each
+indices `0..gap` from the descriptor's xpub in-enclave and compares scripts; `gap` ≤ 1000. **Cost:** a descriptor
+entry is `2 × gap` key derivations per classification (both branches), and a signing classifies twice (judge, then
+sign); at the bounds — 64 entries × `gap` 1000 — a signing took 12.2 s with 2 outputs and 18.1 s with 500 outputs on the
+project's T2 node (2026-11-25, `deploy/README.md`) and the daemon answered nothing else meanwhile. An `address` entry
+costs nothing; size `gap` and the list to what you need. Each
 trusted entry has its own `maxPerTx` and `maxPerWindow`. A `trusted` output counts toward the entry's
 caps **and** toward `limits.window.maxOutflow`.
 
