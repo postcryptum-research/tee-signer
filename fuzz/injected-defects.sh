@@ -61,6 +61,19 @@ case_ "F4: the timelock wait dropped (a pending mandate or owner activates at on
   core/src/state.rs 's/if best >= p\.activation_height \{/if true {/' 'if true {'
 case_ "REQ-r10-O01: the frozen non-re-pin refusal dropped" \
   core/src/state.rs 's/if s\.chain\.frozen \&\& new\.checkpoint == s\.mandate\.checkpoint \{/if false {/' 'if false {'
+# --- phase 2, pass (ii): F7 / F8 oracles (I2, I3, the gap, a cap, C-R10-4 both directions) ---
+case_ "I2: the previous-tx txid check dropped (a swapped previous tx is accepted)" \
+  core/src/classify.rs 's/if prev\.compute_txid\(\) != txin\.previous_output\.txid \{/if false {/' 'if false {'
+case_ "I3: the own-output script check dropped (our hint, someone else's script)" \
+  core/src/classify.rs 's/if verify_own_output_script \&\& script\.as_script\(\) != spk\.as_script\(\) \{/if false {/' 'if false {'
+case_ "I3: the own-index gap check dropped" \
+  core/src/classify.rs 's/if p\.index >= limit \{/if false {/' 'if false {'
+case_ "F8: the per-transaction outflow cap dropped" \
+  core/src/judge.rs 's/if net_outflow > l\.max_per_tx \{/if false {/' 'if false {'
+case_ "C-R10-4 broadened: disarm fires when last_seen_seq EQUALS seq" \
+  core/src/judge.rs 's/if \*last_seen_seq > s\.seq \{/if *last_seen_seq >= s.seq {/' 'if *last_seen_seq >= s.seq {'
+case_ "C-R10-4 narrowed: the rollback-suspected refusal no longer disarms" \
+  core/src/judge.rs 's/Err\(\(Refusal::one\(Reason::FreshnessSeqBehind\), true\)\)/Err((Refusal::one(Reason::FreshnessSeqBehind), false))/' 'FreshnessSeqBehind), false))'
 case_ "C-F01-1: the frozen at-once re-pin disabled (through compare and pending again)" \
   core/src/state.rs 's/^(\s+)if s\.chain\.frozen \{$/\1if false \&\& s.chain.frozen {/' 'if false && s.chain.frozen {'
 

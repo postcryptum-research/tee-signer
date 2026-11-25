@@ -18,7 +18,7 @@ use signer_core::state::{Pending, PendingOwner};
 use signer_core::update::Message;
 use tee_signer_fuzz::seeds::honest;
 use tee_signer_fuzz::targets::{self, TARGETS};
-use tee_signer_fuzz::{gen, structured};
+use tee_signer_fuzz::{gen, policy, structured};
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -145,6 +145,12 @@ fn honest_objects_pass_their_targets() {
     }
     for input in state_ops_seeds() {
         structured::state_ops(&input);
+    }
+    for input in classify_seeds() {
+        policy::classify_target(&input);
+    }
+    for input in judge_seeds() {
+        policy::judge_target(&input);
     }
 }
 
@@ -478,6 +484,163 @@ fn state_ops_seeds() -> Vec<Vec<u8>> {
     ]
 }
 
+/// The scripted spec of a sane payout: own(0,5) 2 000 000 in; unlisted 900 000 + own change (branch 1, index 0)
+/// 1 098 000 out; fee 2 000. `[n_in, n_out, version, flags, lie, target] ‖ [kind, index, lo, hi]…` (amount =
+/// 1000 + u16·1000 sat).
+fn spend_spec(version: u8, flags: u8, lie: u8, target: u8) -> Vec<u8> {
+    let mut v = vec![0, 1, version, flags, lie, target];
+    v.extend_from_slice(&[0, 5, 0xcf, 0x07]); // own hinted, index 5, 2 000 000
+    v.extend_from_slice(&[3, 1, 0x83, 0x03]); // unlisted (foreign) 900 000
+    v.extend_from_slice(&[0, 1, 0x49, 0x04]); // own change: idx 1 → branch 1 index 0, 1 098 000
+    v
+}
+
+/// F7: raw PSBTs (the honest build and garbage), the scripted build with every lie, the differential mode.
+fn classify_seeds() -> Vec<Vec<u8>> {
+    let mut v = Vec::new();
+    let honest = policy::seed_psbt(&spend_spec(1, 0, 0, 0)).unwrap();
+    v.push([vec![0u8], honest].concat());
+    v.push([vec![0u8], vec![0x70, 0x73, 0x62, 0x74, 0xff, 0x00, 0x00]].concat()); // "psbt\xff" and nothing else
+    v.push([vec![0u8], vec![0x5a; 64]].concat());
+    v.push([vec![1u8, 0], spend_spec(1, 0, 0, 0)].concat()); // version 2, no rbf
+    v.push([vec![1u8, 0], spend_spec(0, 1, 0, 0)].concat()); // version 1, rbf
+    v.push([vec![1u8, 0], spend_spec(3, 0, 0, 0)].concat()); // version 3 (classify accepts; judge refuses)
+    let mut cold = spend_spec(1, 0, 0, 0);
+    cold[10] = 1;
+    cold[11] = 3; // out 0 → trusted cold, index 3
+    v.push([vec![1u8, 0], cold.clone()].concat());
+    let mut beyond = spend_spec(1, 0, 0, 0);
+    beyond[10] = 2; // out 0 → the cold wallet beyond the descriptor's gap: unlisted
+    v.push([vec![1u8, 0], beyond].concat());
+    let mut opret = spend_spec(1, 0, 0, 0);
+    opret[1] = 2;
+    opret.extend_from_slice(&[4, 0, 0, 0]); // + an OP_RETURN
+    v.push([vec![1u8, 0], opret.clone()].concat()); // rule None: refused
+    v.push([vec![1u8, 1], opret].concat()); // rule ZeroValue: accepted
+    let mut unhinted = spend_spec(1, 0, 0, 0);
+    unhinted[6] = 1; // own input without a hint: foreign class
+    v.push([vec![1u8, 0], unhinted].concat());
+    let mut foreign = spend_spec(1, 0, 0, 0);
+    foreign[0] = 1;
+    foreign.splice(10..10, [2u8, 9, 0xe8, 0x03]); // + a foreign input of 1 001 000
+    v.push([vec![1u8, 0], foreign.clone()].concat());
+    let mut far = spend_spec(1, 0, 0, 0);
+    far[15] = 0xff; // own change idx 255 → branch 1 index 127: beyond gap 100
+    v.push([vec![1u8, 0], far].concat());
+    for lie in 1..=13u8 {
+        v.push([vec![1u8, 0], spend_spec(1, 0, lie, 0)].concat());
+        v.push([vec![1u8, 0], spend_spec(1, 0, lie, 1)].concat());
+    }
+    v.push(
+        [vec![1u8, 0], {
+            let mut d = foreign.clone();
+            d[4] = 9;
+            d[5] = 1;
+            d
+        }]
+        .concat(),
+    ); // the duplicate outpoint on input 1
+    v.push(
+        [vec![1u8, 0], {
+            let mut d = foreign;
+            d[4] = 5;
+            d[5] = 1;
+            d
+        }]
+        .concat(),
+    ); // a foreign input dressed as ours
+       // knobs: counts against the mandate (max 2), no script type allowed, an explicit SIGHASH_ALL; a raw PSBT without outputs
+    let mut three_in = spend_spec(1, 0, 0, 0);
+    three_in[0] = 2;
+    three_in.splice(10..10, [2u8, 9, 0xe8, 0x03, 0u8, 12, 0xe8, 0x03]); // + a foreign and an own input
+    v.push([vec![1u8, 2], three_in].concat()); // TOO_MANY_INPUTS
+    let mut three_out = spend_spec(1, 0, 0, 0);
+    three_out[1] = 2;
+    three_out.extend_from_slice(&[3, 4, 0xe8, 0x03]); // + a third output
+    v.push([vec![1u8, 2], three_out].concat()); // TOO_MANY_OUTPUTS
+    v.push([vec![1u8, 4], spend_spec(1, 0, 0, 0)].concat()); // INPUT_SCRIPT_TYPE
+    v.push([vec![1u8, 0], spend_spec(1, 2, 0, 0)].concat()); // an explicit SIGHASH_ALL: accepted
+    v.push([vec![0u8], policy::seed_no_outputs()].concat()); // PSBT_PARSE
+    v.push([vec![2u8], spend_spec(1, 0, 0, 0)].concat());
+    v.push([vec![2u8], cold].concat());
+    v
+}
+
+/// F8: `[flags, witness, seq, fill, best_delta, payjoin, scale] ‖ spec`.
+fn judge_seeds() -> Vec<Vec<u8>> {
+    let j = |flags: u8, witness: u8, seq: u8, fill: u8, delta: u8, payjoin: u8, scale: u8, spec: Vec<u8>| {
+        [vec![flags, witness, seq, fill, delta, payjoin, scale], spec].concat()
+    };
+    let spend = spend_spec(1, 0, 0, 0);
+    let mut big = spend_spec(1, 0, 0, 0);
+    big[8] = 0x1f;
+    big[9] = 0x4e; // in 20 000 000
+    big[12] = 0x8f;
+    big[13] = 0x38; // unlisted 14 480 000
+    big[16] = 0x00;
+    big[17] = 0x13; // change 4 865 000 → fee 655 000
+    let mut huge = spend_spec(1, 0, 0, 0);
+    huge[0] = 1;
+    huge.splice(10..10, [0u8, 6, 0xff, 0xff]);
+    huge[8] = 0xff;
+    huge[9] = 0xff; // two own inputs near u64::MAX: the sum wraps
+    let mut foreign = spend_spec(1, 0, 0, 0);
+    foreign[0] = 1;
+    foreign.splice(10..10, [2u8, 9, 0xe8, 0x03]);
+    let mut all_foreign = spend_spec(1, 0, 0, 0);
+    all_foreign[6] = 2;
+    let mut opret = spend_spec(1, 0, 0, 0);
+    opret[1] = 2;
+    opret.extend_from_slice(&[4, 0, 0, 0]); // + an OP_RETURN
+    let mut midfee = spend_spec(1, 0, 0, 0);
+    midfee[16] = 0x19;
+    midfee[17] = 0x04; // change 1 050 000 → fee 50 000
+    let mut cold_big = spend_spec(1, 0, 0, 0);
+    cold_big[8] = 0x60;
+    cold_big[9] = 0xea; // in 60 001 000
+    cold_big[10] = 1;
+    cold_big[11] = 2;
+    cold_big[12] = 0x5f;
+    cold_big[13] = 0xea; // cold index 2, 60 000 000
+    cold_big[16] = 0;
+    cold_big[17] = 0; // change 1 000 → fee 0
+    vec![
+        j(0, 0, 0, 0, 0, 0, 0, spend.clone()),           // accept: the baseline spend
+        j(1, 0, 0, 0, 0, 0, 0, spend.clone()),           // FROZEN
+        j(2, 0, 0, 0, 0, 0, 0, spend.clone()),           // unarmed → FRESHNESS_SEQ_BEHIND, no disarm
+        j(4, 0, 0, 0, 0, 0, 0, spend.clone()),           // chain frozen → CHAIN_REORG
+        j(8, 0, 0, 0, 0, 0, 0, spend.clone()),           // expired
+        j(16, 0, 0, 0, 0, 0, 0, spend.clone()),          // freshness required, no token → FRESHNESS_MISSING
+        j(16, 1, 3, 0, 0, 0, 0, spend.clone()), // fresh token, last_seen == seq → accept, NO disarm (the C-R10-4 boundary)
+        j(16, 1, 3, 1, 0, 0, 0, spend.clone()), // fresh token, last_seen below seq → accept
+        j(16, 2, 3, 0, 0, 0, 0, spend.clone()), // verified, seq behind → FRESHNESS_SEQ_BEHIND WITH disarm (C-R10-4 positive)
+        j(16, 3, 3, 0, 0, 0, 0, spend.clone()), // unverified token with a high seq → FRESHNESS_SIG, no disarm (C-R10-4 negative)
+        j(16, 4, 3, 0, 0, 0, 0, spend.clone()), // tip lagging → FRESHNESS_TIP, no disarm
+        j(16, 5, 3, 0, 0, 0, 0, spend.clone()), // unknown tip hash → FRESHNESS_TIP
+        j(16, 6, 3, 0, 0, 0, 0, spend.clone()), // another enclave's token → FRESHNESS_SIG
+        j(16, 7, 3, 0, 0, 0, 0, spend.clone()), // tip above best → FRESHNESS_TIP
+        j(1 | 16, 2, 3, 0, 0, 0, 0, spend.clone()), // frozen wins over a seq-behind token: FROZEN, no disarm
+        j(0, 0, 0, 0, 0, 0, 7, big.clone()), // caps scaled by 8: CAP_TX, CAP_UNLISTED_TX, FEE_ABS, CAP_WINDOW, CAP_UNLISTED_WINDOW
+        j(0, 0, 0, 0, 0, 0, 0, big), // full caps: unlisted 14.48M > 1M → CAP_UNLISTED_TX, CAP_UNLISTED_WINDOW, FEE_ABS
+        j(0, 0, 0, 250, 0, 0, 0, spend.clone()), // the window nearly spent: CAP_WINDOW / CAP_UNLISTED_WINDOW
+        j(64, 0, 0, 250, 0, 0, 0, spend.clone()), // + a fee window cap, nearly spent → FEE_WINDOW too
+        j(0, 0, 0, 0, 0, 0, 0, huge), // the sum wraps → OVERFLOW
+        j(0, 0, 0, 0, 0, 0, 0, spend_spec(3, 0, 0, 0)), // version 3 → TX_VERSION
+        j(32, 0, 0, 0, 0, 0, 0, spend_spec(1, 1, 0, 0)), // rbf while the mandate forbids it
+        j(0, 0, 0, 0, 0, 0, 0, foreign.clone()), // a foreign input, payjoin None → INPUT_FOREIGN_FORBIDDEN
+        j(0, 0, 0, 0, 0, 1, 0, foreign.clone()), // payjoin InflowOnly, net outflow > 0 → INPUT_FOREIGN_FORBIDDEN
+        j(0, 0, 0, 0, 0, 2, 0, foreign), // payjoin OutflowAllowed → accept
+        j(0, 0, 0, 0, 0, 2, 0, all_foreign), // nothing of ours to sign → INPUT_NOT_OWN
+        j(0, 0, 7, 0, 200, 0, 0, spend.clone()), // best advanced 200 blocks, seq 7 → accept, seq 8
+        j(16, 8, 3, 0, 0, 0, 0, spend), // a Cancel message offered as the witness → FRESHNESS_SIG, no disarm
+        j(128, 0, 0, 0, 0, 0, 0, opret.clone()), // OP_RETURN allowed (ZeroValue) → accept; it charges nothing
+        j(0, 0, 0, 0, 0, 0, 0, opret), // OP_RETURN under rule None: classify refuses, judge never runs
+        j(0, 0, 0, 0, 0, 0, 8, midfee.clone()), // fee 50 000 with max_fee_rate = u64::MAX: no FEE_RATE; FEE_ABS (100k) does not bind → accept
+        j(0, 0, 0, 0, 0, 0, 0, midfee),         // the same fee under the 100 sat/vB cap → FEE_RATE
+        j(0, 0, 0, 0, 0, 0, 7, cold_big), // cold 60M with caps /128: CAP_TRUSTED_TX, CAP_TRUSTED_WINDOW (+ CAP_TX, CAP_WINDOW)
+    ]
+}
+
 fn vectors() -> Vec<serde_json::Value> {
     files(&root().join("../vectors/r1"))
         .into_iter()
@@ -581,6 +744,13 @@ fn write_seeds() {
     }
     for (i, s) in state_ops_seeds().into_iter().enumerate() {
         put("state_ops", &format!("seed-{i:02}"), &s);
+    }
+    // phase 2, pass (ii)
+    for (i, s) in classify_seeds().into_iter().enumerate() {
+        put("classify", &format!("seed-{i:02}"), &s);
+    }
+    for (i, s) in judge_seeds().into_iter().enumerate() {
+        put("judge", &format!("seed-{i:02}"), &s);
     }
     // negative seeds: non-canonical and re-tagged inputs that must be REFUSED. They make the stable
     // replay itself a mutation detector (C-R10-7b): drop a `finish()`, a bound or a domain tag in

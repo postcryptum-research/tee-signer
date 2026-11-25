@@ -16,6 +16,8 @@ case "$t" in
   headers)                                maxlen=8192;  malloc=64 ;;   # a mode byte + up to 64 raw headers, or a script
   state_ops)                              maxlen=256;   malloc=16 ;;   # 24 eight-byte step records + slack
   work_add)                               maxlen=64;    malloc=16 ;;
+  classify)                               maxlen=65536; malloc=64 ;;   # raw PSBTs (the proto bound is 256 KiB; 64 KiB keeps the fuzzer fast) or a 48-byte script
+  judge)                                  maxlen=256;   malloc=16 ;;   # 7 knob bytes + a PSBT script
   *) echo "unknown target $t"; exit 2 ;;
 esac
 dirs=("corpus/$t"); flags=()                      # first dir = where libFuzzer writes new inputs
