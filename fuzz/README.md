@@ -60,8 +60,10 @@ proof, `SIGN` signs only the judged bytes on the charged blob, a reload is unarm
 session mark; the response bytes are predicted exactly, signatures included — RFC 6979). The nosgx container has no
 MAC, so a changed byte inside a blob can still decode — as a state outside `validate`'s bounds, which on hardware the
 AES-GCM tag refuses before a field is read; a descriptor gap in the millions is `classify` deriving for hours (the two
-timeouts of the first hour run). The harness therefore sends no state the seal would refuse (`carried_state`: the
-carried mandate must pass `validate`; `TEE_FUZZ_TRACE=1` prints the skip) and sends everything else a change produces.
+timeouts of the first hour run). Since R11 (C-EXT1-3) the enclave refuses such a state itself — `STATE_INVALID` at
+`open()`, before any gate reads a bound and before the counter proof is taken — and the harness predicts that refusal
+instead of skipping the call (`carried_state` now only feeds the trace; the two run-1 timeouts live on as regressions
+that assert it); everything a change produces is sent.
 
 Limits (`run.sh`): `-max_len` from the `proto` bound the type lives under, `-malloc_limit_mb` **below**
 that bound (an untrusted length that drives an allocation is itself a V2 DoS finding), `-timeout=10`,

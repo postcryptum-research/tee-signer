@@ -54,7 +54,7 @@ fn state_with(f: &Fx, m: Mandate) -> State {
 fn simple_payout(f: &Fx, unlisted_amount: u64, fee: u64) -> Psbt {
     // in: own(0,5) 2_000_000 ; out: foreign unlisted ; change own(1,0)
     let in_amt = 2_000_000u64;
-    let change = in_amt - unlisted_amount - fee;
+    let change = in_amt.checked_sub(unlisted_amount).and_then(|v| v.checked_sub(fee)).expect("fixture amounts");
     build_psbt(
         &f.w,
         &[In::Own { branch: 0, index: 5, amount: in_amt, hint: true }],
@@ -764,7 +764,7 @@ fn run(v: &Vector) -> Result<(), String> {
                 }
             }
             // state charged before signing: seq advanced, window charged
-            if state.seq != v.state.seq + 1 {
+            if Some(state.seq) != v.state.seq.checked_add(1) {
                 return Err("seq not advanced".into());
             }
             if summary.seq != state.seq {

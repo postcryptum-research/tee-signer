@@ -81,13 +81,10 @@ pub fn read_rand(buf: &mut [u8]) {
                 ^ (core::ptr::addr_of!(CTR) as usize as u64).rotate_left(17);
             CTR.store(0x5eed ^ aslr.wrapping_mul(0x9E37_79B9_7F4A_7C15), Ordering::Release);
         }
-        let mut off = 0usize;
-        while off < buf.len() {
+        for chunk in buf.chunks_mut(32) {
             let c = CTR.fetch_add(1, Ordering::SeqCst);
             let block = signer_core::sha256(&c.to_le_bytes());
-            let n = (buf.len() - off).min(32);
-            buf[off..off + n].copy_from_slice(&block[..n]);
-            off += n;
+            chunk.copy_from_slice(&block[..chunk.len()]);
         }
     }
 }
@@ -143,9 +140,9 @@ pub fn seal(aad: &[u8], plain: &[u8]) -> Option<Vec<u8>> {
         // host stand-in: a tagged, UNENCRYPTED container; tests only
         let mut out = alloc::vec::Vec::new();
         out.extend_from_slice(b"NOSGX-SEAL-V1");
-        out.extend_from_slice(&(aad.len() as u32).to_le_bytes());
+        out.extend_from_slice(&u32::try_from(aad.len()).ok()?.to_le_bytes());
         out.extend_from_slice(aad);
-        out.extend_from_slice(&(plain.len() as u32).to_le_bytes());
+        out.extend_from_slice(&u32::try_from(plain.len()).ok()?.to_le_bytes());
         out.extend_from_slice(plain);
         Some(out)
     }
@@ -182,22 +179,16 @@ pub fn unseal(sealed: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
     }
     #[cfg(feature = "nosgx")]
     {
-        let tag = b"NOSGX-SEAL-V1";
-        if sealed.len() < tag.len() + 8 || &sealed[..tag.len()] != tag {
+        // tag ‖ u32 aad_len ‖ aad ‖ u32 txt_len ‖ txt, nothing after: read by splitting, no offset arithmetic
+        let rest = sealed.strip_prefix(b"NOSGX-SEAL-V1".as_slice())?;
+        let (al, rest) = rest.split_first_chunk::<4>()?;
+        let (aad, rest) = rest.split_at_checked(usize::try_from(u32::from_le_bytes(*al)).ok()?)?;
+        let (tl, rest) = rest.split_first_chunk::<4>()?;
+        let (txt, rest) = rest.split_at_checked(usize::try_from(u32::from_le_bytes(*tl)).ok()?)?;
+        if !rest.is_empty() {
             return None;
         }
-        let mut p = tag.len();
-        let al = u32::from_le_bytes(sealed[p..p + 4].try_into().ok()?) as usize;
-        p += 4;
-        let aad = sealed.get(p..p + al)?.to_vec();
-        p += al;
-        let tl = u32::from_le_bytes(sealed.get(p..p + 4)?.try_into().ok()?) as usize;
-        p += 4;
-        let txt = sealed.get(p..p + tl)?.to_vec();
-        if p + tl != sealed.len() {
-            return None;
-        }
-        Some((aad, txt))
+        Some((aad.to_vec(), txt.to_vec()))
     }
 }
 
@@ -242,7 +233,8 @@ pub fn mrenclave() -> [u8; 32] {
             abort();
         }
         let mut m = [0u8; 32];
-        m.copy_from_slice(&report[ffi::MRENCLAVE_OFFSET..ffi::MRENCLAVE_OFFSET + 32]);
+        // R11: a slice of a slice, no offset sum — the one arithmetic the real-SGX arms carried
+        m.copy_from_slice(&report[ffi::MRENCLAVE_OFFSET..][..32]);
         m
     }
     #[cfg(feature = "nosgx")]

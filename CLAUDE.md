@@ -65,10 +65,11 @@ project exists to remove — stop and escalate.
    rule converts crate by crate: `host/` and `owner/` directly, `core/` and `enclave/` through a REQ
    (rule 1). A truncating or sign-losing `as` cast is the same class (the external review's H6, #18):
    `cast_possible_truncation` and `cast_sign_loss` are `deny` next to it — `u32::try_from`,
-   `Amount::from_btc`, or a reason on the line. **Status (2026-11-25, REQ-ext1 PR B):** `host/signerd` and
-   `owner/owner-cli` carry the three lints and are converted; `core/tests`, `enclave/rcore` and `core/`'s
-   `[lints]` entry convert with the next core round, by REQ — until then `core/src` is under its
-   `#![deny]` alone.
+   `Amount::from_btc`, or a reason on the line. **Status (2026-11-25):** every product crate carries the
+   three lints as a `[lints.clippy]` table and is converted — `host/signerd` and `owner/owner-cli` in
+   REQ-ext1 PR B, `core/` (lib and tests) and `enclave/rcore` in R11 — with `overflow-checks = true` in
+   every profile; `enclave/rcore/Cargo.toml` is the enclave build's root manifest, so the runtime net
+   reaches `signer-core` inside the enclave too.
 
 ## Infrastructure isolation (shared SGX host — do not break other projects)
 
@@ -93,7 +94,7 @@ cd host/signerd  && cargo fmt --check && cargo clippy --all-targets --features n
 cd owner/owner-cli && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 cd fuzz  && cargo clippy --no-default-features --all-targets -- -D warnings && cargo test --no-default-features
          # ^ the fuzz replay gate (REQ-r10); discovery runs: fuzz/run.sh <target>, laptop only
-# clippy is the SafeMath linter (rule 9) of the product crates: a bare arithmetic operator fails it in core, signerd, owner-cli — not in fuzz
+# clippy is the SafeMath linter (rule 9) of the product crates: a bare arithmetic operator or a truncating cast fails it in core, rcore, signerd, owner-cli — not in fuzz
 # enclave builds are SERVER-SIDE (SGX SDK + hardware): make SGX_MODE=HW SGX_DEBUG=1 on T1 hardware
 ```
 

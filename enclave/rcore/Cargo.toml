@@ -34,14 +34,28 @@ p256      = { version = "=0.13.2",  default-features = false, features = ["ecdsa
 aes-gcm   = { version = "=0.10.3",  default-features = false, features = ["aes", "alloc"] }
 zeroize   = { version = "1", default-features = false }
 
+# Hard rule 9 (CLAUDE.md), R11 (C-EXT1-1): SafeMath in the TCB — no bare arithmetic operator, no truncating or
+# sign-losing `as`; every operation names its failure mode. The table reaches tests and bins (a crate attribute
+# does not); the same three lints are also at the top of src/lib.rs.
+[lints.clippy]
+arithmetic_side_effects = "deny"
+cast_possible_truncation = "deny"
+cast_sign_loss = "deny"
+
+# This manifest is the ROOT of the enclave build (`cargo build --locked --release` here, gate 3), so these
+# profiles govern signer-core compiled into the enclave as well. overflow-checks (R11, C-EXT1-1): an arithmetic
+# overflow the conversion missed panics → with panic = "abort" the ecall aborts (fail-closed; the host sees
+# SGX_ERROR_ENCLAVE_CRASHED and nothing is charged) instead of wrapping into a wrong number.
 [profile.release]
 lto = true
 codegen-units = 1
 panic = "abort"
 opt-level = 2
+overflow-checks = true
 
 [profile.dev]
 panic = "abort"
+overflow-checks = true
 
 [dev-dependencies]
 hex = "0.4"

@@ -32,11 +32,22 @@ hex = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Hard rule 9 (CLAUDE.md), R11 (C-EXT1-1): SafeMath in the TCB — the three lints reach tests/ too (the
+# `#![deny]` in src/lib.rs does not); a bare operator or a truncating `as` fails `cargo clippy`.
+[lints.clippy]
+arithmetic_side_effects = "deny"
+cast_possible_truncation = "deny"
+cast_sign_loss = "deny"
+
+# overflow-checks (R11): the runtime net for the host tests of this crate; inside the enclave the profile of
+# enclave/rcore/Cargo.toml (the enclave build's root manifest) governs.
 [profile.release]
 lto = true
 codegen-units = 1
 panic = "abort"
 opt-level = 2
+overflow-checks = true
 
 [profile.dev]
 panic = "abort"
+overflow-checks = true

@@ -244,3 +244,17 @@ future-time rule (no clock). Signet's cheap PoW and regtest's absent PoW are lab
 5. Reproducibility (C-R1-3): two builds in the pinned container compare equal on MRENCLAVE and
    every SIGSTRUCT field except `header.date` and its signature (`sgx_sign dump`), never on the
    `.so` hash.
+6. **One TCS** (R11, C-R11-2): `Enclave.config.xml` says `TCSNum 1`, `TCSPolicy 1`, or the build
+   fails (gate 8; CI runs the same check). `session::ensure()` draws the session id and the boot
+   challenge with a plain load/store on first use and rests on the runtime admitting one ecall at a
+   time; a config that admits more must first make `ensure()` a proper once-init.
+
+**Arithmetic (R11, C-EXT1-1).** `enclave/rcore/Cargo.toml` is the root manifest of the enclave build
+(gate 3), so its profiles govern `signer-core` compiled into the enclave as well: the SafeMath lints of
+hard rule 9 (`arithmetic_side_effects`, `cast_possible_truncation`, `cast_sign_loss` as `deny`) are
+enforced by clippy on both crates in CI, and `overflow-checks = true` is the runtime net — an overflow
+the conversion missed panics, `panic = "abort"` turns the panic into `abort()`, the ecall dies with
+`SGX_ERROR_ENCLAVE_CRASHED` (0x1006), nothing is charged, and the enclave is unusable until the daemon
+reloads it (a reload comes up NOT ARMED until the REQ-r9 counter arms it). The real-SGX arms of `sgx.rs`
+(`cfg(not(feature = "nosgx"))`) are the one code no linter reaches under the host target: their arithmetic
+is listed by hand in the R11 impl REQ and read by the auditor, with `overflow-checks` behind them.

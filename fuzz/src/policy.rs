@@ -14,7 +14,7 @@ use bitcoin::transaction::Version;
 use bitcoin::{Amount, OutPoint, Psbt, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness};
 use signer_core::classify::{classify, Classified, InputClass, OutputClass};
 use signer_core::judge::{judge, Verdict};
-use signer_core::mandate::{Mandate, OpReturnRule, PayjoinRule};
+use signer_core::mandate::{Mandate, Matcher, OpReturnRule, PayjoinRule, TrustedDest};
 use signer_core::reason::{Reason, Refusal};
 use signer_core::update::Message;
 use signer_core::wallet::OwnPath;
@@ -434,7 +434,16 @@ fn expected(spec: &Spec, m: &Mandate) -> Result<(Vec<InputClass>, Vec<OutputClas
                 }
                 OutputClass::Own { path: p, amount: o.amount }
             }
-            OutKind::Cold => OutputClass::Trusted { dest: 0, amount: o.amount },
+            // the cold wallet's script is trusted when the mandate's first destination names it: a descriptor
+            // covers every index below its gap (the generator stays below COLD_GAP), an Address exactly one script
+            // (knob 8), no destination at all nothing — written from the mandate, not from the classifier
+            OutKind::Cold => match m.destinations.trusted.first().map(|t| &t.matcher) {
+                Some(Matcher::Descriptor { .. }) => OutputClass::Trusted { dest: 0, amount: o.amount },
+                Some(Matcher::Address { script_pubkey }) if *script_pubkey == out_spk(fx(), o).to_bytes() => {
+                    OutputClass::Trusted { dest: 0, amount: o.amount }
+                }
+                _ => OutputClass::Unlisted { amount: o.amount },
+            },
             OutKind::ColdBeyond | OutKind::Unlisted => OutputClass::Unlisted { amount: o.amount },
         });
     }
@@ -453,6 +462,17 @@ fn mandate_for_classify(knob: u8) -> Mandate {
     }
     if knob & 4 != 0 {
         m.wallet.script_types.clear(); // no own input may be signed: INPUT_SCRIPT_TYPE
+    }
+    if knob & 8 != 0 {
+        // R11 (C-R10P2-3): the one trusted destination is an ADDRESS — the cold wallet's index 1 — so a Cold
+        // output at index 1 is trusted by the exact-script arm and one at index 2 is not (both directions)
+        let f = fx();
+        m.destinations.trusted = vec![TrustedDest {
+            label: "cold-address".into(),
+            matcher: Matcher::Address { script_pubkey: f.cold.spk(0, 1).to_bytes() },
+            max_per_tx: m.limits.max_per_tx,
+            max_per_window: m.limits.window_max_outflow,
+        }];
     }
     m
 }

@@ -266,7 +266,8 @@ pub fn build_psbt(w: &Wallet, ins: &[In], outs: &[Out], version: i32, rbf: bool)
             }
             In::Foreign { spk, amount } => (spk.clone(), *amount, None),
         };
-        let prev = funding_tx(&[(spk, amount)], 1000 + i as u32);
+        let prev =
+            funding_tx(&[(spk, amount)], 1000u32.checked_add(u32::try_from(i).expect("input index")).expect("lock"));
         let txid = prev.compute_txid();
         txins.push(TxIn {
             previous_output: OutPoint { txid, vout: 0 },

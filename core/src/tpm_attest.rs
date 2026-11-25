@@ -208,7 +208,8 @@ pub fn build_nv_attest(
     let mut v = alloc::vec::Vec::with_capacity(200);
     v.extend_from_slice(&TPM_GENERATED.to_be_bytes());
     v.extend_from_slice(&ST_ATTEST_NV.to_be_bytes());
-    v.extend_from_slice(&(signer_name.len() as u16).to_be_bytes());
+    // a TPM Name is at most 68 bytes; a longer one cannot be honest and gets a size the verifier refuses
+    v.extend_from_slice(&u16::try_from(signer_name.len()).unwrap_or(u16::MAX).to_be_bytes());
     v.extend_from_slice(signer_name);
     v.extend_from_slice(&32u16.to_be_bytes());
     v.extend_from_slice(nonce);
@@ -217,7 +218,7 @@ pub fn build_nv_attest(
     v.extend_from_slice(&0u32.to_be_bytes()); // restartCount
     v.push(1); // safe
     v.extend_from_slice(&0u64.to_be_bytes()); // firmwareVersion
-    v.extend_from_slice(&(NV_NAME_LEN as u16).to_be_bytes());
+    v.extend_from_slice(&u16::try_from(NV_NAME_LEN).unwrap_or(u16::MAX).to_be_bytes());
     v.extend_from_slice(index_name);
     v.extend_from_slice(&0u16.to_be_bytes()); // offset
     v.extend_from_slice(&8u16.to_be_bytes());
