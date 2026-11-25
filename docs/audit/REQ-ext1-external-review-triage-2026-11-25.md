@@ -1,6 +1,6 @@
 # REQ-ext1 — triage of the independent external review of 2026-11-25 (host-side fixes)
 
-**Date:** 2026-11-25. **Status:** SENT. **Source:** an independent review of the whole Rust of `main` @ `2ff937e`
+**Date:** 2026-11-25. **Status:** TRIAGE RULED (`RESP-ext1-external-review-triage-2026-11-25.md`, same day) — per-PR RESPs pending. **Source:** an independent review of the whole Rust of `main` @ `2ff937e`
 (core, enclave/rcore, host/signerd, owner/owner-cli, fuzz), received by the owner on 2026-11-25 and held by the
 owner outside the repository (the auditor has the owner's copy on this machine). **Scope of the fixes:**
 `host/signerd`, `owner/owner-cli`, `.github/workflows/ci.yml`, `deploy/README.md` — `core/` and `enclave/`
@@ -88,3 +88,4 @@ PR #8 / #12; they rebase on `main` as it moves.
 | Date | Event |
 |---|---|
 | 2026-11-25 | report received by the owner; moved outside the repository; every finding verified by the dev; issues #13–#23 filed; this REQ sent |
+| 2026-11-25 | PR A #24 (`a8c7313`, #13 #14) and PR B #25 (`d7f3364`, #15 #18) submitted; the auditor's triage ruled firsthand — `RESP-ext1-external-review-triage-2026-11-25.md`: Q1 concur ×11, Q0 no core/enclave code here (C-EXT1-1, C-EXT1-2 for the next core round), Q2 one RESP per PR, Q3 C-R1-6 and C-R10-6 closed by the auditor's reading and C-R10-5 confirmed, Q4 PR B's sequencing concurred |
