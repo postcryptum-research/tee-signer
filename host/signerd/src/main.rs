@@ -284,6 +284,21 @@ impl Daemon {
         }
     }
 
+    /// The owner's rule (2026-11-25, on the auditor's question in RESP-ext1 PR C): while a persist
+    /// failure stands the daemon does not sign. A freeze or disarm the host could not keep would
+    /// otherwise be undone by the next signature over the old blob — and the REQ-r9 counter cannot
+    /// catch that (the increment never happened). Reads, owner messages, the feed and the freeze stay
+    /// served: each of them can succeed in persisting and so clear the failure.
+    fn signing_blocked(&self) -> Option<axum::response::Response> {
+        self.persist_error.as_ref().map(|e| {
+            err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("signing refused: the last state change could not be persisted ({e}) — fix the state directory; the next successful state write clears this"),
+                vec!["PERSIST_FAILED".into()],
+            )
+        })
+    }
+
     /// `/healthz`: `ok`, or 503 naming the persist failure that stands (#16).
     fn health(&self) -> (StatusCode, String) {
         match &self.persist_error {
@@ -1165,6 +1180,9 @@ async fn h_sign(
     if !authorized(&headers, &d.token) {
         return err(StatusCode::UNAUTHORIZED, "token", vec![]);
     }
+    if let Some(refused) = d.signing_blocked() {
+        return refused;
+    }
     let Ok(sealed) = d.sealed() else { return err(StatusCode::CONFLICT, "not initialised", vec![]) };
     let Ok(psbt) = psbt_bytes(&req.psbt) else {
         return err(StatusCode::BAD_REQUEST, "psbt: not base64/hex or not a PSBT", vec![]);
@@ -1582,5 +1600,18 @@ mod persist_tests {
         assert_eq!(std::fs::read(d.sealed_path()).unwrap(), vec![1, 2, 3]);
         assert_eq!(d.sealed, Some(vec![1, 2, 3]));
         let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn signing_is_refused_while_a_persist_failure_stands() {
+        // the owner's rule (2026-11-25): a freeze or disarm the host could not keep must not be undone by
+        // the next signature over the old blob
+        let mut d = daemon(PathBuf::from("/nonexistent/for/this/test"));
+        assert!(d.signing_blocked().is_none(), "healthy: nothing blocks");
+        d.persist_error = Some("disk full".into());
+        let r = d.signing_blocked().expect("a standing persist failure refuses signing");
+        assert_eq!(r.status(), StatusCode::SERVICE_UNAVAILABLE);
+        d.persist_error = None;
+        assert!(d.signing_blocked().is_none(), "cleared by the next successful persist");
     }
 }

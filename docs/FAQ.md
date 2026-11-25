@@ -640,6 +640,21 @@ not such a call; it only reports. Read the status again after the next block (`b
 look at the daemon's log for `STATE_STALE` or `TPM_…` — then the pause is real and the four anchor
 steps are the answer.
 
+### The signer answers `PERSIST_FAILED` (503) to every payout, and `/healthz` says `persist failed`. What happened?
+
+The daemon could not write its state file after the enclave changed the state — a full or read-only disk,
+a broken state directory, a permissions change on the volume. Since 2026-11-25 that is not a log line
+but a stop: the daemon remembers the failure (`persist_error` in `/v1/status`, 503 on `/healthz`) and
+**refuses to sign** until a state write succeeds again. The reason is the one the enclave exists for: a
+freeze or a disarm the host could not keep would otherwise be undone by the next signature over the old
+state, and the TPM counter cannot catch that (the increment never happened). Everything that can repair
+the situation stays available: status and receipts are readable, the header feed keeps trying, owner
+messages and `freeze` are accepted — each of them writes state, and the first write that succeeds clears
+the failure and signing resumes by itself. What you do: fix the disk or the state directory
+(`/var/lib/signerd` in the container), then wait for the next block or read the status again; if
+`persist_error` is gone, you are back. Nothing was lost: the enclave's own state moved on only inside the
+load that could not persist it, and a restart comes up from the last state that was written.
+
 ### Why does the enclave have two keys?
 
 The wallet key holds the money, so the only thing it ever signs is a Bitcoin transaction the
