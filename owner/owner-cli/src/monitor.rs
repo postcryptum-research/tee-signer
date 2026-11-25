@@ -6,6 +6,12 @@
 //! One pass = one verdict (OK / WARN / ALARM). The only state kept across runs is the verified
 //! receipt high-water mark `(session_id, seq)`, written BEFORE the pass's verdict so a restarted
 //! monitor cannot forget a seq it has seen (C-R4-5: the journal line per pass is the heartbeat).
+//!
+//! Two rules from the external review of 2026-11-25: every step after the configuration is soft — a
+//! failure is a WARN with a code (`STATE_WRITE`, `CHAIN_SOURCE`, `WITNESS_SKIPPED`, `WITNESS_REFUSED`),
+//! never the end of the pass, so the FREEZE reflex and the journal line are reached whatever else failed
+//! (#13); and the node source remembers the hashes of the blocks it walked and re-walks from the deepest
+//! one that still stands when the chain was reorganised (#14).
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
@@ -288,6 +294,26 @@ struct Chain {
     spends: Vec<(String, bool, Option<u32>, u64)>, // txid, confirmed, height, net outflow sat
     scanned: u32,
     complete: bool,
+    /// The node source found the chain it last walked reorganised (#14).
+    rewound: Option<Rewind>,
+}
+
+/// What the node source did about a reorganised chain (#14).
+#[derive(Clone, Copy, Debug)]
+struct Rewind {
+    /// the last block the previous pass walked, no longer in the chain
+    last_walked: u32,
+    /// where the walk resumed
+    resumed_from: u32,
+    /// no remembered block stood: the walk restarted from `tip − window` with the UTXO set re-read
+    restarted: bool,
+}
+
+impl Chain {
+    /// No chain view this pass: nothing below can be judged (the pass says so and goes on).
+    fn none() -> Self {
+        Chain { spends: Vec::new(), scanned: 0, complete: false, rewound: None }
+    }
 }
 
 /// Which addresses have ever had history, so an incremental pass re-reads only those plus the
@@ -369,7 +395,7 @@ fn scan_chain(
         }
     }
     spends.sort_by(|a, b| a.2.cmp(&b.2).then(a.0.cmp(&b.0)));
-    Ok(Chain { spends, scanned: read, complete: true })
+    Ok(Chain { spends, scanned: read, complete: true, rewound: None })
 }
 
 /// Read-only RPC to the owner's node with a timeout long enough for `scantxoutset`.
@@ -390,6 +416,15 @@ impl NodeRpc {
             http: reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(900)).build()?,
         })
     }
+}
+
+/// What the monitor asks of its node: one JSON-RPC call. `NodeRpc` is the owner's node over HTTP; the
+/// tests drive `scan_node` with a scripted chain behind the same trait (#14).
+trait Rpc {
+    fn rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value>;
+}
+
+impl Rpc for NodeRpc {
     fn rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
         let r = self
             .http
@@ -417,6 +452,31 @@ struct NodeCache {
     /// mempool txids already read for incoming outputs (C-R4-7), so a pass reads only new ones
     #[serde(default)]
     mempool_seen: HashSet<String>,
+    /// (height, hash) of the blocks walked, oldest first, the last `REMEMBERED_BLOCKS` — so a pass can
+    /// tell whether the chain it walked is still the chain (#14). Empty in caches written before this
+    /// field existed: such a cache restarts from the UTXO set once.
+    #[serde(default)]
+    walked: Vec<(u32, String)>,
+}
+
+/// How many walked blocks the node cache remembers: two days — a reorg deeper than that is far beyond
+/// any mandate's `maxReorg` (the enclave has frozen itself long before) and restarts the walk from the
+/// UTXO set.
+const REMEMBERED_BLOCKS: usize = 288;
+
+/// The chain below `ancestor` stands, everything above it was reorganised away: forget the hashes above
+/// it and resume the walk there. A spend recorded in a block above it may or may not be in the new
+/// chain: it keeps its alarm (fail-closed — somebody signed it) but loses its confirmation until the
+/// re-walk finds it again; unconfirmed, it still counts in the cap window.
+fn rewind(cache: &mut NodeCache, ancestor: u32) {
+    cache.walked.retain(|(h, _)| *h <= ancestor);
+    cache.last_block = ancestor;
+    for (confirmed, height, _) in cache.spends.values_mut() {
+        if height.map(|h| h > ancestor).unwrap_or(false) {
+            *confirmed = false;
+            *height = None;
+        }
+    }
 }
 
 /// The owner's own node as the chain source. Completeness comes from `scantxoutset` over the
@@ -425,7 +485,7 @@ struct NodeCache {
 /// for the mempool. The first pass walks the last `window` blocks so the cap accounting starts full.
 #[allow(clippy::too_many_arguments)]
 fn scan_node(
-    node: &NodeRpc,
+    node: &dyn Rpc,
     w: &WalletRecord,
     gap: u32,
     hwm_seq: u64,
@@ -447,6 +507,43 @@ fn scan_node(
     let info = node.rpc("getblockchaininfo", serde_json::json!([]))?;
     let tip = info["blocks"].as_u64().unwrap_or(0) as u32;
     let tip_hash = info["bestblockhash"].as_str().unwrap_or("").to_string();
+    // 0. is the chain the last pass walked still the chain? (#14) The remembered hashes, newest first,
+    //    against the node: the newest that still stands is where the walk resumes. None standing (a
+    //    reorg deeper than what is remembered, or a cache from before the hashes were kept): start over
+    //    from `tip − window` with the UTXO set re-read, as on a first pass.
+    let mut utxo_scan = utxo_scan;
+    let mut rewound = None;
+    if cache.last_block > 0 {
+        let mut ancestor = None;
+        for (h, hash) in cache.walked.iter().rev() {
+            if *h > tip {
+                continue;
+            }
+            let at = node.rpc("getblockhash", serde_json::json!([h]))?;
+            if at.as_str() == Some(hash.as_str()) {
+                ancestor = Some(*h);
+                break;
+            }
+        }
+        match ancestor {
+            Some(a) if a == cache.last_block => {}
+            Some(a) => {
+                rewound =
+                    Some(Rewind { last_walked: cache.last_block, resumed_from: a.saturating_add(1), restarted: false });
+                rewind(cache, a);
+            }
+            None => {
+                rewound = Some(Rewind {
+                    last_walked: cache.last_block,
+                    resumed_from: tip.saturating_sub(window),
+                    restarted: true,
+                });
+                cache.walked.clear();
+                cache.last_block = 0;
+                utxo_scan = true;
+            }
+        }
+    }
     // 1. every unspent output of ours, from the UTXO set itself (not from any index the host could
     //    lie through) — on the first pass and on every resync pass; the block walk keeps it current
     if utxo_scan {
@@ -475,7 +572,10 @@ fn scan_node(
         for tx in block["tx"].as_array().cloned().unwrap_or_default() {
             note_tx(&tx, &ours, cache, true, Some(h));
         }
+        cache.walked.push((h, hash.as_str().unwrap_or("").to_string()));
     }
+    let excess = cache.walked.len().saturating_sub(REMEMBERED_BLOCKS);
+    cache.walked.drain(..excess);
     cache.last_block = tip;
     // 2b. outputs we created that are still unconfirmed (our own change in the mempool): the UTXO
     //     set and the blocks do not know them yet, so a thief spending them would be invisible —
@@ -536,7 +636,7 @@ fn scan_node(
     let mut spends: Vec<(String, bool, Option<u32>, u64)> =
         cache.spends.iter().map(|(t, (c, h, n))| (t.clone(), *c, *h, *n)).collect();
     spends.sort_by(|a, b| a.2.cmp(&b.2).then(a.0.cmp(&b.0)));
-    Ok((Chain { spends, scanned: range.saturating_mul(2), complete: true }, (tip, tip_hash)))
+    Ok((Chain { spends, scanned: range.saturating_mul(2), complete: true, rewound }, (tip, tip_hash)))
 }
 
 /// Record a transaction's effect on us: outputs to our addresses become known outputs; inputs
@@ -592,7 +692,37 @@ fn hwm_path(cfg: &Cfg) -> PathBuf {
     p
 }
 
-/// One pass. Returns the verdict code: 0 OK, 1 WARN, 2 ALARM.
+/// A step the verdict does not depend on: its failure is a WARN with a code and a note, never the end of
+/// the pass — the reflex (section 8) and the journal line must be reached on every pass that read its
+/// configuration (#13).
+fn soft<T>(
+    r: Result<T>,
+    code: &str,
+    what: &str,
+    warn: &mut bool,
+    codes: &mut Vec<String>,
+    notes: &mut Vec<String>,
+) -> Option<T> {
+    match r {
+        Ok(v) => Some(v),
+        Err(e) => {
+            *warn = true;
+            codes.push(code.into());
+            notes.push(format!("{what}: {e:#}"));
+            None
+        }
+    }
+}
+
+/// A state file beside the journal, written whole; a failure is `STATE_WRITE` (WARN), the pass goes on.
+fn save_state<T: Serialize>(path: &PathBuf, v: &T, warn: &mut bool, codes: &mut Vec<String>, notes: &mut Vec<String>) {
+    let r = serde_json::to_string_pretty(v).map_err(anyhow::Error::from).and_then(|s| Ok(std::fs::write(path, s)?));
+    soft(r, "STATE_WRITE", &format!("writing {}", path.display()), warn, codes, notes);
+}
+
+/// One pass. Returns the verdict code: 0 OK, 1 WARN, 2 ALARM. Only the configuration reads at the top
+/// can end the pass early; every later step is soft (#13) — its failure is a WARN with a code — so the
+/// reflex and the journal line are reached whatever else failed.
 pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
     let w: WalletRecord = serde_json::from_str(&std::fs::read_to_string(&cfg.wallet)?)?;
     let m: MandateJson = serde_json::from_str(&std::fs::read_to_string(&cfg.mandate)?).context("mandate JSON")?;
@@ -631,7 +761,7 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
         }
     }
     hwm.passes = hwm.passes.saturating_add(1);
-    std::fs::write(hwm_path(cfg), serde_json::to_string_pretty(&hwm)?)?;
+    save_state(&hwm_path(cfg), &hwm, &mut warn, &mut codes, &mut notes);
 
     // 2. chain — the ground truth, from the owner's source; a source failure is a WARN (the
     //    checks below are skipped for this pass and the heartbeat says so), never a dead monitor
@@ -659,39 +789,61 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
         });
         match r {
             Ok((c, tip)) => {
-                std::fs::write(&cache_path, serde_json::to_string(&cache)?)?;
-                notes.push(format!("chain source: own node {url} ({}blocks to {} + mempool; {} outputs of ours known, {} spends); reachable range {range} per branch", if utxo_scan { "UTXO set + " } else { "" }, tip.0, cache.outputs.len(), cache.spends.len()));
+                save_state(&cache_path, &cache, &mut warn, &mut codes, &mut notes);
+                if let Some(r) = c.rewound {
+                    notes.push(if r.restarted {
+                        format!("reorg: block {}, the last one walked, is no longer in the chain and no remembered block stands — restarted from the UTXO set and block {}", r.last_walked, r.resumed_from)
+                    } else {
+                        format!("reorg: block {}, the last one walked, is no longer in the chain — re-walked from {}", r.last_walked, r.resumed_from)
+                    });
+                }
+                let scanned_utxo = utxo_scan || c.rewound.is_some_and(|r| r.restarted);
+                notes.push(format!("chain source: own node {url} ({}blocks to {} + mempool; {} outputs of ours known, {} spends); reachable range {range} per branch", if scanned_utxo { "UTXO set + " } else { "" }, tip.0, cache.outputs.len(), cache.spends.len()));
                 (c, tip)
             }
             Err(e) => {
                 warn = true;
                 codes.push("CHAIN_SOURCE".into());
                 notes.push(format!("node scan failed, spend/cap checks skipped this pass: {e}"));
-                (Chain { spends: Vec::new(), scanned: 0, complete: false }, (0, String::new()))
+                (Chain::none(), (0, String::new()))
             }
         }
     } else {
-        let tip = es.tip().context("chain tip")?;
         let mut cache: ScanCache =
             std::fs::read_to_string(&cache_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         let full = cache.full_passes == 0 || cfg.full_every <= 1 || hwm.passes % cfg.full_every.max(1) == 1;
-        let c = match scan_chain(&es, &w, m.limits.own_index_gap, hwm.seq, cfg.max_addresses, &mut cache, full) {
-            Ok(c) => c,
+        // the tip first: without it nothing below can be judged — a WARN, not the end of the pass (#13)
+        match es.tip() {
+            Ok(tip) => {
+                let c = match scan_chain(&es, &w, m.limits.own_index_gap, hwm.seq, cfg.max_addresses, &mut cache, full)
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        warn = true;
+                        codes.push("CHAIN_SOURCE".into());
+                        notes.push(format!("chain scan failed, spend/cap checks skipped this pass: {e}"));
+                        Chain::none()
+                    }
+                };
+                save_state(&cache_path, &cache, &mut warn, &mut codes, &mut notes);
+                notes.push(format!(
+                    "chain source: Esplora {} — {} ({} addresses read; reachable range {range} per branch)",
+                    cfg.esplora,
+                    if full { "FULL" } else { "incremental" },
+                    c.scanned
+                ));
+                (c, tip)
+            }
             Err(e) => {
                 warn = true;
                 codes.push("CHAIN_SOURCE".into());
-                notes.push(format!("chain scan failed, spend/cap checks skipped this pass: {e}"));
-                Chain { spends: Vec::new(), scanned: 0, complete: false }
+                notes.push(format!(
+                    "chain tip unreadable from {}, spend/cap checks skipped this pass: {e:#}",
+                    cfg.esplora
+                ));
+                (Chain::none(), (0, String::new()))
             }
-        };
-        std::fs::write(&cache_path, serde_json::to_string(&cache)?)?;
-        notes.push(format!(
-            "chain source: Esplora {} — {} ({} addresses read; reachable range {range} per branch)",
-            cfg.esplora,
-            if full { "FULL" } else { "incremental" },
-            c.scanned
-        ));
-        (c, tip)
+        }
     };
     if tip_height == 0 {
         // no chain view this pass: nothing below can be judged
@@ -707,7 +859,7 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
             notes.push(format!("owner acknowledged {a}: it will not re-alarm (recorded in {})", ack_path.display()));
         }
     }
-    std::fs::write(&ack_path, serde_json::to_string_pretty(&acked)?)?;
+    save_state(&ack_path, &acked, &mut warn, &mut codes, &mut notes);
     let receipted: HashMap<&str, &Verified> = receipts.iter().map(|r| (r.txid.as_str(), r)).collect();
     for (txid, confirmed, height, net) in &chain.spends {
         match receipted.get(txid.as_str()) {
@@ -781,7 +933,7 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
             if st["frozen"].as_bool() == Some(true) {
                 notes.push("signer is frozen".into());
             }
-            std::fs::write(hwm_path(cfg), serde_json::to_string_pretty(&hwm)?)?;
+            save_state(&hwm_path(cfg), &hwm, &mut warn, &mut codes, &mut notes);
         }
         Err(e) => {
             warn = true;
@@ -793,25 +945,34 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
     // 6. freshness witness, from the monitor's own view (D-R4-5)
     if m.freshness.required {
         match &cfg.witness_key {
+            Some(_) if tip_height == 0 => {
+                // no chain view this pass: a token over no tip would be the monitor lying to the enclave
+                warn = true;
+                codes.push("WITNESS_SKIPPED".into());
+                notes.push("no chain view this pass: no witness token issued".into());
+            }
             Some(k) => {
-                let key = open_locator(k)?;
-                let enclave_id =
-                    <[u8; 32]>::try_from(hex::decode(&w.enclave_id)?.as_slice()).map_err(|_| anyhow!("enclave id"))?;
-                let mut msg = Message::WitnessToken {
-                    enclave_id,
-                    tip_hash: hash_of(&tip_hash)?,
-                    tip_height,
-                    last_seen_seq: hwm.seq,
-                    issued: now(),
-                    sig: [0; 64],
-                };
-                sign_message(&key, &mut msg)?;
-                match submit_message(sd, &msg) {
+                let built = (|| -> Result<Message> {
+                    let key = open_locator(k)?;
+                    let enclave_id = <[u8; 32]>::try_from(hex::decode(&w.enclave_id)?.as_slice())
+                        .map_err(|_| anyhow!("enclave id"))?;
+                    let mut msg = Message::WitnessToken {
+                        enclave_id,
+                        tip_hash: hash_of(&tip_hash)?,
+                        tip_height,
+                        last_seen_seq: hwm.seq,
+                        issued: now(),
+                        sig: [0; 64],
+                    };
+                    sign_message(&key, &mut msg)?;
+                    Ok(msg)
+                })();
+                match built.and_then(|msg| submit_message(sd, &msg)) {
                     Ok(()) => notes.push(format!("witness token issued: tip {tip_height}, last_seen_seq {}", hwm.seq)),
                     Err(e) => {
                         warn = true;
                         codes.push("WITNESS_REFUSED".into());
-                        notes.push(format!("witness token refused: {e}"));
+                        notes.push(format!("witness token not issued: {e:#}"));
                     }
                 }
             }
@@ -863,7 +1024,6 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
         froze,
         notes: notes.clone(),
     };
-    journal(&cfg.journal, &line)?;
     println!(
         "{verdict} pass {} tip {tip_height} enclave {enclave_best} hwm {}:{} receipts {} spends {} outflow {} sat{}",
         hwm.passes,
@@ -879,6 +1039,10 @@ pub fn pass(sd: &Signerd, cfg: &Cfg) -> Result<i32> {
     }
     for n in &notes {
         println!("  - {n}");
+    }
+    // the heartbeat; when it cannot be written the verdict above has still been printed and returned
+    if let Err(e) = journal(&cfg.journal, &line) {
+        eprintln!("journal line not written: {e:#}");
     }
     Ok(if alarm {
         2
@@ -1035,5 +1199,298 @@ mod tests {
         let v = verify_receipt_lines(&lines, &pk, &eid, &mut codes, &mut notes).unwrap();
         assert!(v.is_empty());
         assert_eq!(codes, vec!["RECEIPT_SIG".to_string()], "{notes:?}");
+    }
+
+    // ---- the two reproducers of the external review of 2026-11-25 (#13, #14): red on `main` @ 2ff937e
+
+    use std::sync::{Arc, Mutex};
+
+    /// A throwaway regtest master key (seed of 0x42 bytes) — labeled: never funded, never a wallet.
+    fn throwaway_xpub() -> String {
+        let secp = Secp256k1::new();
+        let xprv = bitcoin::bip32::Xpriv::new_master(bitcoin::Network::Regtest, &[0x42u8; 32]).unwrap();
+        bitcoin::bip32::Xpub::from_priv(&secp, &xprv).to_string()
+    }
+
+    fn wallet_json(xpub: &str, identity_pk_hex: &str, enclave_id_hex: &str) -> serde_json::Value {
+        serde_json::json!({
+            "network": "regtest", "xpub": xpub, "fingerprint": "00000000", "identity_pk": identity_pk_hex,
+            "enclave_id": enclave_id_hex, "card_hex": "", "card_sig_hex": "", "mrenclave": "", "tier": "T0-test",
+            "recovery_blob_hex": "", "owner_pk": "", "recovery_pk": ""
+        })
+    }
+
+    fn mandate_json() -> &'static str {
+        r#"{ "version": 1, "network": "regtest",
+  "wallet": { "fingerprint": "00000000", "account": "84'/1'/0'", "scriptTypes": ["p2wpkh"] },
+  "destinations": { "trusted": [], "unlisted": { "maxPerTx": 1000000, "maxPerWindow": 5000000 } },
+  "limits": { "maxPerTx": 100000000, "window": { "blocks": 144, "maxOutflow": 500000000 }, "maxFeeAbs": 100000, "maxFeeRate": 100, "maxInputs": 64, "maxOutputs": 32, "ownIndexGap": 2, "maxReorg": 6 },
+  "rules": { "sighash": "ALL", "payjoin": "none", "opReturn": "none", "rbf": true },
+  "freshness": { "required": false, "maxTipLag": 6 },
+  "validity": { "notAfterHeight": 100000 }, "timelockBlocks": 144 }"#
+    }
+
+    /// A scratch directory of this test alone, removed by the test by its own path.
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("tee-signer-owner-cli-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// A loopback stand-in for `signerd` (and, on every other path, for a failing Esplora): answers
+    /// `/v1/receipts` with the given lines, `/v1/status` with a bare installed status, `/v1/freeze` with
+    /// `{}`, and 404 to anything else. Every request is recorded as "METHOD path".
+    fn fake_signerd(receipts: serde_json::Value) -> (String, Arc<Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let seen = calls.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { break };
+                let mut rd = BufReader::new(s.try_clone().unwrap());
+                let mut line = String::new();
+                if rd.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let mut parts = line.split_whitespace();
+                let method = parts.next().unwrap_or("").to_string();
+                let path = parts.next().unwrap_or("").to_string();
+                let mut len = 0usize;
+                loop {
+                    let mut h = String::new();
+                    if rd.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" {
+                        break;
+                    }
+                    if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; len];
+                if len > 0 {
+                    let _ = rd.read_exact(&mut body);
+                }
+                seen.lock().unwrap().push(format!("{method} {path}"));
+                let (status, body) = match (method.as_str(), path.as_str()) {
+                    ("GET", "/v1/receipts") => ("200 OK", receipts.to_string()),
+                    ("GET", "/v1/status") => {
+                        ("200 OK", serde_json::json!({ "installed": true, "best_height": 0 }).to_string())
+                    }
+                    ("POST", "/v1/freeze") => ("200 OK", "{}".to_string()),
+                    _ => ("404 Not Found", "{\"error\":\"no such path\"}".to_string()),
+                };
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = s.flush();
+            }
+        });
+        (url, calls)
+    }
+
+    #[test]
+    fn the_reflex_fires_when_the_chain_source_is_down() {
+        // #13: the receipts raise an alarm (RECEIPT_SIG) while the Esplora tip cannot be read (the fake
+        // answers 404 to every path that is not signerd's). The pass must still reach its verdict, send
+        // FREEZE once and write its journal line — on `main` @ 2ff937e it returns Err("chain tip") instead.
+        let (sk, pk, eid) = identity();
+        let (url, calls) = fake_signerd(serde_json::json!([receipt_line(&sk, &eid, "s1", 1, 1, 5000, true)]));
+        let dir = scratch("reflex");
+        std::fs::write(dir.join("wallet.json"), wallet_json(&throwaway_xpub(), &pk, &eid).to_string()).unwrap();
+        std::fs::write(dir.join("mandate.json"), mandate_json()).unwrap();
+        let cfg = Cfg {
+            wallet: dir.join("wallet.json"),
+            mandate: dir.join("mandate.json"),
+            esplora: url.clone(),
+            interval: 0,
+            journal: dir.join("monitor.jsonl"),
+            once: true,
+            freeze: true,
+            witness_key: None,
+            stall_after: 3,
+            max_tip_lag: None,
+            max_addresses: 4,
+            esplora_delay_ms: 0,
+            full_every: 1,
+            node_rpc: None,
+            node_cookie: None,
+            acknowledge: Vec::new(),
+        };
+        let sd = Signerd { url, token: "t".into(), record: None, offline: None, out: None };
+        let code = pass(&sd, &cfg).expect("the pass reaches its verdict although the chain source is down");
+        assert_eq!(code, 2, "ALARM");
+        let freezes = calls.lock().unwrap().iter().filter(|c| *c == "POST /v1/freeze").count();
+        assert_eq!(freezes, 1, "{:?}", calls.lock().unwrap());
+        let j = std::fs::read_to_string(dir.join("monitor.jsonl")).unwrap();
+        assert!(j.contains("\"verdict\":\"ALARM\"") && j.contains("RECEIPT_SIG") && j.contains("CHAIN_SOURCE"), "{j}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A scripted node: the chain as (height, hash, transactions), replaceable mid-test.
+    struct FakeNode {
+        chain: Mutex<Vec<(u32, String, Vec<serde_json::Value>)>>,
+    }
+
+    fn tx(txid: &str, vin: &[(&str, u32)], vout: &[(&str, f64)]) -> serde_json::Value {
+        serde_json::json!({
+            "txid": txid,
+            "vin": vin.iter().map(|(t, v)| serde_json::json!({ "txid": t, "vout": v })).collect::<Vec<_>>(),
+            "vout": vout.iter().enumerate().map(|(n, (a, btc))| serde_json::json!({ "n": n, "value": btc, "scriptPubKey": { "address": a } })).collect::<Vec<_>>(),
+        })
+    }
+
+    impl Rpc for FakeNode {
+        fn rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+            let chain = self.chain.lock().unwrap();
+            let (tip_h, tip_hash, _) = chain.last().cloned().ok_or_else(|| anyhow!("empty chain"))?;
+            Ok(match method {
+                "getblockchaininfo" => serde_json::json!({ "blocks": tip_h, "bestblockhash": tip_hash }),
+                "getblockhash" => {
+                    let h = params[0].as_u64().unwrap_or(u64::MAX);
+                    serde_json::json!(chain
+                        .iter()
+                        .find(|b| u64::from(b.0) == h)
+                        .map(|b| b.1.clone())
+                        .ok_or_else(|| anyhow!("Block height out of range"))?)
+                }
+                "getblock" => {
+                    let hash = params[0].as_str().unwrap_or("");
+                    let b = chain.iter().find(|b| b.1 == hash).ok_or_else(|| anyhow!("Block not found"))?;
+                    serde_json::json!({ "hash": b.1, "height": b.0, "tx": b.2 })
+                }
+                "scantxoutset" => {
+                    let all: Vec<&serde_json::Value> = chain.iter().flat_map(|b| b.2.iter()).collect();
+                    let mut unspents = Vec::new();
+                    for t in &all {
+                        for o in t["vout"].as_array().unwrap() {
+                            let (txid, n) = (t["txid"].as_str().unwrap(), o["n"].as_u64().unwrap());
+                            let spent = all.iter().any(|u| {
+                                u["vin"]
+                                    .as_array()
+                                    .unwrap()
+                                    .iter()
+                                    .any(|i| i["txid"] == txid && i["vout"].as_u64() == Some(n))
+                            });
+                            if !spent {
+                                unspents.push(serde_json::json!({ "txid": txid, "vout": n, "amount": o["value"], "scriptPubKey": o["scriptPubKey"]["address"] }));
+                            }
+                        }
+                    }
+                    serde_json::json!({ "success": true, "unspents": unspents })
+                }
+                "getrawtransaction" => {
+                    let id = params[0].as_str().unwrap_or("");
+                    let (h, t) = chain
+                        .iter()
+                        .flat_map(|b| b.2.iter().map(move |t| (b.0, t)))
+                        .find(|(_, t)| t["txid"] == id)
+                        .ok_or_else(|| anyhow!("No such mempool or blockchain transaction"))?;
+                    let mut t = t.clone();
+                    t["confirmations"] = serde_json::json!(tip_h - h + 1);
+                    t
+                }
+                "getrawmempool" | "gettxspendingprevout" => serde_json::json!([]),
+                "decodescript" => serde_json::json!({ "address": params[0] }),
+                m => return Err(anyhow!("unexpected rpc {m}")),
+            })
+        }
+    }
+
+    #[test]
+    fn a_spend_confirmed_only_in_the_winning_fork_is_found() {
+        // #14: pass 1 walks blocks 96..=101 (block 100 funds us); then block 101 is replaced by one that
+        // spends our output to a stranger, a transaction that was never in our node's mempool between the
+        // passes. Pass 2 must see the spend — on `main` @ 2ff937e it resumes at 102 and sees nothing.
+        let xpub = throwaway_xpub();
+        let w: WalletRecord =
+            serde_json::from_value(wallet_json(&xpub, &hex::encode([2u8; 33]), &hex::encode([1u8; 32]))).unwrap();
+        let ours = crate::psbt::address(&xpub, signer_core::mandate::Network::Regtest, 0, 0).unwrap();
+        let (ftx, stx) = ("aa".repeat(32), "bb".repeat(32));
+        let funding = tx(&ftx, &[("00".repeat(32).as_str(), 0)], &[(ours.as_str(), 1.0)]);
+        let mut blocks: Vec<(u32, String, Vec<serde_json::Value>)> =
+            (96..=99).map(|h| (h, format!("h{h}"), vec![])).collect();
+        blocks.push((100, "h100".into(), vec![funding]));
+        blocks.push((101, "h101".into(), vec![]));
+        let node = FakeNode { chain: Mutex::new(blocks) };
+        let mut cache = NodeCache::default();
+        let (c1, tip1) = scan_node(&node, &w, 2, 0, 10, 5, &mut cache, true, &[]).unwrap();
+        assert!(c1.spends.is_empty(), "{:?}", c1.spends);
+        assert_eq!(tip1.0, 101);
+        assert!(cache.outputs.contains_key(&format!("{ftx}:0")), "the funding output is known");
+        // the reorg: a different block 101, carrying the spend
+        let spend = tx(&stx, &[(ftx.as_str(), 0)], &[("bcrt1qstranger", 0.9999)]);
+        {
+            let mut ch = node.chain.lock().unwrap();
+            ch.pop();
+            ch.push((101, "h101b".into(), vec![spend]));
+        }
+        let (c2, tip2) = scan_node(&node, &w, 2, 0, 10, 5, &mut cache, false, &[]).unwrap();
+        assert_eq!(tip2, (101, "h101b".to_string()));
+        let found = c2.spends.iter().find(|(t, ..)| *t == stx);
+        let (_, confirmed, height, net) =
+            found.unwrap_or_else(|| panic!("the spend in the replacement block must be seen: {:?}", c2.spends));
+        assert_eq!((*confirmed, *height, *net), (true, Some(101), 100_000_000));
+    }
+
+    #[test]
+    fn an_orphaned_spend_keeps_its_alarm_without_its_confirmation() {
+        // #14, the other direction: a spend seen in block 101 whose block is then orphaned (replaced by
+        // an empty one) stays a spend — somebody signed it — but unconfirmed until a re-walk finds it again.
+        let xpub = throwaway_xpub();
+        let w: WalletRecord =
+            serde_json::from_value(wallet_json(&xpub, &hex::encode([2u8; 33]), &hex::encode([1u8; 32]))).unwrap();
+        let ours = crate::psbt::address(&xpub, signer_core::mandate::Network::Regtest, 0, 0).unwrap();
+        let (ftx, stx) = ("aa".repeat(32), "bb".repeat(32));
+        let funding = tx(&ftx, &[("00".repeat(32).as_str(), 0)], &[(ours.as_str(), 1.0)]);
+        let spend = tx(&stx, &[(ftx.as_str(), 0)], &[("bcrt1qstranger", 0.9999)]);
+        let mut blocks: Vec<(u32, String, Vec<serde_json::Value>)> =
+            (96..=99).map(|h| (h, format!("h{h}"), vec![])).collect();
+        blocks.push((100, "h100".into(), vec![funding]));
+        blocks.push((101, "h101".into(), vec![spend]));
+        let node = FakeNode { chain: Mutex::new(blocks) };
+        let mut cache = NodeCache::default();
+        let (c1, _) = scan_node(&node, &w, 2, 0, 10, 5, &mut cache, true, &[]).unwrap();
+        assert_eq!(c1.spends.iter().find(|(t, ..)| *t == stx).map(|s| (s.1, s.2)), Some((true, Some(101))));
+        {
+            let mut ch = node.chain.lock().unwrap();
+            ch.pop();
+            ch.push((101, "h101b".into(), vec![]));
+        }
+        let (c2, _) = scan_node(&node, &w, 2, 0, 10, 5, &mut cache, false, &[]).unwrap();
+        let s = c2.spends.iter().find(|(t, ..)| *t == stx).expect("the spend keeps its alarm");
+        assert_eq!((s.1, s.2, s.3), (false, None, 100_000_000), "{:?}", c2.spends);
+        let r = c2.rewound.expect("the reorg is reported");
+        assert_eq!((r.last_walked, r.resumed_from, r.restarted), (101, 101, false));
+        assert_eq!(cache.walked.last(), Some(&(101, "h101b".to_string())));
+        assert_eq!(cache.last_block, 101);
+    }
+
+    #[test]
+    fn a_cache_without_remembered_hashes_restarts_from_the_utxo_set() {
+        // #14: a cache written before the hashes were kept (last_block set, nothing walked on record)
+        // cannot tell whether its chain stands: the pass re-reads the UTXO set and walks the last
+        // `window` blocks once, then remembers.
+        let xpub = throwaway_xpub();
+        let w: WalletRecord =
+            serde_json::from_value(wallet_json(&xpub, &hex::encode([2u8; 33]), &hex::encode([1u8; 32]))).unwrap();
+        let ours = crate::psbt::address(&xpub, signer_core::mandate::Network::Regtest, 0, 0).unwrap();
+        let ftx = "aa".repeat(32);
+        let funding = tx(&ftx, &[("00".repeat(32).as_str(), 0)], &[(ours.as_str(), 1.0)]);
+        let mut blocks: Vec<(u32, String, Vec<serde_json::Value>)> =
+            (96..=99).map(|h| (h, format!("h{h}"), vec![])).collect();
+        blocks.push((100, "h100".into(), vec![funding]));
+        blocks.push((101, "h101".into(), vec![]));
+        let node = FakeNode { chain: Mutex::new(blocks) };
+        let mut cache = NodeCache { last_block: 101, ..Default::default() };
+        let (c, _) = scan_node(&node, &w, 2, 0, 10, 5, &mut cache, false, &[]).unwrap();
+        let r = c.rewound.expect("the restart is reported");
+        assert_eq!((r.last_walked, r.resumed_from, r.restarted), (101, 96, true));
+        assert!(cache.outputs.contains_key(&format!("{ftx}:0")), "the UTXO set was re-read");
+        assert_eq!(cache.walked.len(), 6, "{:?}", cache.walked);
+        assert_eq!(cache.last_block, 101);
     }
 }
