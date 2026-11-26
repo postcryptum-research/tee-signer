@@ -636,9 +636,14 @@ Not decided yet — nothing has asked. The enclave arms a new load at its **firs
 call after the restart, when the counter proof that comes with that call checks out: on a quiet node
 that is the next block fed to the enclave (minutes), or your next owner operation. A status read is
 not such a call; it only reports. Read the status again after the next block (`best_height` moved):
-`boot_armed` turns `true` with nobody touching a key. If it stays `false` after a block was fed,
-look at the daemon's log for `STATE_STALE` or `TPM_…` — then the pause is real and the four anchor
-steps are the answer.
+`boot_armed` turns `true` with nobody touching a key. Count only a block fed **after** the restart: a header the
+feed accepted seconds before it moves `best_height` too and proves nothing about the new load (the 2026-11-25
+drill read one that way and called a false alarm). If it stays `false` after a block fed in the new load, look at
+the daemon's log for `STATE_STALE` or `TPM_…` — then the pause is real and the four anchor steps are the answer.
+**What a restart costs:** up to one block interval of signing — from the restart to the first fresh block the
+signer refuses payouts `NOT_ARMED` and the plugin retries them (11 minutes on the project's T2 node on 2026-11-25:
+restart 23:26:38Z, first block 23:37:39Z, armed at once). That is the lazy auto-arm's trade-off, fail-closed by
+design: no signature until a fresh proof that the counter did not roll back.
 
 ### The signer answers `PERSIST_FAILED` (503) to every payout, and `/healthz` says `persist failed`. What happened?
 
